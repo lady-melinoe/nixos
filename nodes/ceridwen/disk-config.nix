@@ -57,5 +57,12 @@
         };
       };
     };
+    nodev = {
+      "array-2" = {
+        device = "/dev/disk/by-label/array-2";
+        fsType = "btrfs";
+        mountpoint = "/array";
+      };
+    };
   };
 }
