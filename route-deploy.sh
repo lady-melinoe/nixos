@@ -4,6 +4,10 @@ BASE_PREFIX="198.51.100."
 INNER_PREFIX="198.18.0."
 TUN_PREFIX="node-"
 
+for cmd in vtysh jq ip curl grep awk sed sort uniq; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "missing command: $cmd" >&2; exit 1; }
+done
+
 normalize_prefix() {
     case "$1" in
         */*) echo "$1" ;;
@@ -12,6 +16,8 @@ normalize_prefix() {
 }
 
 BGP_JSON=$(vtysh -c 'show bgp ipv4 json')
+
+[ -n "$BGP_JSON" ] || { echo "failed to fetch BGP JSON" >&2; exit 1; }
 
 LOCAL_NODE_ID=$(
   jq -r '
@@ -25,7 +31,9 @@ LOCAL_NODE_ID=$(
   awk -F'[./]' '{print $4}'
 )
 
-[ -n "$LOCAL_NODE_ID" ] || exit 1
+case "$LOCAL_NODE_ID" in
+  ''|*[!0-9]*) echo "invalid local node id: $LOCAL_NODE_ID" >&2; exit 1 ;;
+esac
 
 LOCAL_VIP="${BASE_PREFIX}${LOCAL_NODE_ID}"
 LOCAL_INNER="${INNER_PREFIX}${LOCAL_NODE_ID}"
@@ -54,6 +62,9 @@ EXISTING_TUNNELS=$(
 
 for TUN in $EXISTING_TUNNELS; do
   RID="${TUN#${TUN_PREFIX}}"
+  case "$RID" in
+    ''|*[!0-9]*) continue ;;
+  esac
   TABLE=$((1000 + RID))
   if ! grep -qx "$RID" <<<"$REMOTE_NODE_IDS"; then
     ip route flush table "$TABLE" >/dev/null 2>&1 || true
@@ -64,6 +75,9 @@ for TUN in $EXISTING_TUNNELS; do
 done
 
 for RID in $REMOTE_NODE_IDS; do
+  case "$RID" in
+    ''|*[!0-9]*) continue ;;
+  esac
   R_VIP="${BASE_PREFIX}${RID}"
   R_INNER="${INNER_PREFIX}${RID}"
   TUN="${TUN_PREFIX}${RID}"
@@ -73,8 +87,8 @@ for RID in $REMOTE_NODE_IDS; do
     ip tunnel add "$TUN" mode gre \
         local "$LOCAL_VIP" \
         remote "$R_VIP" \
-        ttl 64
-    ip addr add "${LOCAL_INNER}/32" peer "${R_INNER}/32" dev "$TUN"
+        ttl 64 || continue
+    ip addr replace "${LOCAL_INNER}/32" peer "${R_INNER}/32" dev "$TUN"
   fi
 
   ip link set "$TUN" up || true
