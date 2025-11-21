@@ -198,23 +198,6 @@ in
     '';
   };
 
-  systemd.services.melinoe-route-iprules = {
-    description = "Set up fwmark-based routing tables for melinoe-route";
-    after = [ "network.target" ];
-    wantedBy = [ "multi-user.target" ];
-    path = [ pkgs.iproute2 ];
-
-    serviceConfig.Type = "oneshot";
-
-    script = ''
-      for i in $(seq 0 254); do
-        table=$((1000 + i))
-        ip rule del fwmark $table lookup $table 2>/dev/null || true
-        ip rule add fwmark $table lookup $table
-      done
-    '';
-  }; 
-
   services.glances.enable = true;
   services.glances.port = 61208;
   services.glances.extraArgs = [ "--webserver" "-B" "198.18.0.${toString nodeID}" ];

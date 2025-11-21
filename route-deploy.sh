@@ -54,7 +54,10 @@ EXISTING_TUNNELS=$(
 
 for TUN in $EXISTING_TUNNELS; do
   RID="${TUN#${TUN_PREFIX}}"
+  TABLE=$((1000 + RID))
   if ! grep -qx "$RID" <<<"$REMOTE_NODE_IDS"; then
+    ip route flush table "$TABLE" >/dev/null 2>&1 || true
+    ip rule del fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
     ip link set "$TUN" down >/dev/null 2>&1 || true
     ip tunnel del "$TUN" >/dev/null 2>&1 || true
   fi
@@ -64,6 +67,7 @@ for RID in $REMOTE_NODE_IDS; do
   R_VIP="${BASE_PREFIX}${RID}"
   R_INNER="${INNER_PREFIX}${RID}"
   TUN="${TUN_PREFIX}${RID}"
+  TABLE=$((1000 + RID))
 
   if ! ip link show "$TUN" >/dev/null 2>&1; then
     ip tunnel add "$TUN" mode gre \
@@ -74,7 +78,9 @@ for RID in $REMOTE_NODE_IDS; do
   fi
 
   ip link set "$TUN" up || true
-  ip route replace default dev "$TUN" table $((1000 + RID))
+  ip rule del fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
+  ip rule add fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
+  ip route replace default dev "$TUN" table "$TABLE"
 done
 
 for RID in $REMOTE_NODE_IDS; do
