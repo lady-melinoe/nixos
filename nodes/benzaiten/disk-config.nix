@@ -60,10 +60,8 @@
     nodev = {
       "array-1" = {
         device = "/dev/disk/by-label/array-1";
-        content = {
-          type = "btrfs";
-          mountpoint = "/array";
-        };
+        fsType = "btrfs";
+        mountpoint = "/array";
       };
     };
   };
