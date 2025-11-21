@@ -117,11 +117,11 @@ in
         icmp type { echo-request, echo-reply } accept
         icmpv6 type { echo-request, nd-neighbor-solicit } accept
         iif "lo" accept
-        tcp dport { 22, 8008 } accept
-        udp dport { 8008 } accept
+        tcp dport 22 accept
         iifname $p2p_ifs ip protocol gre accept
         iifname $p2p_ifs tcp dport 179 accept
         iifname $node_ifs tcp dport 60198 accept
+        tcp dport 8008 accept
       }
 
       chain FORWARD {
