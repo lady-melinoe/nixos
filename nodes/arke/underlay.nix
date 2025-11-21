@@ -213,6 +213,7 @@ in
     wants = [ "network-online.target" ];
     path = [
       pkgs.coreutils
+      pkgs.bash
       pkgs.iproute2
       pkgs.jq
       pkgs.curl
