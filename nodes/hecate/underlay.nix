@@ -21,7 +21,7 @@ let
       up)
         echo 1 > /proc/sys/net/ipv4/conf/$IFACE/forwarding
         echo 1 > /proc/sys/net/ipv4/conf/$IFACE/proxy_arp
-        ip addr replace 198.18.0.3/32 dev "$IFACE"
+        ip addr replace 198.18.0.${toString nodeID}/32 dev "$IFACE"
 
         if ! grep -Fxq "$IP" "$RES_FILE"; then
           echo "$IP" >> "$RES_FILE"
@@ -114,8 +114,7 @@ in
     define inet_ifs = "enp4s0"
     define p2p_ifs = { "enp5s0f0", "enp5s0f1", "bond0" }
     define vm_ifs = "vm-*"
-    define node_ifs = "node-*"
-    define private_vlan = 198.18.0.0/15
+    define node_gre_ifs = "node-*"
     define gre_ctmark = { ${builtins.concatStringsSep ", " (builtins.genList (i: "\"node-${toString (i)}\" : ${toString (1000 + i)}") 255)} }
 
     table inet filter {
@@ -126,17 +125,20 @@ in
         icmp type { echo-request, echo-reply } accept
         icmpv6 type { echo-request, nd-neighbor-solicit } accept
         iif "lo" accept
-        tcp dport 22 accept
-        iifname $p2p_ifs ip protocol gre accept
         iifname $p2p_ifs tcp dport 179 accept
-        iifname $node_ifs tcp dport 60198 accept
-        ip saddr 198.18.1.5 tcp dport 61208 accept
+        tcp dport 22 accept
         tcp dport 8008 accept
+        ip saddr 198.51.100.0/24 ip protocol gre accept
+        ip saddr 198.18.0.0/24 tcp dport 60198 accept
+        ip saddr 198.18.1.5 tcp dport 61208 accept
       }
 
       chain FORWARD {
         type filter hook forward priority filter; policy accept;
         ct state invalid drop
+        iifname $vm_ifs ip saddr = 198.18.0.0/24 drop
+        iifname $vm_ifs ip saddr = 198.51.100.0/24 drop
+        iifname $vm_ifs ip saddr != 198.18.0.0/16 drop 
         ct state { established, related } accept
         icmp type { echo-request, echo-reply } accept
         icmpv6 type { echo-request, nd-neighbor-solicit } accept
@@ -156,20 +158,20 @@ in
       }
       chain postrouting {
         type nat hook postrouting priority srcnat;
-	oifname $inet_ifs masquerade
+        oifname $inet_ifs masquerade
       }
     }
 
     table inet mangle {
       chain prerouting {
         type filter hook prerouting priority mangle;
-        iifname != $node_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
-        iifname $node_ifs ct direction original ct mark != 1000-1254 ct mark set iifname map $gre_ctmark
+        iifname != $node_gre_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
+        iifname $node_gre_ifs ct direction original ct mark != 1000-1254 ct mark set iifname map $gre_ctmark
      }
 
       chain output {
         type route hook output priority mangle;
-        iifname != $node_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
+        iifname != $node_gre_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
       }
     }
   '';
