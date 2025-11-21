@@ -7,7 +7,7 @@
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
   nix.settings.require-sigs = false;
   system.stateVersion = "25.05";
-  environment.systemPackages = [ pkgs.git pkgs.tcpdump pkgs.nftables ];
+  environment.systemPackages = [ pkgs.git pkgs.tcpdump pkgs.nftables pkgs.jq ];
   boot.kernelPackages = pkgs.linuxPackages_latest;
   boot.kernel.sysctl = {
     "net.ipv6.conf.all.autoconf" = false;
