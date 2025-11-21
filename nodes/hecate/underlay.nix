@@ -136,8 +136,8 @@ in
       chain FORWARD {
         type filter hook forward priority filter; policy accept;
         ct state invalid drop
-        iifname $vm_ifs ip saddr = 198.18.0.0/24 drop
-        iifname $vm_ifs ip saddr = 198.51.100.0/24 drop
+        iifname $vm_ifs ip saddr 198.18.0.0/24 drop
+        iifname $vm_ifs ip saddr 198.51.100.0/24 drop
         iifname $vm_ifs ip saddr != 198.18.0.0/16 drop 
         ct state { established, related } accept
         icmp type { echo-request, echo-reply } accept
