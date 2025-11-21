@@ -223,6 +223,7 @@ in
       pkgs.coreutils
       pkgs.bash
       pkgs.iproute2
+      pkgs.frr
       pkgs.jq
       pkgs.curl
       pkgs.gnugrep
