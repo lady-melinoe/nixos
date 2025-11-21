@@ -121,7 +121,7 @@ in
         iifname $p2p_ifs ip protocol gre accept
         iifname $p2p_ifs tcp dport 179 accept
         iifname $node_ifs tcp dport 60198 accept
-        ip saddr 198.18.1.3 tcp dport 61208 accept
+        ip saddr 198.18.1.5 tcp dport 61208 accept
         tcp dport 8008 accept
       }
 
