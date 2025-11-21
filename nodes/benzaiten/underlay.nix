@@ -86,6 +86,8 @@ in
 
         neighbor 198.19.0.2 remote-as ${toString (64512 + 2)}
         neighbor 198.19.0.2 update-source 198.19.0.${toString nodeID}
+        neighbor 198.19.0.3 remote-as ${toString (64512 + 3)}
+        neighbor 198.19.0.3 update-source 198.19.0.${toString nodeID}
         neighbor 198.19.0.6 remote-as ${toString (64512 + 6)}
         neighbor 198.19.0.6 update-source 198.19.0.${toString nodeID}
 
@@ -94,6 +96,9 @@ in
           neighbor 198.19.0.2 activate
           neighbor 198.19.0.2 route-map NODE-IN in
           neighbor 198.19.0.2 route-map NODE-OUT out
+          neighbor 198.19.0.3 activate
+          neighbor 198.19.0.3 route-map NODE-IN in
+          neighbor 198.19.0.3 route-map NODE-OUT out
           neighbor 198.19.0.6 activate
           neighbor 198.19.0.6 route-map NODE-IN in
           neighbor 198.19.0.6 route-map NODE-OUT out
