@@ -21,7 +21,7 @@ let
       up)
         echo 1 > /proc/sys/net/ipv4/conf/$IFACE/forwarding
         echo 1 > /proc/sys/net/ipv4/conf/$IFACE/proxy_arp
-        ip addr replace $IP/32 dev "$IFACE"
+        ip addr replace 198.18.0.${toString nodeID}/32 dev "$IFACE"
 
         if ! grep -Fxq "$IP" "$RES_FILE"; then
           echo "$IP" >> "$RES_FILE"
