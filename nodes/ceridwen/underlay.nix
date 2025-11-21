@@ -185,7 +185,7 @@ in
           root = {
             path = "/";
             pool = "default";
-            size = "35GiB";
+            size = "40GiB";
             type = "disk";
           };
         };
