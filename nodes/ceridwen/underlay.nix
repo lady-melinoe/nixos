@@ -232,7 +232,7 @@ in
     serviceConfig = {
       Type = "oneshot";
       ConditionPathIsExecutable = "/etc/nixos/route-deploy.sh";
-      ExecStart = [ "${pkgs.coreutils}/bin/timeout" "30" "/etc/nixos/route-deploy.sh" ];
+      ExecStart = "${pkgs.coreutils}/bin/timeout 30 /etc/nixos/route-deploy.sh";
     };
   };
 
