@@ -195,7 +195,7 @@ in
     storage_pools = [
       {
         config = {
-          source = "/var/lib/incus/storage-pools/default";         };
+          source = "/array/incus/";         };
         driver = "btrfs";
         name = "default";
       }
