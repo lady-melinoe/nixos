@@ -57,5 +57,17 @@
         };
       };
     };
+    nodev = {
+      big = {
+        device = "/dev/disk/by-label/big";
+        fsType = "btrfs";
+        mountpoint = "/big";
+      };
+      uccdrives = {
+        device = "/dev/disk/by-label/uccdrives";
+        fsType = "btrfs";
+        mountpoint = "/array";
+      };
+    };
   };
 }
