@@ -23,7 +23,7 @@ let
 
     LOCAL_NODE_ID=${toString nodeID}
 
-    if ! [[ "$LOCAL_NODE_ID" =~ ^[0-9]+$ ]]; then
+    if ! echo "$LOCAL_NODE_ID" | grep -Eq '^[0-9]+$'; then
       echo "invalid local node id: $LOCAL_NODE_ID" >&2
       exit 1
     fi
@@ -60,7 +60,7 @@ let
     # Tear down GRE state for peers that disappeared from BGP
     for TUN in $EXISTING_TUNNELS; do
       RID="${TUN#${TUN_PREFIX}}"
-      if ! [[ "$RID" =~ ^[0-9]+$ ]]; then
+      if ! echo "$RID" | grep -Eq '^[0-9]+$'; then
         continue
       fi
       TABLE=$((1000 + RID))
@@ -74,7 +74,7 @@ let
 
     # Ensure tunnels and policy routing exist, then sync prefixes per peer
     for RID in $REMOTE_NODE_IDS; do
-      if ! [[ "$RID" =~ ^[0-9]+$ ]]; then
+      if ! echo "$RID" | grep -Eq '^[0-9]+$'; then
         continue
       fi
       R_VIP="${BASE_PREFIX}${RID}"
