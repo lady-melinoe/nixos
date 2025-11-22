@@ -16,7 +16,7 @@ in {
     };
   };
 
-  assertions = [{
+  config.assertions = [{
     assertion = config.melinoe.nodeId != null;
     message = "melinoe.nodeId must be set for this host.";
   }];
