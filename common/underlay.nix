@@ -60,9 +60,9 @@ let
     # Tear down GRE state for peers that disappeared from BGP
     for TUN in $EXISTING_TUNNELS; do
       RID="${TUN#${TUN_PREFIX}}"
-      case "$RID" in
-        ''|*[!0-9]*) continue ;;
-      esac
+      if ! [[ "$RID" =~ ^[0-9]+$ ]]; then
+        continue
+      fi
       TABLE=$((1000 + RID))
       if ! grep -qx "$RID" <<<"$REMOTE_NODE_IDS"; then
         ip route flush table "$TABLE" >/dev/null 2>&1 || true
