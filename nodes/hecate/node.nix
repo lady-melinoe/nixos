@@ -14,6 +14,24 @@
 
   networking.hostName = "hecate";
   networking.domain = "";
+  networking.useDHCP = false;
+  networking.interfaces.enp4s0.useDHCP = true;
+  networking.interfaces.enp5s0f0.useDHCP = false;
+  networking.interfaces.enp5s0f1.useDHCP = false;
+  networking.bonds.bond0 = {
+    interfaces = [ "enp5s0f0" "enp5s0f1" ];
+    driverOptions = {
+      mode = "802.3ad";
+      lacp_rate = "fast";
+    };
+  };
+  networking.interfaces.bond0 = {
+    useDHCP = false;
+    ipv4.addresses = [{
+      address = "198.19.0.${toString melinoe.nodeId}";
+      prefixLength = 24;
+    }];
+  };
 
   boot.loader.grub = {
     efiSupport = true;

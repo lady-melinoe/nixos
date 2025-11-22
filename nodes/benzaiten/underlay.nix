@@ -4,29 +4,6 @@ let
   nodeID = config.melinoe.nodeId;
 in
 {
-  networking.useDHCP = false;
-
-  networking.interfaces.eno1.useDHCP = true;
-
-  networking.interfaces.eno3.useDHCP = false;
-  networking.interfaces.eno4.useDHCP = false;
-
-  networking.bonds.bond0 = {
-    interfaces = [ "eno3" "eno4" ];
-    driverOptions = {
-      mode = "802.3ad";
-      lacp_rate = "fast";
-    };
-  };
-
-  networking.interfaces.bond0 = {
-    useDHCP = false;
-    ipv4.addresses = [{
-      address = "198.19.0.${toString nodeID}";
-      prefixLength = 24;
-    }];
-  };
-
   services.frr = {
     bgpd.enable = true;
     config = ''
@@ -69,7 +46,7 @@ in
   networking.nftables.ruleset = ''
     flush ruleset
     define inet_ifs = "eno1"
-    define p2p_ifs = { "eno3", "eno4", "bond0" }
+    define p2p_ifs = "bond0"
     define vm_ifs = "vm-*"
     define node_ifs = "node-*"
     define private_vlan = 198.18.0.0/15

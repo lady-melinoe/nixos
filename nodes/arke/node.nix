@@ -24,6 +24,15 @@
 
   networking.hostName = "arke";
   networking.domain = "";
+  networking.useDHCP = false;
+  networking.interfaces.ens18.useDHCP = true;
+  networking.interfaces.ens19 = {
+    useDHCP = false;
+    ipv4.addresses = [{
+      address = "198.19.0.${toString melinoe.nodeId}";
+      prefixLength = 24;
+    }];
+  };
 
   systemd.oomd.enable = false;
 

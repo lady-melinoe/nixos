@@ -4,18 +4,6 @@ let
   nodeID = config.melinoe.nodeId;
 in
 {
-  networking.useDHCP = false;
-
-  networking.interfaces.ens18.useDHCP = true;
-
-  networking.interfaces.ens19 = {
-    useDHCP = false;
-    ipv4.addresses = [{
-      address = "198.19.0.${toString nodeID}";
-      prefixLength = 24;
-    }];
-  };
-
   services.frr = {
     bgpd.enable = true;
     config = ''

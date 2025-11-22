@@ -15,6 +15,24 @@
 
   networking.hostName = "ceridwen";
   networking.domain = "";
+  networking.useDHCP = false;
+  networking.interfaces.eno1.useDHCP = true;
+  networking.interfaces.eno3.useDHCP = false;
+  networking.interfaces.eno4.useDHCP = false;
+  networking.bonds.bond0 = {
+    interfaces = [ "eno3" "eno4" ];
+    driverOptions = {
+      mode = "802.3ad";
+      lacp_rate = "fast";
+    };
+  };
+  networking.interfaces.bond0 = {
+    useDHCP = false;
+    ipv4.addresses = [{
+      address = "198.19.0.${toString melinoe.nodeId}";
+      prefixLength = 24;
+    }];
+  };
 
   boot.loader.grub = {
     efiSupport = true;
