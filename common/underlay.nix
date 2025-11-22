@@ -74,9 +74,9 @@ let
 
     # Ensure tunnels and policy routing exist, then sync prefixes per peer
     for RID in $REMOTE_NODE_IDS; do
-      case "$RID" in
-        ''|*[!0-9]*) continue ;;
-      esac
+      if ! [[ "$RID" =~ ^[0-9]+$ ]]; then
+        continue
+      fi
       R_VIP="${BASE_PREFIX}${RID}"
       R_INNER="${INNER_PREFIX}${RID}"
       TUN="${TUN_PREFIX}${RID}"
