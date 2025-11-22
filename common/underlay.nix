@@ -23,9 +23,10 @@ let
 
     LOCAL_NODE_ID=${toString nodeID}
 
-    case "$LOCAL_NODE_ID" in
-      ''|*[!0-9]*) echo "invalid local node id: $LOCAL_NODE_ID" >&2; exit 1 ;;
-    esac
+    if ! [[ "$LOCAL_NODE_ID" =~ ^[0-9]+$ ]]; then
+      echo "invalid local node id: $LOCAL_NODE_ID" >&2
+      exit 1
+    fi
 
     BGP_JSON=$(vtysh -c 'show bgp ipv4 json')
 
