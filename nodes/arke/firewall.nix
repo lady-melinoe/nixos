@@ -31,6 +31,9 @@
       chain FORWARD {
         type filter hook forward priority filter; policy accept;
         ct state invalid drop
+        iifname $vm_ifs ip saddr 198.18.0.0/24 drop
+        iifname $vm_ifs ip saddr 198.51.100.0/24 drop
+        iifname $vm_ifs ip saddr != 198.18.0.0/16 drop 
         ct state { established, related } accept
         icmp type { echo-request, echo-reply } accept
         icmpv6 type { echo-request, nd-neighbor-solicit } accept
@@ -52,7 +55,7 @@
 
       chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
-        oifname $inet_ifs ip saddr $private_vlan masquerade
+        oifname $inet_ifs masquerade
       }
     }
 

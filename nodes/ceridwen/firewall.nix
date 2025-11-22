@@ -24,13 +24,16 @@
         iifname $p2p_ifs ip protocol gre accept
         iifname $p2p_ifs tcp dport 179 accept
         iifname $node_ifs tcp dport 60198 accept
-	ip saddr 198.18.1.5 tcp dport 61208 accept
+        ip saddr 198.18.1.5 tcp dport 61208 accept
         tcp dport 8008 accept
       }
 
       chain FORWARD {
         type filter hook forward priority filter; policy accept;
         ct state invalid drop
+        iifname $vm_ifs ip saddr 198.18.0.0/24 drop
+        iifname $vm_ifs ip saddr 198.51.100.0/24 drop
+        iifname $vm_ifs ip saddr != 198.18.0.0/16 drop 
         ct state { established, related } accept
         icmp type { echo-request, echo-reply } accept
         icmpv6 type { echo-request, nd-neighbor-solicit } accept
