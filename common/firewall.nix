@@ -76,7 +76,7 @@
 
       chain output {
         type route hook output priority mangle;
-        iifname != $node_gre_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
+        ct direction reply ct mark 1000-1254 meta mark set ct mark
       }
     }
   '';
