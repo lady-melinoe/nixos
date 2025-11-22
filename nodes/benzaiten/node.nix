@@ -10,7 +10,7 @@
     ../../common/settings.nix
     ../../common/users.nix
     ./disk-config.nix
-    ./underlay.nix
+    ./firewall.nix
   ];
 
   networking.hostName = "benzaiten";
