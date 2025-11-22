@@ -45,8 +45,9 @@
       chain prerouting {
         type filter hook prerouting priority raw; policy accept;
         iifname $inet_ifs ip saddr { 198.18.0.0/15, 198.51.100.0/24 } drop
-
+        iifname $inet_ifs ip daddr { 198.18.0.0/15, 198.51.100.0/24 } drop
         iifname $p2p_ifs ip saddr != { 198.19.0.0/24, 198.51.100.0/24 } drop
+        iifname $p2p_ifs ip daddr != { 198.19.0.0/24, 198.51.100.0/24 } drop
 
         iifname $vm_ifs ip saddr 198.18.0.0/24 drop
         iifname $vm_ifs ip saddr != 198.18.0.0/15 drop 
@@ -63,7 +64,7 @@
 
       chain postrouting {
         type nat hook postrouting priority srcnat;
-        oifname $inet_ifs masquerade
+        ip saddr != 198.18.0.0/24 ip saddr 198.18.0.0/16 oifname $inet_ifs masquerade
       }
     }
 
