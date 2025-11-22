@@ -45,4 +45,9 @@
   boot.initrd.kernelModules = [ "nvme" ];
 
   melinoe.nodeId = 3;
+  melinoe.bgpPeers = [
+    { id = 2; addr = "198.19.0.2"; }
+    { id = 6; addr = "198.19.0.6"; }
+    { id = 7; addr = "198.19.0.7"; }
+  ];
 }

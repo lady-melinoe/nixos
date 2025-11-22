@@ -39,4 +39,9 @@
   services.qemuGuest.enable = true;
 
   melinoe.nodeId = 2;
+  melinoe.bgpPeers = [
+    { id = 3; addr = "198.19.0.3"; }
+    { id = 6; addr = "198.19.0.6"; }
+    { id = 7; addr = "198.19.0.7"; }
+  ];
 }

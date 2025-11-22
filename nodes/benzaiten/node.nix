@@ -47,4 +47,9 @@
 
   melinoe.nodeId = 7;
   melinoe.incusDefaultStorageSource = "/array/incus/";
+  melinoe.bgpPeers = [
+    { id = 2; addr = "198.19.0.2"; }
+    { id = 3; addr = "198.19.0.3"; }
+    { id = 6; addr = "198.19.0.6"; }
+  ];
 }
