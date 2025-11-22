@@ -7,9 +7,9 @@
     ../../common/overlay.nix
     ../../common/underlay.nix
     ../../common/settings.nix
+    ../../common/firewall.nix
     ../../common/users.nix
     ./disk-config.nix
-    ./firewall.nix
   ];
 
   networking.hostName = "hecate";
@@ -44,6 +44,8 @@
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
   boot.initrd.kernelModules = [ "nvme" ];
 
+  melinoe.inetIfs = "enp4s0";
+  melinoe.p2pIfs = "bond0";
   melinoe.nodeId = 3;
   melinoe.bgpPeers = [
     { id = 2; addr = "198.19.0.2"; }

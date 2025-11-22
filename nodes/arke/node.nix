@@ -7,9 +7,9 @@
     ../../common/overlay.nix
     ../../common/underlay.nix
     ../../common/settings.nix
+    ../../common/firewall.nix
     ../../common/users.nix
     ./disk-config.nix
-    ./firewall.nix
   ];
 
   boot.loader.grub = {
@@ -38,6 +38,8 @@
 
   services.qemuGuest.enable = true;
 
+  melinoe.inetIfs = "ens18";
+  melinoe.p2pIfs = "ens19";
   melinoe.nodeId = 2;
   melinoe.bgpPeers = [
     { id = 3; addr = "198.19.0.3"; }

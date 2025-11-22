@@ -31,10 +31,32 @@ in {
       default = [ ];
       description = "List of BGP peers with node ID and underlay IPv4 address.";
     };
+
+    inetIfs = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "Internet-facing interface name (or pattern) used by nftables (e.g., eno1).";
+    };
+
+    p2pIfs = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "Point-to-point/underlay interface used for GRE/BGP sessions (e.g., bond0).";
+    };
   };
 
-  config.assertions = [{
-    assertion = config.melinoe.nodeId != null;
-    message = "melinoe.nodeId must be set for this host.";
-  }];
+  config.assertions = [
+    {
+      assertion = config.melinoe.nodeId != null;
+      message = "melinoe.nodeId must be set for this host.";
+    }
+    {
+      assertion = config.melinoe.inetIfs != null;
+      message = "melinoe.inetIfs must be set for this host.";
+    }
+    {
+      assertion = config.melinoe.p2pIfs != null;
+      message = "melinoe.p2pIfs must be set for this host.";
+    }
+  ];
 }

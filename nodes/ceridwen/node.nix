@@ -8,9 +8,9 @@
     ../../common/overlay.nix
     ../../common/underlay.nix
     ../../common/settings.nix
+    ../../common/firewall.nix
     ../../common/users.nix
     ./disk-config.nix
-    ./firewall.nix
   ];
 
   networking.hostName = "ceridwen";
@@ -45,6 +45,8 @@
   boot.initrd.availableKernelModules = [ "sd_mod" "usbhid" "usb_storage" "mpt3sas" "ehci_pci" ];
   boot.initrd.kernelModules = [ "kvm-intel" ];
 
+  melinoe.inetIfs = "eno1";
+  melinoe.p2pIfs = "bond0";
   melinoe.nodeId = 6;
   melinoe.incusDefaultStorageSource = "/array/incus";
   melinoe.incusRootSize = "40GiB";
