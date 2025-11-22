@@ -24,7 +24,7 @@ in
         neighbor 198.19.0.6 remote-as ${toString (64512 + 6)}
         neighbor 198.19.0.6 update-source 198.19.0.${toString nodeID}
 
-        neighbor 198.19.0.7 remote-as ${toString (64512 + 6)}
+        neighbor 198.19.0.7 remote-as ${toString (64512 + 7)}
         neighbor 198.19.0.7 update-source 198.19.0.${toString nodeID}
 
         address-family ipv4 unicast
