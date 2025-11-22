@@ -32,9 +32,9 @@ let
 
     [ -n "$BGP_JSON" ] || { echo "failed to fetch BGP JSON" >&2; exit 1; }
 
-    LOCAL_VIP="${BASE_PREFIX}${LOCAL_NODE_ID}"
-    LOCAL_INNER="${INNER_PREFIX}${LOCAL_NODE_ID}"
-    LOCAL_INNER_ROUTE="${LOCAL_INNER}/32"
+    LOCAL_VIP="$BASE_PREFIX$LOCAL_NODE_ID"
+    LOCAL_INNER="$INNER_PREFIX$LOCAL_NODE_ID"
+    LOCAL_INNER_ROUTE="$LOCAL_INNER/32"
 
     REMOTE_NODE_IDS=$(
       jq -r '
@@ -45,7 +45,7 @@ let
         | select($p.path != "")
         | .key
       ' <<<"$BGP_JSON" |
-      awk -F"[./]" "{print \$4}" |
+      awk -F"[./]" '{print $4}' |
       sort -n | uniq
     )
 
@@ -54,12 +54,12 @@ let
       awk -F': ' '{print $2}' |
       cut -d@ -f1 |
       sed 's/:$//' |
-      grep "^${TUN_PREFIX}" || true
+      grep "^''${TUN_PREFIX}" || true
     )
 
     # Tear down GRE state for peers that disappeared from BGP
     for TUN in $EXISTING_TUNNELS; do
-      RID="${TUN#${TUN_PREFIX}}"
+      RID="${TUN#''${TUN_PREFIX}}"
       if ! echo "$RID" | grep -Eq '^[0-9]+$'; then
         continue
       fi
@@ -77,9 +77,9 @@ let
       if ! echo "$RID" | grep -Eq '^[0-9]+$'; then
         continue
       fi
-      R_VIP="${BASE_PREFIX}${RID}"
-      R_INNER="${INNER_PREFIX}${RID}"
-      TUN="${TUN_PREFIX}${RID}"
+      R_VIP="$BASE_PREFIX$RID"
+      R_INNER="$INNER_PREFIX$RID"
+      TUN="''${TUN_PREFIX}${RID}"
       TABLE=$((1000 + RID))
 
       if ! ip link show "$TUN" >/dev/null 2>&1; then
@@ -87,7 +87,7 @@ let
             local "$LOCAL_VIP" \
             remote "$R_VIP" \
             ttl 64 || continue
-        ip addr replace "${LOCAL_INNER}/32" peer "${R_INNER}/32" dev "$TUN"
+        ip addr replace "$LOCAL_INNER/32" peer "$R_INNER/32" dev "$TUN"
       fi
 
       ip link set "$TUN" up || true
@@ -95,7 +95,7 @@ let
       ip rule add fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
       ip route replace default dev "$TUN" table "$TABLE"
 
-      ROUTE_LIST=$(curl -m 5 -sf "http://${R_INNER}:60198/list" || echo "")
+      ROUTE_LIST=$(curl -m 5 -sf "http://''${R_INNER}:60198/list" || echo "")
 
       NEW_ROUTES=$(
         echo "$ROUTE_LIST" |
@@ -112,7 +112,7 @@ let
         sort -u
       )
 
-      GRE_PEER_ROUTE="${R_INNER}/32"
+      GRE_PEER_ROUTE="''${R_INNER}/32"
 
       for PREFIX in $NEW_ROUTES; do
         case "$PREFIX" in
