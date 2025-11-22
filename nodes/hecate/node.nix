@@ -28,7 +28,7 @@
   networking.interfaces.bond0 = {
     useDHCP = false;
     ipv4.addresses = [{
-      address = "198.19.0.${toString melinoe.nodeId}";
+      address = "198.19.0.${toString config.melinoe.nodeId}";
       prefixLength = 24;
     }];
   };
