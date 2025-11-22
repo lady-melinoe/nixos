@@ -1,42 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  nodeID = 7;
-  configureIface = pkgs.writeShellScriptBin "configure-iface" ''
-    #!/usr/bin/env bash
-    IFACE="$1"
-    ACTION="$2"
-    IP="$3"
-    RES_FILE="/etc/melinoe/residents/list"
-
-    if [ -z "$IFACE" ] || [ -z "$ACTION" ] || [ -z "$IP" ]; then
-      echo "Usage: $0 <iface> <up|down> <ip>"
-      exit 1
-    fi
-
-    mkdir -p "$(dirname "$RES_FILE")"
-    touch "$RES_FILE"
-
-    case "$ACTION" in
-      up)
-        echo 1 > /proc/sys/net/ipv4/conf/$IFACE/forwarding
-        echo 1 > /proc/sys/net/ipv4/conf/$IFACE/proxy_arp
-        ip addr replace 198.18.0.${toString nodeID}/32 dev "$IFACE"
-
-        if ! grep -Fxq "$IP" "$RES_FILE"; then
-          echo "$IP" >> "$RES_FILE"
-        fi
-        ;;
-      down)
-        sed -i "\|^$IP\$|d" "$RES_FILE"
-        ;;
-      *)
-        echo "Invalid action: $ACTION"
-        echo "Use: up or down"
-        exit 1
-        ;;
-    esac
-  '';
+  nodeID = config.melinoe.nodeId;
 in
 {
   networking.useDHCP = false;
@@ -61,14 +26,6 @@ in
       prefixLength = 24;
     }];
   };
-
-  networking.interfaces.lo.ipv4.addresses = [{
-    address = "198.51.100.${toString nodeID}";
-    prefixLength = 32;
-  } {
-    address = "198.18.0.${toString nodeID}";
-    prefixLength = 32;
-  }];
 
   services.frr = {
     bgpd.enable = true;
@@ -175,77 +132,4 @@ in
       }
     }
   '';
-  virtualisation.incus.enable = true;
-  users.users.melinoe.extraGroups = [ "incus-admin" ];
-  virtualisation.incus.preseed = {
-    networks = [];
-    profiles = [
-      {
-        devices = {
-          root = {
-            path = "/";
-            pool = "default";
-            size = "35GiB";
-            type = "disk";
-          };
-        };
-        name = "default";
-      }
-    ];
-    storage_pools = [
-      {
-        config = {
-          source = "/array/incus/";         };
-        driver = "btrfs";
-        name = "default";
-      }
-    ];
-  };
-  system.activationScripts.incusConfigureIface = {
-    text = ''
-      mkdir -p /etc/incus/hooks
-      ln -sf ${configureIface}/bin/configure-iface /etc/incus/hooks/configure-iface
-    '';
-  };
-
-  services.glances.enable = true;
-  services.glances.port = 61208;
-  services.glances.extraArgs = [ "--webserver" "-B" "198.18.0.${toString nodeID}" ];
-  services.static-web-server = {
-    enable = true;
-    listen = "198.18.0.${toString nodeID}:60198";
-    root = "/etc/melinoe/residents/";
-  };
-
-  systemd.services.melinoe-route-deploy = {
-    description = "Run melinoe route deployment";
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
-    path = [
-      pkgs.coreutils
-      pkgs.bash
-      pkgs.iproute2
-      pkgs.frr
-      pkgs.jq
-      pkgs.curl
-      pkgs.gnugrep
-      pkgs.gawk
-      pkgs.gnused
-      pkgs.util-linux
-    ];
-    serviceConfig = {
-      Type = "oneshot";
-      ConditionPathIsExecutable = "/etc/nixos/route-deploy.sh";
-      ExecStart = "${pkgs.coreutils}/bin/timeout 30 /etc/nixos/route-deploy.sh";
-    };
-  };
-
-  systemd.timers.melinoe-route-deploy = {
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnBootSec = "3s";
-      OnUnitInactiveSec = "3s";
-      AccuracySec = "1s";
-    };
-  };
 }

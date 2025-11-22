@@ -4,6 +4,9 @@
 
   imports = [
     inputs.disko.nixosModules.disko
+    ../../common/node-opts.nix
+    ../../common/overlay.nix
+    ../../common/underlay.nix
     ../../common/settings.nix
     ../../common/users.nix
     ./disk-config.nix
@@ -24,5 +27,6 @@
   boot.initrd.availableKernelModules = [ "sd_mod" "usbhid" "usb_storage" "mpt3sas" "ehci_pci" ];
   boot.initrd.kernelModules = [ "kvm-intel" ];
 
+  melinoe.nodeId = 7;
+  melinoe.incusDefaultStorageSource = "/array/incus/";
 }
-

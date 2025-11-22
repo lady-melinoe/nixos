@@ -3,6 +3,9 @@
   imports = [
     (modulesPath + "/profiles/qemu-guest.nix")
     inputs.disko.nixosModules.disko
+    ../../common/node-opts.nix
+    ../../common/overlay.nix
+    ../../common/underlay.nix
     ../../common/settings.nix
     ../../common/users.nix
     ./disk-config.nix
@@ -26,5 +29,5 @@
 
   services.qemuGuest.enable = true;
 
+  melinoe.nodeId = 2;
 }
-

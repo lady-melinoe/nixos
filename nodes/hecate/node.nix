@@ -3,6 +3,9 @@
 {
   imports = [
     inputs.disko.nixosModules.disko
+    ../../common/node-opts.nix
+    ../../common/overlay.nix
+    ../../common/underlay.nix
     ../../common/settings.nix
     ../../common/users.nix
     ./disk-config.nix
@@ -23,5 +26,5 @@
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
   boot.initrd.kernelModules = [ "nvme" ];
 
+  melinoe.nodeId = 3;
 }
-
