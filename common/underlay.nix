@@ -54,12 +54,12 @@ let
       awk -F': ' '{print $2}' |
       cut -d@ -f1 |
       sed 's/:$//' |
-      grep "^''${TUN_PREFIX}" || true
+      grep "^$TUN_PREFIX" || true
     )
 
     # Tear down GRE state for peers that disappeared from BGP
     for TUN in $EXISTING_TUNNELS; do
-      RID="${TUN#''${TUN_PREFIX}}"
+      RID=$(printf '%s\n' "$TUN" | sed "s/^$TUN_PREFIX//")
       if ! echo "$RID" | grep -Eq '^[0-9]+$'; then
         continue
       fi
@@ -79,7 +79,7 @@ let
       fi
       R_VIP="$BASE_PREFIX$RID"
       R_INNER="$INNER_PREFIX$RID"
-      TUN="''${TUN_PREFIX}${RID}"
+      TUN="$TUN_PREFIX$RID"
       TABLE=$((1000 + RID))
 
       if ! ip link show "$TUN" >/dev/null 2>&1; then
@@ -95,7 +95,7 @@ let
       ip rule add fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
       ip route replace default dev "$TUN" table "$TABLE"
 
-      ROUTE_LIST=$(curl -m 5 -sf "http://''${R_INNER}:60198/list" || echo "")
+      ROUTE_LIST=$(curl -m 5 -sf "http://$R_INNER:60198/list" || echo "")
 
       NEW_ROUTES=$(
         echo "$ROUTE_LIST" |
@@ -112,7 +112,7 @@ let
         sort -u
       )
 
-      GRE_PEER_ROUTE="''${R_INNER}/32"
+      GRE_PEER_ROUTE="$R_INNER/32"
 
       for PREFIX in $NEW_ROUTES; do
         case "$PREFIX" in
