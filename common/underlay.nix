@@ -58,7 +58,7 @@ in {
 
   services.frr = {
     bgpd.enable = true;
-    bgpd.config =
+    config =
       let
         neighborLines = lib.concatMapStrings mkNeighborStanza peers;
         neighborAfiLines = lib.concatMapStrings mkNeighborAfi peers;
