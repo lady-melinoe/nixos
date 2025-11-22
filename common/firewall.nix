@@ -19,9 +19,9 @@
         icmp type { echo-request, echo-reply } accept
         icmpv6 type { echo-request, nd-neighbor-solicit } accept
         iif "lo" accept
-        iifname $p2p_ifs tcp dport 179 accept
         tcp dport 22 accept
         tcp dport 8008 accept
+        ip saddr 198.19.0.0/24 tcp dport 179 accept
         ip saddr 198.51.100.0/24 ip protocol gre accept
         ip saddr 198.18.0.0/24 tcp dport 60198 accept
         ip saddr 198.18.1.5 tcp dport 61208 accept
