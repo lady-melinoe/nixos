@@ -52,4 +52,5 @@
     { id = 6; addr = "198.19.0.6"; }
     { id = 7; addr = "198.19.0.7"; }
   ];
+  melinoe.incusDefaultStorageSource = "/array/incus";
 }
