@@ -1,33 +1,6 @@
 { config, pkgs, lib, inputs, modulesPath, ... }:
 
-let
-  incusSnapshotScript = pkgs.writeShellScript "incus-container-snapshot" ''
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    SRC="/array/incus/containers"
-    DEST_BASE="/array/container-snapshots"
-    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-
-    for sv in "$SRC"/*; do
-        [ -d "$sv" ] || continue
-        CONTAINER_NAME=$(basename "$sv")
-        if [[ "$CONTAINER_NAME" == migration.* ]]; then
-            echo "Skipping $CONTAINER_NAME"
-            continue
-        fi
-        if ! sudo btrfs subvolume show "$sv" &>/dev/null; then
-            echo "Skipping $CONTAINER_NAME (not a Btrfs subvolume)"
-            continue
-        fi
-        DEST="$DEST_BASE/$CONTAINER_NAME/$TIMESTAMP"
-        mkdir -p "$DEST"
-        sudo btrfs subvolume snapshot -r "$sv" "$DEST"
-    done
-
-    echo "Snapshots completed."
-  '';
-in {
+{
 
   imports = [
     inputs.disko.nixosModules.disko
@@ -37,6 +10,7 @@ in {
     ../../common/settings.nix
     ../../common/firewall.nix
     ../../common/users.nix
+    ../../common/container-backup.nix
     ./disk-config.nix
   ];
 
@@ -75,33 +49,11 @@ in {
   melinoe.inetIfs = "eno1";
   melinoe.p2pIfs = "bond0";
   melinoe.nodeId = 6;
-  melinoe.incusDefaultStorageSource = "/array/incus";
+  melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.incusRootSize = "40GiB";
   melinoe.bgpPeers = [
     { id = 2; addr = "198.19.0.2"; }
     { id = 3; addr = "198.19.0.3"; }
     { id = 7; addr = "198.19.0.7"; }
   ];
-
-  systemd.services.melinoe-incus-snapshot = {
-    description = "Create hourly Btrfs snapshots of Incus containers";
-    serviceConfig = {
-      Type = "oneshot";
-      ExecStart = incusSnapshotScript;
-    };
-    path = [
-      pkgs.coreutils
-      pkgs.bash
-      pkgs.btrfs-progs
-      pkgs.sudo
-    ];
-  };
-
-  systemd.timers.melinoe-incus-snapshot = {
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnCalendar = "hourly";
-      Persistent = true;
-    };
-  };
 }
