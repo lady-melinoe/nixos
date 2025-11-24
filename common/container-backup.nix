@@ -202,7 +202,7 @@ in {
   systemd.timers.melinoe-incus-snapshot = {
     wantedBy = [ "timers.target" ];
     timerConfig = {
-      OnCalendar = "hourly";
+      OnCalendar = "*:0/10";
       Persistent = true;
     };
   };
