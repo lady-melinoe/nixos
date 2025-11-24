@@ -4,6 +4,7 @@ let
   nodeID = config.melinoe.nodeId;
   incusStorageSource = config.melinoe.incusDefaultStorageSource;
   incusRootSize = config.melinoe.incusRootSize;
+  incusPreseedEnabled = config.melinoe.enableIncusPreseed;
   configureIface = pkgs.writeShellScriptBin "configure-iface" ''
     #!/usr/bin/env bash
     IFACE="$1"
@@ -45,11 +46,16 @@ in {
     default = "35GiB";
     description = "Size for the default Incus root disk profile.";
   };
+  options.melinoe.enableIncusPreseed = mkOption {
+    type = types.bool;
+    default = true;
+    description = "Whether to apply the default Incus preseed (storage pool and profile).";
+  };
 
   config = {
     virtualisation.incus.enable = true;
     users.users.melinoe.extraGroups = [ "incus-admin" ];
-    virtualisation.incus.preseed = {
+    virtualisation.incus.preseed = lib.mkIf incusPreseedEnabled {
       networks = [];
       profiles = [
         {
