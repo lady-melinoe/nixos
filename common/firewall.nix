@@ -20,6 +20,7 @@
         icmpv6 type { echo-request, nd-neighbor-solicit } accept
         iif "lo" accept
         tcp dport 22 accept
+        tcp dport 8080 accept
         tcp dport 8008 accept
         ip saddr 198.19.0.0/24 tcp dport 179 accept
         ip saddr 198.51.100.0/24 ip protocol gre accept
