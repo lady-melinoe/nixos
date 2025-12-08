@@ -4,7 +4,7 @@
   boot.tmp.cleanOnBoot = true;
   zramSwap.enable = true;
   services.openssh.enable = true;
-  services.openssh.ports = [ 22 8080 ];
+  services.openssh.ports = [ 22 ];
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
   nix.settings.require-sigs = false;
   system.stateVersion = "25.05";
