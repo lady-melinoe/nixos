@@ -19,6 +19,11 @@
   networking.interfaces.enp4s0.useDHCP = true;
   networking.interfaces.enp5s0f0.useDHCP = false;
   networking.interfaces.enp5s0f1.useDHCP = false;
+
+  environment.systemPackages = with pkgs; [
+    python3
+    vorbis-tools
+  ];
   networking.bonds.bond0 = {
     interfaces = [ "enp5s0f0" "enp5s0f1" ];
     driverOptions = {
