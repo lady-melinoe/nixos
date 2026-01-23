@@ -61,6 +61,8 @@
         iifname $inet_ifs tcp dport { 80, 443 } dnat to 198.18.1.1
         iifname $inet_ifs tcp dport { 993, 25, 465 } dnat to 198.18.1.6
         iifname $inet_ifs tcp dport { 25565 } dnat to 198.18.1.8
+        iifname $inet_ifs tcp dport { 57843 } dnat to 198.18.1.11
+        iifname $inet_ifs udp dport { 57843 } dnat to 198.18.1.11
       }
 
       chain postrouting {
