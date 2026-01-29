@@ -49,6 +49,38 @@ in {
       default = null;
       description = "Point-to-point/underlay interface used for GRE/BGP sessions (e.g., bond0).";
     };
+
+    wgPorts = mkOption {
+      type = types.listOf types.int;
+      default = [ ];
+      description = "UDP ports to allow for WireGuard (derived automatically when using the wireguard module).";
+    };
+
+    wgPeers = mkOption {
+      type = types.listOf (types.submodule {
+        options = {
+          id = mkOption {
+            type = types.int;
+            description = "Peer node ID (matches wg-keys mapping).";
+          };
+          endpoint = mkOption {
+            type = types.str;
+            description = "Endpoint for this peer (host:port or ip:port). Port is still derived from peer ID unless overridden.";
+          };
+          allowedIPs = mkOption {
+            type = types.listOf types.str;
+            description = "Allowed IPs to route via this peer.";
+          };
+          persistentKeepalive = mkOption {
+            type = types.int;
+            default = 25;
+            description = "Persistent keepalive in seconds.";
+          };
+        };
+      });
+      default = [ ];
+      description = "WireGuard peers; used to render interfaces and auto-extend BGP peers.";
+    };
   };
 
   config.assertions = [

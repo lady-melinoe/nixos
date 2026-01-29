@@ -11,6 +11,7 @@
     ../../common/firewall.nix
     ../../common/users.nix
     ../../common/container-backup.nix
+    ../../common/wireguard.nix
     ./disk-config.nix
   ];
 
@@ -37,8 +38,14 @@
   melinoe.p2pIfs = "ens3";
   melinoe.underlayPrefix = "198.19.1";
   melinoe.nodeId = 5;
-  melinoe.bgpPeers = [
-    { id = 4; addr = "198.19.1.4"; }
-  ];
+  melinoe.bgpPeers = [ ];
   melinoe.incusDefaultStorageSource = "/array/incus/";
+
+  melinoe.wgPeers = [
+    {
+      id = 4;
+      endpoint = "hypnos.infra.melinoe.xyz:${toString (64512 + 4)}";
+      allowedIPs = [ "198.19.1.0/24" "198.51.100.0/24" ];
+    }
+  ];
 }
