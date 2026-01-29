@@ -26,7 +26,9 @@ in {
 	tcp dport 25 accept
         tcp dport 8080 accept
         tcp dport 8008 accept
-        udp dport 64512-64767 accept
+${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
+        udp dport { ${builtins.concatStringsSep ", " (map toString config.melinoe.wgPorts)} } accept
+''}
         ip saddr 198.19.0.0/16 tcp dport 179 accept
         ip saddr 198.51.100.0/24 ip protocol gre accept
         ip saddr 198.18.0.0/24 tcp dport 60198 accept
