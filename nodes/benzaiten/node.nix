@@ -61,7 +61,7 @@
     {
       id = 5;
       endpoint = "thanatos.infra.melinoe.xyz";
-      allowedIPs = [ "198.19.1.0/24" "198.51.100.0/24" ];
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
   ];
 }
