@@ -13,7 +13,7 @@ let
   in {
     publicKey = keys."${toString pid}";
     allowedIPs = allowed;
-    endpoint = peer.endpoint;
+    endpoint = "${peer.endpoint}:${toString (basePort + cfg.nodeId)}";
     persistentKeepalive = peer.persistentKeepalive;
   };
   extraBgpPeers = map (p: { id = p.id; addr = "${wgPrefix}.${toString p.id}"; }) cfg.wgPeers;

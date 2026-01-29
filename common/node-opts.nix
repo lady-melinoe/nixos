@@ -65,7 +65,7 @@ in {
           };
           endpoint = mkOption {
             type = types.str;
-            description = "Endpoint for this peer (host:port or ip:port). Port is still derived from peer ID unless overridden.";
+            description = "Endpoint hostname/IP for this peer; port is derived automatically.";
           };
           allowedIPs = mkOption {
             type = types.listOf types.str;
