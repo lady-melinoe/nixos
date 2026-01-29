@@ -26,7 +26,6 @@ in {
 	tcp dport 25 accept
         tcp dport 8080 accept
         tcp dport 8008 accept
-        udp dport 8080 accept
 ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
         udp dport { ${builtins.concatStringsSep ", " (map toString config.melinoe.wgPorts)} } accept
 ''}
