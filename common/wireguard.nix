@@ -23,7 +23,7 @@ let
     value = {
       ips = [ "${localWgAddr}/32" ];
       listenPort = basePort + peer.id;
-      privateKeyFile = "/etc/melinoe/wg-${config.networking.hostName}.key";
+      privateKeyFile = "/etc/melinoe/wg.privatekey";
       peers = [ (peerToCfg peer) ];
     };
   };
