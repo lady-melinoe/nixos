@@ -39,5 +39,7 @@ in {
 
     # Auto-add BGP peers on the WG subnet.
     melinoe.bgpPeers = lib.mkAfter extraBgpPeers;
+
+    # Ensure the local WG source address exists (once, on loopback).
   };
 }
