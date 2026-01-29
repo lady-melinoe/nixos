@@ -19,6 +19,7 @@ let
     endpoint = peer.endpoint;
     persistentKeepalive = peer.persistentKeepalive;
   };
+  extraBgpPeers = map (p: { id = p.id; addr = "${wgPrefix}.${toString p.id}"; }) cfg.wgPeers;
 in {
   config = lib.mkIf (cfg.wgPeers != [ ]) {
     networking.wireguard.interfaces."wg-mesh" = {
@@ -32,6 +33,6 @@ in {
     melinoe.wgPorts = [ localListenPort ];
 
     # Auto-add BGP peers on the WG subnet.
-    melinoe.bgpPeers = cfg.bgpPeers ++ (map (p: { id = p.id; addr = "198.19.3.${toString p.id}"; }) cfg.wgPeers);
+    melinoe.bgpPeers = lib.mkAfter extraBgpPeers;
   };
 }
