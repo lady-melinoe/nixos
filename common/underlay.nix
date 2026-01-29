@@ -85,10 +85,10 @@ let
       TABLE=$((1000 + RID))
 
       if ! ip link show "$TUN" >/dev/null 2>&1; then
-        ip tunnel add "$TUN" mode gre \
-            local "$LOCAL_VIP" \
-            remote "$R_VIP" \
-            ttl 64 || continue
+      ip tunnel add "$TUN" mode gre \
+          local "$LOCAL_VIP" \
+          remote "$R_VIP" \
+          ttl 64 || continue
         ip addr replace "$LOCAL_INNER/32" peer "$R_INNER/32" dev "$TUN"
       fi
 

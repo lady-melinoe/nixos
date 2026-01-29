@@ -27,21 +27,14 @@
   networking.hostName = "hypnos";
   networking.domain = "";
   networking.useDHCP = false;
-  networking.interfaces.ens18.useDHCP = true;
-  networking.interfaces.ens19 = {
-    useDHCP = false;
-    ipv4.addresses = [{
-      address = "${config.melinoe.underlayPrefix}.${toString config.melinoe.nodeId}";
-      prefixLength = 24;
-    }];
-  };
+  networking.interfaces.ens3.useDHCP = true;
 
   systemd.oomd.enable = false;
 
   services.qemuGuest.enable = true;
 
-  melinoe.inetIfs = "ens18";
-  melinoe.p2pIfs = "ens19";
+  melinoe.inetIfs = "ens3";
+  melinoe.p2pIfs = "ens3";
   melinoe.underlayPrefix = "198.19.1";
   melinoe.nodeId = 4;
   melinoe.bgpPeers = [
