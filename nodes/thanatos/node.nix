@@ -44,8 +44,8 @@
   melinoe.wgPeers = [
     {
       id = 4;
-      endpoint = "hypnos.infra.melinoe.xyz:${toString (64512 + 4)}";
-      allowedIPs = [ "198.19.1.0/24" "198.51.100.0/24" ];
+      endpoint = "198.19.3.4:${toString (64512 + 4)}";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
   ];
 }

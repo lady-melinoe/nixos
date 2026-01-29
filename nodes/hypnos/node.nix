@@ -44,8 +44,8 @@
   melinoe.wgPeers = [
     {
       id = 5;
-      endpoint = "thanatos.infra.melinoe.xyz:${toString (64512 + 5)}";
-      allowedIPs = [ "198.19.1.0/24" "198.51.100.0/24" ];
+      endpoint = "198.19.1.5:${toString (64512 + 5)}";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
   ];
 }
