@@ -1,5 +1,8 @@
-{ config, ... }:
-{
+{ config, lib, ... }:
+
+let
+  p2pSameAsInet = config.melinoe.inetIfs == config.melinoe.p2pIfs;
+in {
 
   networking.firewall.enable = false;
   networking.nftables.enable = true;
@@ -48,8 +51,10 @@
         type filter hook prerouting priority raw; policy accept;
         iifname $inet_ifs ip saddr { 198.18.0.0/15, 198.51.100.0/24 } drop
         iifname $inet_ifs ip daddr { 198.18.0.0/15, 198.51.100.0/24 } drop
+${lib.optionalString (!p2pSameAsInet) ''
         iifname $p2p_ifs ip saddr != { 198.19.0.0/16, 198.51.100.0/24 } drop
         iifname $p2p_ifs ip daddr != { 198.19.0.0/16, 198.51.100.0/24 } drop
+''}
 
         iifname $vm_ifs ip saddr 198.18.0.0/24 drop
         iifname $vm_ifs ip saddr != 198.18.0.0/15 drop 
