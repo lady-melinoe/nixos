@@ -23,7 +23,7 @@
 	tcp dport 25 accept
         tcp dport 8080 accept
         tcp dport 8008 accept
-        ip saddr 198.19.0.0/24 tcp dport 179 accept
+        ip saddr 198.19.0.0/16 tcp dport 179 accept
         ip saddr 198.51.100.0/24 ip protocol gre accept
         ip saddr 198.18.0.0/24 tcp dport 60198 accept
         ip saddr 198.18.1.5 tcp dport 61208 accept
@@ -48,8 +48,8 @@
         type filter hook prerouting priority raw; policy accept;
         iifname $inet_ifs ip saddr { 198.18.0.0/15, 198.51.100.0/24 } drop
         iifname $inet_ifs ip daddr { 198.18.0.0/15, 198.51.100.0/24 } drop
-        iifname $p2p_ifs ip saddr != { 198.19.0.0/24, 198.51.100.0/24 } drop
-        iifname $p2p_ifs ip daddr != { 198.19.0.0/24, 198.51.100.0/24 } drop
+        iifname $p2p_ifs ip saddr != { 198.19.0.0/16, 198.51.100.0/24 } drop
+        iifname $p2p_ifs ip daddr != { 198.19.0.0/16, 198.51.100.0/24 } drop
 
         iifname $vm_ifs ip saddr 198.18.0.0/24 drop
         iifname $vm_ifs ip saddr != 198.18.0.0/15 drop 

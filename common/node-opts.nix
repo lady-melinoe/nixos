@@ -9,6 +9,12 @@ in {
       description = "Unique node ID used for addressing and routing.";
     };
 
+    underlayPrefix = mkOption {
+      type = types.str;
+      default = "198.19.0";
+      description = "Underlay /24 prefix (three octets) used for p2p addressing, e.g., 198.19.0 or 198.19.1.";
+    };
+
     incusDefaultStorageSource = mkOption {
       type = types.nullOr types.str;
       default = "/var/lib/incus/storage-pools/default";

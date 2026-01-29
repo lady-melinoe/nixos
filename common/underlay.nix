@@ -1,8 +1,10 @@
 { config, lib, pkgs, ... }:
 let
   nodeID = config.melinoe.nodeId;
+  underlayPrefix = config.melinoe.underlayPrefix;
   peers = config.melinoe.bgpPeers;
   bgpAs = 64512 + nodeID;
+  localUnderlayAddr = "${underlayPrefix}.${toString nodeID}";
   routeDeployScript = pkgs.writeShellScript "route-deploy.sh" ''
     #!/usr/bin/env bash
 
@@ -139,7 +141,7 @@ let
   '';
   mkNeighborStanza = peer: ''
     neighbor ${peer.addr} remote-as ${toString (64512 + peer.id)}
-    neighbor ${peer.addr} update-source 198.19.0.${toString nodeID}
+    neighbor ${peer.addr} update-source ${localUnderlayAddr}
   '';
   mkNeighborAfi = peer: ''
     neighbor ${peer.addr} activate
