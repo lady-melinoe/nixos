@@ -5,6 +5,50 @@ let
   incusStorageSource = config.melinoe.incusDefaultStorageSource;
   incusRootSize = config.melinoe.incusRootSize;
   incusPreseedEnabled = config.melinoe.enableIncusPreseed;
+  routeListScript = pkgs.writeTextFile {
+    name = "melinoe-route-list.py";
+    destination = "/bin/melinoe-route-list";
+    executable = true;
+    text = ''
+      #!/usr/bin/env python3
+      import subprocess
+      from http.server import BaseHTTPRequestHandler, HTTPServer
+
+      HOST = "198.18.0.${toString nodeID}"
+      PORT = 60198
+
+      class RequestHandler(BaseHTTPRequestHandler):
+          def do_GET(self):
+              if self.path != "/list":
+                  self.send_response(404)
+                  self.end_headers()
+                  self.wfile.write(b"Not Found\n")
+                  return
+              try:
+                  result = subprocess.check_output(["ip", "route"], text=True)
+                  routes = []
+                  for line in result.splitlines():
+                      if "dev vm-" not in line:
+                          continue
+                      ip = line.split()[0]
+                      if "/" not in ip:
+                          ip = f"{ip}/32"
+                      routes.append(ip)
+                  response = "\\n".join(routes) + "\\n"
+                  self.send_response(200)
+                  self.send_header("Content-Type", "text/plain")
+                  self.end_headers()
+                  self.wfile.write(response.encode())
+              except Exception as e:
+                  self.send_response(500)
+                  self.end_headers()
+                  self.wfile.write(f"Error: {e}\\n".encode())
+
+      if __name__ == "__main__":
+          server = HTTPServer((HOST, PORT), RequestHandler)
+          server.serve_forever()
+    '';
+  };
   configureIface = pkgs.writeShellScriptBin "configure-iface" ''
     #!/usr/bin/env bash
     IFACE="$1"
