@@ -28,11 +28,9 @@ let
                   result = subprocess.check_output(["/run/current-system/sw/bin/ip", "route"], text=True)
                   routes = []
                   for line in result.splitlines():
-                      if "dev vm-" not in line:
-                          continue
+                      if "dev vm-" not in line: continue
                       ip = line.split()[0]
-                      if "/" not in ip:
-                          ip = f"{ip}/32"
+                      if "/" not in ip: ip = f"{ip}/32"
                       routes.append(ip)
                   response = "\n".join(routes) + "\n"
                   self.send_response(200)
