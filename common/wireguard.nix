@@ -9,7 +9,7 @@ let
 
   peerToCfg = peer: let
     pid = peer.id;
-    allowed = lib.unique (peer.allowedIPs ++ [ "${wgPrefix}.0/24" "${wgPrefix}.${toString pid}/32" ]);
+    allowed = lib.unique (peer.allowedIPs ++ [ "${wgPrefix}.${toString pid}/32" ]);
   in {
     publicKey = keys."${toString pid}";
     allowedIPs = allowed;
@@ -21,10 +21,13 @@ let
   mkInterface = peer: {
     name = "wg-${toString peer.id}";
     value = {
-      ips = [ "${localWgAddr}/32" ];
+      ips = [ ];
       listenPort = basePort + peer.id;
       privateKeyFile = "/etc/melinoe/wg.privatekey";
       peers = [ (peerToCfg peer) ];
+      postSetup = ''
+        ip address replace ${localWgAddr}/32 peer ${wgPrefix}.${toString peer.id}/32 dev %i
+      '';
     };
   };
 
