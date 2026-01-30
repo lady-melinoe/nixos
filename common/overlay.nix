@@ -52,10 +52,9 @@ let
   configureIface = pkgs.writeShellScriptBin "configure-iface" ''
     #!/usr/bin/env bash
     IFACE="$1"
-    ACTION="$2"
 
-    if [ -z "$IFACE" ] || [ -z "$ACTION" ]; then
-      echo "Usage: $0 <iface> <up|down>"
+    if [ -z "$IFACE" ] ; then
+      echo "Usage: $0 <iface>"
       exit 1
     fi
     echo 1 > /proc/sys/net/ipv4/conf/$IFACE/forwarding
