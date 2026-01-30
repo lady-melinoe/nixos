@@ -46,7 +46,6 @@
   melinoe.nodeId = 2;
   melinoe.bgpPeers = [
     { id = 3; addr = "198.19.0.3"; }
-    { id = 6; addr = "198.19.0.6"; }
   ];
   melinoe.incusDefaultStorageSource = "/array/incus/";
 
@@ -64,6 +63,11 @@
     {
       id = 5;
       endpoint = "thanatos.infra.melinoe.xyz";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
+    }
+    {
+      id = 6;
+      endpoint = "198.19.0.6";
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
   ];

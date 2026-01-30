@@ -56,14 +56,28 @@
   melinoe.bgpPeers = [
     { id = 2; addr = "198.19.0.2"; }
     { id = 3; addr = "198.19.0.3"; }
-    { id = 7; addr = "198.19.0.7"; }
   ];
 
   melinoe.wgPeers = [
     {
+      id = 2;
+      endpoint = "198.19.0.2";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
+    }
+    {
+      id = 7;
+      endpoint = "198.19.0.7";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
+    }
+    {
+      id = 4;
+      endpoint = "hypnos.infra.melinoe.xyz";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
+    }
+    {
       id = 5;
       endpoint = "thanatos.infra.melinoe.xyz";
-      allowedIPs = [ "198.19.1.0/24" "198.51.100.0/24" ];
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
   ];
 }
