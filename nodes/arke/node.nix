@@ -44,9 +44,7 @@
   melinoe.inetIfs = "ens18";
   melinoe.p2pIfs = "ens19";
   melinoe.nodeId = 2;
-  melinoe.bgpPeers = [
-    { id = 3; addr = "198.19.0.3"; }
-  ];
+  melinoe.bgpPeers = [ ];
   melinoe.incusDefaultStorageSource = "/array/incus/";
 
   melinoe.wgPeers = [

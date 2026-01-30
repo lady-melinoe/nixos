@@ -53,10 +53,7 @@
   melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.incusRootSize = "40GiB";
   melinoe.enableIncusPreseed = false;
-  melinoe.bgpPeers = [
-    { id = 2; addr = "198.19.0.2"; }
-    { id = 3; addr = "198.19.0.3"; }
-  ];
+  melinoe.bgpPeers = [ ];
 
   melinoe.wgPeers = [
     {

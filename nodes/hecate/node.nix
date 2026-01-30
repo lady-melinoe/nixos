@@ -10,6 +10,7 @@
     ../../common/firewall.nix
     ../../common/users.nix
     ../../common/container-backup.nix
+    ../../common/wireguard.nix
     ./disk-config.nix
   ];
 
@@ -53,10 +54,14 @@
   melinoe.inetIfs = "enp4s0";
   melinoe.p2pIfs = "bond0";
   melinoe.nodeId = 3;
-  melinoe.bgpPeers = [
-    { id = 2; addr = "198.19.0.2"; }
-    { id = 6; addr = "198.19.0.6"; }
-    { id = 7; addr = "198.19.0.7"; }
-  ];
+  melinoe.bgpPeers = [ ];
   melinoe.incusDefaultStorageSource = "/array/incus/";
+
+  melinoe.wgPeers = [
+    {
+      id = 2;
+      endpoint = "198.19.0.2";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
+    }
+  ];
 }

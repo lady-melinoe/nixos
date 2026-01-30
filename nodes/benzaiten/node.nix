@@ -51,9 +51,7 @@
   melinoe.p2pIfs = "bond0";
   melinoe.nodeId = 7;
   melinoe.incusDefaultStorageSource = "/array/incus/";
-  melinoe.bgpPeers = [
-    { id = 3; addr = "198.19.0.3"; }
-  ];
+  melinoe.bgpPeers = [ ];
 
   melinoe.wgPeers = [
     {
