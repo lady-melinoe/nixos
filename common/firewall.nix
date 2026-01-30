@@ -1,17 +1,15 @@
 { config, lib, ... }:
 
-let
-  p2pSameAsInet = config.melinoe.inetIfs == config.melinoe.p2pIfs;
-in {
+{
 
   networking.firewall.enable = false;
   networking.nftables.enable = true;
   networking.nftables.ruleset = ''
     flush ruleset
-    define inet_ifs = "${config.melinoe.inetIfs}"
-    define p2p_ifs = "${config.melinoe.p2pIfs}"
+    define inet_ifs = { ${lib.concatStringsSep ", " (map (i: "\"${i}\"") config.melinoe.inetIfs)} }
     define vm_ifs = "vm-*"
     define node_gre_ifs = "node-*"
+    define wg_ifs = "wg-*"
     define gre_ctmark = { ${builtins.concatStringsSep ", " (builtins.genList (i: "\"node-${toString (i)}\" : ${toString (1000 + i)}") 255)} }
 
     table inet filter {
@@ -23,16 +21,14 @@ in {
         icmpv6 type { echo-request, nd-neighbor-solicit } accept
         iif "lo" accept
         tcp dport 22 accept
-	tcp dport 25 accept
-        tcp dport 8080 accept
         tcp dport 8008 accept
+        iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept
+        iifname $wg_ifs ip saddr 198.51.100.0/24 ip protocol gre accept
+        ip saddr 198.18.0.0/24 tcp dport 60198 accept
+        ip saddr 198.18.1.5 tcp dport 61208 accept
 ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
         udp dport { ${builtins.concatStringsSep ", " (map toString config.melinoe.wgPorts)} } accept
 ''}
-        ip saddr 198.19.0.0/16 tcp dport 179 accept
-        ip saddr 198.51.100.0/24 ip protocol gre accept
-        ip saddr 198.18.0.0/24 tcp dport 60198 accept
-        ip saddr 198.18.1.5 tcp dport 61208 accept
       }
 
       chain FORWARD {
@@ -52,16 +48,8 @@ ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
     table inet raw {
       chain prerouting {
         type filter hook prerouting priority raw; policy accept;
-        iifname $inet_ifs ip saddr { 198.18.0.0/16, 198.51.100.0/24 } drop
-        iifname $inet_ifs ip daddr { 198.18.0.0/16, 198.51.100.0/24 } drop
-${lib.optionalString (!p2pSameAsInet) ''
-        iifname $inet_ifs ip saddr 198.19.0.0/16 drop
-        iifname $inet_ifs ip daddr 198.19.0.0/16 drop
-''}
-${lib.optionalString (!p2pSameAsInet) ''
-        iifname $p2p_ifs ip saddr != { 198.19.0.0/16, 198.51.100.0/24 } drop
-        iifname $p2p_ifs ip daddr != { 198.19.0.0/16, 198.51.100.0/24 } drop
-''}
+        iifname $inet_ifs ip saddr { 198.19.3.0/24, 198.18.0.0/16, 198.51.100.0/24 } drop
+        iifname $inet_ifs ip daddr { 198.19.3.0/24, 198.18.0.0/16, 198.51.100.0/24 } drop
 
         iifname $vm_ifs ip saddr 198.18.0.0/24 drop
         iifname $vm_ifs ip saddr != 198.18.0.0/15 drop 

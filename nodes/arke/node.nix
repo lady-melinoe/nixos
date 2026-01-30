@@ -41,8 +41,7 @@
 
   services.qemuGuest.enable = true;
 
-  melinoe.inetIfs = "ens18";
-  melinoe.p2pIfs = "ens19";
+  melinoe.inetIfs = [ "ens18" "ens19" ];
   melinoe.nodeId = 2;
   melinoe.bgpPeers = [ ];
   melinoe.incusDefaultStorageSource = "/array/incus/";

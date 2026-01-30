@@ -51,8 +51,7 @@
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
   boot.initrd.kernelModules = [ "nvme" ];
 
-  melinoe.inetIfs = "enp4s0";
-  melinoe.p2pIfs = "bond0";
+  melinoe.inetIfs = [ "enp4s0" "bond0" ];
   melinoe.nodeId = 3;
   melinoe.bgpPeers = [ ];
   melinoe.incusDefaultStorageSource = "/array/incus/";
