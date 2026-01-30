@@ -25,7 +25,7 @@ let
                   self.wfile.write(b"Not Found\n")
                   return
               try:
-                  result = subprocess.check_output(["ip", "route"], text=True)
+                  result = subprocess.check_output(["/run/current-system/sw/bin/ip", "route"], text=True)
                   routes = []
                   for line in result.splitlines():
                       if "dev vm-" not in line:
