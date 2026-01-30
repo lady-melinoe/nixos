@@ -18,18 +18,21 @@ let
   };
   extraBgpPeers = map (p: { id = p.id; addr = "${wgPrefix}.${toString p.id}"; }) cfg.wgPeers;
 
-  mkInterface = peer: {
-    name = "wg-${toString peer.id}";
-    value = {
-      ips = [ ];
-      listenPort = basePort + peer.id;
-      privateKeyFile = "/etc/melinoe/wg.privatekey";
-      peers = [ (peerToCfg peer) ];
-      postSetup = ''
-        ip address replace ${localWgAddr}/32 peer ${wgPrefix}.${toString peer.id}/32 dev %i
-      '';
+  mkInterface = peer:
+    let
+      ifName = "wg-${toString peer.id}";
+    in {
+      name = ifName;
+      value = {
+        ips = [ ];
+        listenPort = basePort + peer.id;
+        privateKeyFile = "/etc/melinoe/wg.privatekey";
+        peers = [ (peerToCfg peer) ];
+        postSetup = ''
+          ip address replace ${localWgAddr}/32 peer ${wgPrefix}.${toString peer.id}/32 dev ${ifName}
+        '';
+      };
     };
-  };
 
   interfaces = lib.listToAttrs (map mkInterface cfg.wgPeers);
   ports = map (peer: basePort + peer.id) cfg.wgPeers;
