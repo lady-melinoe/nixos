@@ -5,74 +5,6 @@ let
   incusStorageSource = config.melinoe.incusDefaultStorageSource;
   incusRootSize = config.melinoe.incusRootSize;
   incusPreseedEnabled = config.melinoe.enableIncusPreseed;
-  routeListServer = pkgs.writeTextFile {
-    name = "melinoe-route-list.py";
-    destination = "/bin/melinoe-route-list";
-    executable = true;
-    text = ''
-      #!/usr/bin/env python3
-      import http.server
-      import os
-      import subprocess
-      import sys
-
-
-      def gather_routes():
-        res = subprocess.run(["ip", "-o", "route", "show"], capture_output=True, text=True)
-        routes = []
-        for line in res.stdout.splitlines():
-          line = line.strip()
-          if not line:
-            continue
-          if " dev vm-" not in line:
-            continue
-          # first field is prefix (may be bare IP)
-          prefix = line.split()[0]
-          if "/" not in prefix:
-            prefix = f"{prefix}/32"
-          routes.append(prefix)
-        return routes
-
-
-      class Handler(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *args, directory=None, **kwargs):
-          super().__init__(*args, directory=directory, **kwargs)
-
-        def do_GET(self):
-          path = self.path.split("?", 1)[0]
-          if path == "/list":
-            routes = gather_routes()
-            body = "\n".join(routes) + ("\n" if routes else "")
-            data = body.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-            return
-          return super().do_GET()
-
-        def log_message(self, format, *args):
-          return
-
-
-      def main():
-        if len(sys.argv) != 4:
-          print("Usage: melinoe-route-list <bind_host> <port> <docroot>")
-          sys.exit(1)
-        host = sys.argv[1]
-        port = int(sys.argv[2])
-        docroot = sys.argv[3]
-        os.chdir(docroot)
-        handler = lambda *args, **kwargs: Handler(*args, directory=docroot, **kwargs)
-        with http.server.ThreadingHTTPServer((host, port), handler) as httpd:
-          httpd.serve_forever()
-
-
-      if __name__ == "__main__":
-        main()
-    '';
-  };
   configureIface = pkgs.writeShellScriptBin "configure-iface" ''
     #!/usr/bin/env bash
     IFACE="$1"
@@ -159,19 +91,58 @@ in {
     services.glances.enable = true;
     services.glances.port = 61208;
     services.glances.extraArgs = [ "--webserver" "-B" "198.18.0.${toString nodeID}" ];
-
     systemd.services.melinoe-route-list = {
-      description = "Melinoe resident list server";
+      description = "Melinoe resident route list server";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       serviceConfig = {
-        ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /etc/melinoe/residents";
-        ExecStart = "${routeListServer}/bin/melinoe-route-list 198.18.0.${toString nodeID} 60198 /etc/melinoe/residents";
-        WorkingDirectory = "/etc/melinoe/residents";
+        ExecStart = "${pkgs.python3}/bin/python ${pkgs.writeTextFile {
+          name = \"melinoe-route-list.py\";
+          destination = \"/bin/melinoe-route-list\";
+          executable = true;
+          text = ''
+            #!/usr/bin/env python3
+            import subprocess
+            from http.server import BaseHTTPRequestHandler, HTTPServer
+
+            HOST = "198.18.0.${toString nodeID}"
+            PORT = 60198
+
+            class RequestHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path != "/list":
+                        self.send_response(404)
+                        self.end_headers()
+                        self.wfile.write(b"Not Found\n")
+                        return
+                    try:
+                        result = subprocess.check_output(["ip", "route"], text=True)
+                        routes = []
+                        for line in result.splitlines():
+                            if "dev vm-" not in line:
+                                continue
+                            ip = line.split()[0]
+                            if "/" not in ip:
+                                ip = f"{ip}/32"
+                            routes.append(ip)
+                        response = "\\n".join(routes) + "\\n"
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/plain")
+                        self.end_headers()
+                        self.wfile.write(response.encode())
+                    except Exception as e:
+                        self.send_response(500)
+                        self.end_headers()
+                        self.wfile.write(f"Error: {e}\\n".encode())
+
+            if __name__ == "__main__":
+                server = HTTPServer((HOST, PORT), RequestHandler)
+                server.serve_forever()
+          '';
+        }}/bin/melinoe-route-list";
         Restart = "on-failure";
         RestartSec = "5s";
-        Environment = "PATH=${pkgs.iproute2}/bin:${pkgs.coreutils}/bin:${pkgs.gnugrep}/bin:${pkgs.gawk}/bin";
       };
     };
   };
