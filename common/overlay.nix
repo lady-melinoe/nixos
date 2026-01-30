@@ -18,16 +18,19 @@ let
 
 
       def gather_routes():
-        cmd = ["sh", "-c", "ip route | grep -F 'dev vm-' | cut -d' ' -f1"]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        res = subprocess.run(["ip", "-o", "route", "show"], capture_output=True, text=True)
         routes = []
         for line in res.stdout.splitlines():
           line = line.strip()
           if not line:
             continue
-          if "/" not in line:
-            line = f"{line}/32"
-          routes.append(line)
+          if " dev vm-" not in line:
+            continue
+          # first field is prefix (may be bare IP)
+          prefix = line.split()[0]
+          if "/" not in prefix:
+            prefix = f"{prefix}/32"
+          routes.append(prefix)
         return routes
 
 
@@ -39,7 +42,7 @@ let
           path = self.path.split("?", 1)[0]
           if path == "/list":
             routes = gather_routes()
-            body = "\n".join(routes) + "\n"
+            body = "\n".join(routes) + ("\n" if routes else "")
             data = body.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
@@ -163,16 +166,13 @@ in {
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       serviceConfig = {
-        ExecStart = "${pkgs.python3}/bin/python ${routeListServer}/bin/melinoe-route-list 198.18.0.${toString nodeID} 60198 /etc/melinoe/residents";
+        ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /etc/melinoe/residents";
+        ExecStart = "${routeListServer}/bin/melinoe-route-list 198.18.0.${toString nodeID} 60198 /etc/melinoe/residents";
+        WorkingDirectory = "/etc/melinoe/residents";
         Restart = "on-failure";
         RestartSec = "5s";
+        Environment = "PATH=${pkgs.iproute2}/bin:${pkgs.coreutils}/bin:${pkgs.gnugrep}/bin:${pkgs.gawk}/bin";
       };
-      path = [
-        pkgs.iproute2
-        pkgs.coreutils
-        pkgs.gnugrep
-        pkgs.gawk
-      ];
     };
   };
 }
