@@ -53,36 +53,13 @@ let
     #!/usr/bin/env bash
     IFACE="$1"
     ACTION="$2"
-    IP="$3"
-    RES_FILE="/etc/melinoe/residents/list"
 
-    if [ -z "$IFACE" ] || [ -z "$ACTION" ] || [ -z "$IP" ]; then
-      echo "Usage: $0 <iface> <up|down> <ip>"
+    if [ -z "$IFACE" ] || [ -z "$ACTION" ]; then
+      echo "Usage: $0 <iface> <up|down>"
       exit 1
     fi
-
-    mkdir -p "$(dirname "$RES_FILE")"
-    touch "$RES_FILE"
-
-    case "$ACTION" in
-      up)
-        echo 1 > /proc/sys/net/ipv4/conf/$IFACE/forwarding
-        echo 1 > /proc/sys/net/ipv4/conf/$IFACE/proxy_arp
-        ip addr replace 198.18.0.${toString nodeID}/32 dev "$IFACE"
-
-        if ! grep -Fxq "$IP" "$RES_FILE"; then
-          echo "$IP" >> "$RES_FILE"
-        fi
-        ;;
-      down)
-        sed -i "\|^$IP\$|d" "$RES_FILE"
-        ;;
-      *)
-        echo "Invalid action: $ACTION"
-        echo "Use: up or down"
-        exit 1
-        ;;
-    esac
+    echo 1 > /proc/sys/net/ipv4/conf/$IFACE/forwarding
+    ip addr replace 198.18.0.${toString nodeID}/32 dev "$IFACE"
   '';
 in {
   options.melinoe.incusRootSize = mkOption {
