@@ -34,7 +34,7 @@ let
                       if "/" not in ip:
                           ip = f"{ip}/32"
                       routes.append(ip)
-                  response = "\\n".join(routes) + "\\n"
+                  response = "\n".join(routes) + "\n"
                   self.send_response(200)
                   self.send_header("Content-Type", "text/plain")
                   self.end_headers()
