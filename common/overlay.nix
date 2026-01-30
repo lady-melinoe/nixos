@@ -141,6 +141,7 @@ in {
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       serviceConfig = {
+        Environment = "PATH=/run/current-system/sw/bin";
         ExecStart = "${pkgs.python3}/bin/python ${routeListScript}/bin/melinoe-route-list";
         Restart = "on-failure";
         RestartSec = "5s";
