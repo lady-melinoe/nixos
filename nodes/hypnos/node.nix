@@ -47,5 +47,15 @@
       endpoint = "198.19.1.5";
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
+    {
+      id = 2;
+      endpoint = "arke.infra.melinoe.xyz";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
+    }
+    {
+      id = 7;
+      endpoint = "benzaiten.infra.melinoe.xyz";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
+    }
   ];
 }
