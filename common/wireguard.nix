@@ -28,6 +28,7 @@ let
         listenPort = basePort + peer.id;
         privateKeyFile = "/etc/melinoe/wg.privatekey";
         peers = [ (peerToCfg peer) ];
+        table = "off";
         postSetup = ''
           ip address replace ${localWgAddr}/32 peer ${wgPrefix}.${toString peer.id}/32 dev ${ifName}
         '';
