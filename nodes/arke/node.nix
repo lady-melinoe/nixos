@@ -53,6 +53,11 @@
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
     {
+      id = 3;
+      endpoint = "198.19.0.3";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
+    }
+    {
       id = 4;
       endpoint = "hypnos.infra.melinoe.xyz";
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
