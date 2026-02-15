@@ -34,6 +34,7 @@ ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
       chain FORWARD {
         type filter hook forward priority filter; policy accept;
         ct state invalid drop
+        ip saddr 198.18.1.13 ip daddr 172.65.251.78 drop
         ct state { established, related } accept
         icmp type { echo-request, echo-reply } accept
         icmpv6 type { echo-request, nd-neighbor-solicit } accept
