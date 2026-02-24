@@ -59,12 +59,12 @@
     }
     {
       id = 4;
-      endpoint = "hypnos.infra.melinoe.xyz";
+      endpoint = "lachesis.infra.melinoe.xyz";
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
     {
       id = 5;
-      endpoint = "thanatos.infra.melinoe.xyz";
+      endpoint = "atropos.infra.melinoe.xyz";
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
     {

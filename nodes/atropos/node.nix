@@ -25,7 +25,7 @@
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
   boot.initrd.kernelModules = [ "nvme" ];
 
-  networking.hostName = "thanatos";
+  networking.hostName = "atropos";
   networking.domain = "";
   networking.useDHCP = false;
   networking.interfaces.ens3.useDHCP = true;

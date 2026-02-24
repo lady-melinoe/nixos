@@ -37,16 +37,16 @@
           modules = [ ./nodes/benzaiten/node.nix ];
         };
 
-        hypnos = lib.nixosSystem {
+        lachesis = lib.nixosSystem {
           inherit system;
           specialArgs = { inherit inputs system; };
-          modules = [ ./nodes/hypnos/node.nix ];
+          modules = [ ./nodes/lachesis/node.nix ];
         };
 
-        thanatos = lib.nixosSystem {
+        atropos = lib.nixosSystem {
           inherit system;
           specialArgs = { inherit inputs system; };
-          modules = [ ./nodes/thanatos/node.nix ];
+          modules = [ ./nodes/atropos/node.nix ];
         };
 
       };
@@ -84,19 +84,19 @@
           };
         };
 
-        hypnos = {
-          hostname = "hypnos";
+        lachesis = {
+          hostname = "lachesis";
           profiles.system = {
             user = "root";
-            path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.hypnos;
+            path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.lachesis;
           };
         };
 
-        thanatos = {
-          hostname = "thanatos";
+        atropos = {
+          hostname = "atropos";
           profiles.system = {
             user = "root";
-            path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.thanatos;
+            path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.atropos;
           };
         };
       };
