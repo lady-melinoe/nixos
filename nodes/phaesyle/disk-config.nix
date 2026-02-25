@@ -3,9 +3,9 @@
     disk = {
       main = {
         type = "disk";
-        device = "/dev/vda";
+        device = "/dev/vds";
         content = {
-          type = "gpt";
+          type = "mbr";
           partitions = {
             boot = {
               name = "GRUB";
