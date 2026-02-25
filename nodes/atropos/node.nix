@@ -35,9 +35,7 @@
   services.qemuGuest.enable = true;
 
   melinoe.inetIfs = [ "ens3" ];
-  melinoe.underlayPrefix = "198.19.1";
   melinoe.nodeId = 5;
-  melinoe.bgpPeers = [ ];
   melinoe.incusDefaultStorageSource = "/array/incus/";
 
   melinoe.wgPeers = [

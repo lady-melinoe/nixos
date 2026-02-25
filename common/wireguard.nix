@@ -16,7 +16,6 @@ let
     endpoint = "${peer.endpoint}:${toString (basePort + cfg.nodeId)}";
     persistentKeepalive = peer.persistentKeepalive;
   };
-  extraBgpPeers = map (p: { id = p.id; addr = "${wgPrefix}.${toString p.id}"; }) cfg.wgPeers;
 
   mkInterface = peer:
     let
@@ -42,10 +41,5 @@ in {
 
     # Open just the ports we actually listen on.
     melinoe.wgPorts = ports;
-
-    # Auto-add BGP peers on the WG subnet.
-    melinoe.bgpPeers = lib.mkAfter extraBgpPeers;
-
-    # Ensure the local WG source address exists (once, on loopback).
   };
 }

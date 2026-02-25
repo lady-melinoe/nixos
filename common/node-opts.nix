@@ -9,33 +9,10 @@ in {
       description = "Unique node ID used for addressing and routing.";
     };
 
-    underlayPrefix = mkOption {
-      type = types.str;
-      default = "198.19.0";
-      description = "Underlay /24 prefix (three octets) used for p2p addressing, e.g., 198.19.0 or 198.19.1.";
-    };
-
     incusDefaultStorageSource = mkOption {
       type = types.nullOr types.str;
       default = "/var/lib/incus/storage-pools/default";
       description = "Source path for the Incus default storage pool (e.g., /var/lib/incus/storage-pools/default).";
-    };
-
-    bgpPeers = mkOption {
-      type = types.listOf (types.submodule {
-        options = {
-          id = mkOption {
-            type = types.int;
-            description = "Peer node ID (used to derive remote AS as 64512 + id by default).";
-          };
-          addr = mkOption {
-            type = types.str;
-            description = "Peer IPv4 address on the underlay (198.19.0.X, but not assumed).";
-          };
-        };
-      });
-      default = [ ];
-      description = "List of BGP peers with node ID and underlay IPv4 address.";
     };
 
     inetIfs = mkOption {
@@ -73,7 +50,7 @@ in {
         };
       });
       default = [ ];
-      description = "WireGuard peers; used to render interfaces and auto-extend BGP peers.";
+      description = "WireGuard peers; used to render interfaces and derive BGP neighbors.";
     };
   };
 

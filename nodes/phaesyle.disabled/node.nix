@@ -25,50 +25,38 @@
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
   boot.initrd.kernelModules = [ "nvme" ];
 
-  networking.hostName = "arke";
+  networking.hostName = "phaesyle";
   networking.domain = "";
   networking.useDHCP = false;
-  networking.interfaces.ens18.useDHCP = true;
-  networking.interfaces.ens19 = {
-    useDHCP = false;
-    ipv4.addresses = [{
-      address = "198.19.0.${toString config.melinoe.nodeId}";
-      prefixLength = 24;
-    }];
-  };
+  # networking.interfaces.ens3.useDHCP = true;
 
   systemd.oomd.enable = false;
 
   services.qemuGuest.enable = true;
 
-  melinoe.inetIfs = [ "ens18" "ens19" ];
-  melinoe.nodeId = 2;
+  # melinoe.inetIfs = [ "ens3" ];
+  melinoe.nodeId = 8;
   melinoe.incusDefaultStorageSource = "/array/incus/";
 
   melinoe.wgPeers = [
     {
       id = 7;
-      endpoint = "198.19.0.7";
+      endpoint = "benzaiten.infra.melinoe.xyz";
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
     {
-      id = 3;
-      endpoint = "198.19.0.3";
-      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
-    }
-    {
-      id = 4;
-      endpoint = "lachesis.infra.melinoe.xyz";
-      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
-    }
-    {
-      id = 5;
-      endpoint = "atropos.infra.melinoe.xyz";
+      id = 2;
+      endpoint = "arke.infra.melinoe.xyz";
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
     {
       id = 6;
-      endpoint = "198.19.0.6";
+      endpoint = "ceridwen.infra.melinoe.xyz";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
+    }
+    {
+      id = 3;
+      endpoint = "hecate.infra.melinoe.xyz";
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
   ];

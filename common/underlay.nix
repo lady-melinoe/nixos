@@ -1,14 +1,11 @@
 { config, lib, pkgs, ... }:
 let
-  nodeID = config.melinoe.nodeId;
-  underlayPrefix = config.melinoe.underlayPrefix;
+  cfg = config.melinoe;
+  nodeID = cfg.nodeId;
   wgPrefix = "198.19.3";
-  peers = config.melinoe.bgpPeers;
+  peers = map (p: { id = p.id; addr = "${wgPrefix}.${toString p.id}"; }) cfg.wgPeers;
   bgpAs = 64512 + nodeID;
-  localUnderlayAddr = "${underlayPrefix}.${toString nodeID}";
   localWgAddr = "${wgPrefix}.${toString nodeID}";
-  updateSourceFor = peer:
-    if lib.hasPrefix "${wgPrefix}." peer.addr then localWgAddr else localUnderlayAddr;
   routeDeployScript = pkgs.writeShellScript "route-deploy.sh" ''
     #!/usr/bin/env bash
 
@@ -145,7 +142,7 @@ let
   '';
   mkNeighborStanza = peer: ''
     neighbor ${peer.addr} remote-as ${toString (64512 + peer.id)}
-    neighbor ${peer.addr} update-source ${updateSourceFor peer}
+    neighbor ${peer.addr} update-source ${localWgAddr}
   '';
   mkNeighborAfi = peer: ''
     neighbor ${peer.addr} activate

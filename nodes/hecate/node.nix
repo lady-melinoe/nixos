@@ -53,7 +53,6 @@
 
   melinoe.inetIfs = [ "enp4s0" "bond0" ];
   melinoe.nodeId = 3;
-  melinoe.bgpPeers = [ ];
   melinoe.incusDefaultStorageSource = "/array/incus/";
 
   melinoe.wgPeers = [

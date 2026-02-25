@@ -52,7 +52,6 @@
   melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.incusRootSize = "40GiB";
   melinoe.enableIncusPreseed = false;
-  melinoe.bgpPeers = [ ];
 
   melinoe.wgPeers = [
     {
