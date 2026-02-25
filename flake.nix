@@ -49,6 +49,11 @@
           modules = [ ./nodes/atropos/node.nix ];
         };
 
+        phaesyle = lib.nixosSystem {
+          inherit system;
+          specialArgs = { inherit inputs system; };
+          modules = [ ./nodes/phaesyle/node.nix ];
+        };
       };
 
       deploy.nodes = {
@@ -97,6 +102,13 @@
           profiles.system = {
             user = "root";
             path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.atropos;
+          };
+        };
+        phaesyle = {
+          hostname = "phaesyle";
+          profiles.system = {
+            user = "root";
+            path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.phaesyle;
           };
         };
       };
