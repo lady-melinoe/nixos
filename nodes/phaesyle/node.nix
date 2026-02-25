@@ -28,13 +28,13 @@
   networking.hostName = "phaesyle";
   networking.domain = "";
   networking.useDHCP = false;
-  # networking.interfaces.ens3.useDHCP = true;
+  networking.interfaces.ens3.useDHCP = true;
 
   systemd.oomd.enable = false;
 
   services.qemuGuest.enable = true;
 
-  # melinoe.inetIfs = [ "ens3" ];
+  melinoe.inetIfs = [ "ens3" ];
   melinoe.nodeId = 8;
   melinoe.incusDefaultStorageSource = "/array/incus/";
 
