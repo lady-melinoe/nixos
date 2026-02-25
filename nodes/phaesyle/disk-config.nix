@@ -5,7 +5,7 @@
         type = "disk";
         device = "/dev/vds";
         content = {
-          type = "mbr";
+          type = "MBR";
           partitions = {
             boot = {
               name = "GRUB";
