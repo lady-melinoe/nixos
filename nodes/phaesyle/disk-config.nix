@@ -3,14 +3,19 @@
     disk = {
       main = {
         type = "disk";
-        device = "/dev/vds";
+        device = "/dev/sda";
         content = {
-          type = "MBR";
+          type = "gpt";
           partitions = {
-            boot = {
-              name = "GRUB";
-              type = "EF02";
-              size = "1M";
+            EFI = {
+              name = "EFI";
+              type = "EF00";
+              size = "256M";
+              content = {
+                type = "filesystem";
+                format = "vfat";
+                mountpoint = "/boot/efi";
+              };
             };
             root = {
               name = "BTRFS";
