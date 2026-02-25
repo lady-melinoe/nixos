@@ -16,12 +16,10 @@
   ];
 
   boot.loader.grub = {
-    efiSupport = true;
+    efiSupport = false;
     configurationLimit = 20;
-    efiInstallAsRemovable = true;
-    device = "nodev";
+    device = "/dev/vda";
   };
-  boot.loader.efi.efiSysMountPoint = "/boot/efi";
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
   boot.initrd.kernelModules = [ "nvme" ];
 
