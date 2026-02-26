@@ -6,12 +6,21 @@
         device = "/dev/sda";
         content = {
           type = "gpt";
+          efiGptPartitionFirst = false;
           partitions = {
-            MBR = {
-              type = "EF02"; # for grub MBR
-              size = "1M";
-              priority = 1; # Needs to be first partition
-              attributes = [ 0 ]; # partition attribute
+            TOW-BOOT-FI = {
+              priority = 1;
+              type = "EF00";
+              size = "32M";
+              content = {
+                type = "filesystem";
+                format = "vfat";
+                mountpoint = null;
+              };
+              hybrid = {
+                mbrPartitionType = "0x0c";
+                mbrBootableFlag = false;
+              };
             };
             EFI = {
               name = "EFI";
