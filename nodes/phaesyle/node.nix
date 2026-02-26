@@ -19,7 +19,7 @@
     efiSupport = true;
     configurationLimit = 20;
     efiInstallAsRemovable = true;
-    device = "nodev";
+    device = "/dev/sda1";
   };
 
   boot.loader.efi.efiSysMountPoint = "/boot/efi";
