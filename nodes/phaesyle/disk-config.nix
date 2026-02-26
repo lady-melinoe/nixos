@@ -11,6 +11,7 @@
               type = "EF02"; # for grub MBR
               size = "1M";
               priority = 1; # Needs to be first partition
+              attributes = [ 0 ]; # partition attribute
             };
             EFI = {
               name = "EFI";
