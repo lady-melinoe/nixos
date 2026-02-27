@@ -71,5 +71,10 @@
       endpoint = "198.19.0.6";
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
+    {
+      id = 8;
+      endpoint = "phaesyle.infra.melinoe.xyz";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
+    }
   ];
 }

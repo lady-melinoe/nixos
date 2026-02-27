@@ -76,5 +76,10 @@
       endpoint = "atropos.infra.melinoe.xyz";
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
+    {
+      id = 8;
+      endpoint = "phaesyle.infra.melinoe.xyz";
+      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
+    }
   ];
 }
