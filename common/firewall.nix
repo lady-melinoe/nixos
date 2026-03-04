@@ -78,7 +78,8 @@ ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
     table inet mangle {
       chain prerouting {
         type filter hook prerouting priority mangle;
-        iifname != $node_gre_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
+        #iifname $inet_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
+        iifname $vm_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
         iifname $node_gre_ifs ct direction original ct mark != 1000-1254 ct mark set iifname map $gre_ctmark
      }
 
