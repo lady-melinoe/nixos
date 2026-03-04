@@ -61,8 +61,6 @@ ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
     table ip nat {
       chain prerouting {
         type nat hook prerouting priority dstnat;
-#        iifname $vm_ifs ip daddr 103.249.239.233 tcp dport { 80, 443 } dnat to 198.18.1.1
-#        iifname $vm_ifs ip daddr 103.249.239.233 udp dport { 80, 443 } dnat to 198.18.1.1
         iifname $inet_ifs tcp dport { 80, 443 } dnat to 198.18.1.1
         iifname $inet_ifs udp dport { 80, 443 } dnat to 198.18.1.1
         iifname $inet_ifs tcp dport { 993, 25, 465 } dnat to 198.18.1.6
