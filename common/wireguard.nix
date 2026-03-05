@@ -38,8 +38,6 @@ let
 in {
   config = lib.mkIf (cfg.wgPeers != [ ]) {
     networking.wireguard.interfaces = interfaces;
-
-    # Open just the ports we actually listen on.
     melinoe.wgPorts = ports;
   };
 }

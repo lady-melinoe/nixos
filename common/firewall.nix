@@ -51,8 +51,6 @@ ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
     table inet raw {
       chain prerouting {
         type filter hook prerouting priority raw; policy accept;
-        tcp dport 8080 meta nftrace set 1
-        tcp sport 8080 meta nftrace set 1
         iifname $inet_ifs ip saddr { 198.18.0.0/16, 198.51.100.0/24 } drop
         iifname $inet_ifs ip daddr { 198.18.0.0/16, 198.51.100.0/24 } drop
         iifname $vm_ifs ip saddr 198.18.0.0/24 drop
