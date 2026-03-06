@@ -82,7 +82,7 @@ ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
       chain postrouting {
         type nat hook postrouting priority srcnat;
         ip saddr 198.18.0.0/16 oifname $inet_ifs masquerade
-        ip saddr 198.18.0.0/16 oifname "inet0" masquerade
+        oifname "inet0" masquerade
       }
     }
 
