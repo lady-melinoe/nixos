@@ -83,23 +83,50 @@
     let
       hostAddr = "198.18.0.${toString config.melinoe.nodeId}";
       netnsAddr = "198.18.0.255";
+      bondAddr = "198.19.0.${toString config.melinoe.nodeId}/24";
       setupScript = pkgs.writeShellScript "melinoe-inet-setup" ''
         set -euo pipefail
+
+        NETNS=inet
+        SLAVES=(eno3 eno4)
 
         ip netns add inet 2>/dev/null || true
         ip link del inet0 2>/dev/null || true
 
         ip link add inet0 type veth peer name main
-        ip link set main netns inet
+        ip link set main netns "$NETNS"
 
         ip addr replace ${hostAddr}/32 dev inet0
         ip link set inet0 up
 
-        ip netns exec inet ip addr replace ${netnsAddr}/32 dev main
-        ip netns exec inet ip link set main up
+        ip netns exec "$NETNS" ip addr replace ${netnsAddr}/32 dev main
+        ip netns exec "$NETNS" ip link set main up
 
         ip route replace ${netnsAddr}/32 dev inet0
-        ip netns exec inet ip route replace ${hostAddr}/32 dev main
+        ip netns exec "$NETNS" ip route replace ${hostAddr}/32 dev main
+
+        # Move bond slaves into the netns and rebuild bond0 inside it
+        for iface in "''${SLAVES[@]}"; do
+          ip link set "$iface" down 2>/dev/null || true
+          ip link set "$iface" nomaster 2>/dev/null || true
+          ip link set "$iface" netns "$NETNS"
+        done
+
+        ip link set bond0 down 2>/dev/null || true
+        ip link del bond0 2>/dev/null || true
+        ip netns exec "$NETNS" ip link set bond0 down 2>/dev/null || true
+        ip netns exec "$NETNS" ip link del bond0 2>/dev/null || true
+
+        ip netns exec "$NETNS" ip link add bond0 type bond mode 802.3ad
+        ip netns exec "$NETNS" ip link set bond0 type bond lacp_rate 1
+
+        for iface in "''${SLAVES[@]}"; do
+          ip netns exec "$NETNS" ip link set "$iface" up
+          ip netns exec "$NETNS" ip link set "$iface" master bond0
+        done
+
+        ip netns exec "$NETNS" ip addr replace ${bondAddr} dev bond0
+        ip netns exec "$NETNS" ip link set bond0 up
       '';
     in {
       description = "Configure inet netns veth pair for host<->inet connectivity";
