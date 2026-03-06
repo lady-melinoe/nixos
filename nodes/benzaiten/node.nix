@@ -106,8 +106,8 @@
         ip netns exec inet ip addr flush dev eno1 || true
         ip netns exec inet ip addr replace 130.95.13.133/25 dev eno1
 
-        ip netns exec inet iptables -t nat -C POSTROUTING -o eno1 -j MASQUERADE 2>/dev/null || \
-          ip netns exec inet iptables -t nat -A POSTROUTING -o eno1 -j MASQUERADE
+        ip netns exec inet iptables -t nat -C POSTROUTING -o eno1 -j MASQUERADE || true
+        ip netns exec inet iptables -t nat -A POSTROUTING -o eno1 -j MASQUERADE
         
         ip route add 198.18.0.255 dev inet0 || true
         ip route add default via 198.18.0.255 dev inet0 || true
