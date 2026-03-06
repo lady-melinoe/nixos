@@ -18,7 +18,7 @@
   networking.hostName = "ceridwen";
   networking.domain = "";
   networking.useDHCP = false;
-  networking.interfaces.eno1.useDHCP = true;
+  networking.interfaces.eno1.useDHCP = false;
   networking.interfaces.eno3.useDHCP = false;
   networking.interfaces.eno4.useDHCP = false;
   networking.bonds.bond0 = {
@@ -47,7 +47,7 @@
   boot.initrd.availableKernelModules = [ "sd_mod" "usbhid" "usb_storage" "mpt3sas" "ehci_pci" ];
   boot.initrd.kernelModules = [ "kvm-intel" ];
 
-  melinoe.inetIfs = [ "eno1" "bond0" ];
+  melinoe.inetIfs = [ "bond0" "eno3" "eno4" ];
   melinoe.nodeId = 6;
   melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.incusRootSize = "40GiB";
@@ -85,4 +85,56 @@
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
   ];
+
+  systemd.services.melinoe-inet-setup =
+    let
+      hostAddr = "198.18.0.${toString config.melinoe.nodeId}";
+      setupScript = pkgs.writeShellScript "melinoe-inet-setup" ''
+        set -euo pipefail
+
+        ip netns add inet 2>/dev/null || true
+        ip link del inet0 2>/dev/null || true
+
+        ip link add inet0 type veth peer name main
+        ip link set main netns inet
+
+        ip addr replace ${hostAddr}/32 dev inet0
+        ip link set inet0 up
+
+        ip netns exec inet ip addr replace 198.18.0.255/32 dev main
+        ip netns exec inet ip link set main up
+
+        ip netns exec inet ip route replace ${hostAddr}/32 dev main
+
+        ip link set eno1 down 2>/dev/null || true
+        ip link set eno1 netns inet
+
+        ip netns exec inet ip link set eno1 up
+        ip netns exec inet ip addr flush dev eno1 || true
+        ip netns exec inet ip addr replace 130.95.13.198/25 dev eno1
+
+        ip netns exec inet iptables -t nat -C POSTROUTING -o eno1 -j MASQUERADE || true
+        ip netns exec inet iptables -t nat -A POSTROUTING -o eno1 -j MASQUERADE
+        
+        ip route add 198.18.0.255 dev inet0 || true
+        ip route add default via 198.18.0.255 dev inet0 || true
+
+        ip netns exec inet ip route add default via 130.95.13.129 dev eno1 || true
+        ip netns exec inet iptables -t nat -C PREROUTING -d 130.95.13.198 -j DNAT --to-destination 198.18.0.6 || true
+        ip netns exec inet iptables -t nat -A PREROUTING -d 130.95.13.198 -j DNAT --to-destination 198.18.0.6 
+        ip netns exec inet sysctl -w net.ipv4.conf.default.rp_filter=0
+        ip netns exec inet sysctl -w net.ipv4.conf.all.rp_filter=0
+      '';
+    in {
+      description = "Configure inet netns veth pair for host<->inet connectivity";
+      after = [ "network-pre.target" ];
+      wants = [ "network-pre.target" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = setupScript;
+      };
+      path = [ pkgs.iproute2 pkgs.iptables ];
+    };
 }
