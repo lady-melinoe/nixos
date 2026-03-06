@@ -110,11 +110,9 @@
           ip netns exec inet iptables -t nat -A POSTROUTING -o eno1 -j MASQUERADE
         
         ip route add 198.18.0.255 dev inet0 || true
-        ip route del default || true
         ip route add default via 198.18.0.255 dev inet0 || true
 
         ip netns exec inet ip route add default via 130.95.13.129 dev eno1 || true
-
         ip netns exec inet iptables -t nat -C PREROUTING -d 130.95.13.133 -j DNAT --to-destination 198.18.0.7 || true
         ip netns exec inet iptables -t nat -A PREROUTING -d 130.95.13.133 -j DNAT --to-destination 198.18.0.7 
       '';
