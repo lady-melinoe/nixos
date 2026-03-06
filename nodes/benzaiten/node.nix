@@ -78,4 +78,38 @@
       allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
   ];
+
+  systemd.services.melinoe-inet-setup =
+    let
+      hostAddr = "198.18.0.${toString config.melinoe.nodeId}";
+      netnsAddr = "198.18.0.255";
+      setupScript = pkgs.writeShellScript "melinoe-inet-setup" ''
+        set -euo pipefail
+
+        ip netns add inet 2>/dev/null || true
+        ip link del inet0 2>/dev/null || true
+
+        ip link add inet0 type veth peer name main
+        ip link set main netns inet
+
+        ip addr replace ${hostAddr}/32 dev inet0
+        ip link set inet0 up
+
+        ip netns exec inet ip addr replace ${netnsAddr}/32 dev main
+        ip netns exec inet ip link set main up
+
+        ip route replace ${netnsAddr}/32 dev inet0
+        ip netns exec inet ip route replace ${hostAddr}/32 dev main
+      '';
+    in {
+      description = "Configure inet netns veth pair for host<->inet connectivity";
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = setupScript;
+      };
+      path = [ pkgs.iproute2 ];
+    };
 }
