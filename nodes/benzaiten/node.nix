@@ -121,13 +121,13 @@
         ip netns exec "$NETNS" ip link set bond0 type bond lacp_rate 1
 
         for iface in "''${SLAVES[@]}"; do
-          ip netns exec "$NETNS" ip link set "$iface" down
+          ip netns exec "$NETNS" ip link set "$iface" down 2>/dev/null || true
+          ip netns exec "$NETNS" ip addr flush dev "$iface" || true
           ip netns exec "$NETNS" ip link set "$iface" master bond0
-          ip netns exec "$NETNS" ip link set "$iface" up
         done
 
-        ip netns exec "$NETNS" ip addr replace ${bondAddr} dev bond0
         ip netns exec "$NETNS" ip link set bond0 up
+        ip netns exec "$NETNS" ip addr replace ${bondAddr} dev bond0
       '';
     in {
       description = "Configure inet netns veth pair for host<->inet connectivity";
