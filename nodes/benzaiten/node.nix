@@ -121,8 +121,9 @@
         ip netns exec "$NETNS" ip link set bond0 type bond lacp_rate 1
 
         for iface in "''${SLAVES[@]}"; do
-          ip netns exec "$NETNS" ip link set "$iface" up
+          ip netns exec "$NETNS" ip link set "$iface" down
           ip netns exec "$NETNS" ip link set "$iface" master bond0
+          ip netns exec "$NETNS" ip link set "$iface" up
         done
 
         ip netns exec "$NETNS" ip addr replace ${bondAddr} dev bond0
