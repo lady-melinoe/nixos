@@ -77,20 +77,20 @@
 
         ip netns exec inet ip route replace ${hostAddr}/32 dev main
 
-        ip link set ens18 down 2>/dev/null 
-        ip link set ens18 netns inet
+        ip link set ens3 down 2>/dev/null 
+        ip link set ens3 netns inet
 
-        ip netns exec inet ip link set ens18 up
-        ip netns exec inet ip addr flush dev ens18 
-        ip netns exec inet ip addr replace 103.249.239.233/24 dev ens18
+        ip netns exec inet ip link set ens3 up
+        ip netns exec inet ip addr flush dev ens3 
+        ip netns exec inet ip addr replace 103.249.239.233/24 dev ens3
 
-        ip netns exec inet iptables -t nat -C POSTROUTING -o ens18 -j MASQUERADE
-        ip netns exec inet iptables -t nat -A POSTROUTING -o ens18 -j MASQUERADE
+        ip netns exec inet iptables -t nat -C POSTROUTING -o ens3 -j MASQUERADE
+        ip netns exec inet iptables -t nat -A POSTROUTING -o ens3 -j MASQUERADE
         
         ip route add 198.18.0.255 dev inet0
         ip route add default via 198.18.0.255 dev inet0
 
-        ip netns exec inet ip route add default via 103.249.239.1 dev ens18 
+        ip netns exec inet ip route add default via 103.249.239.1 dev ens3 
 
         ip netns exec inet iptables -t nat -C PREROUTING -d 103.249.239.233 -j DNAT --to-destination 198.18.0.8
         ip netns exec inet iptables -t nat -A PREROUTING -d 103.249.239.233 -j DNAT --to-destination 198.18.0.8 
