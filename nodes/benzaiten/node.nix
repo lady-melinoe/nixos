@@ -128,6 +128,7 @@
 
         ip netns exec "$NETNS" ip link set bond0 up
         ip netns exec "$NETNS" ip addr replace ${bondAddr} dev bond0
+        ip netns exec "$NETNS" iptables -t nat -C POSTROUTING -o bond0 -j MASQUERADE 2>/dev/null || ip netns exec "$NETNS" iptables -t nat -A POSTROUTING -o bond0 -j MASQUERADE
       '';
     in {
       description = "Configure inet netns veth pair for host<->inet connectivity";
@@ -138,6 +139,6 @@
         RemainAfterExit = true;
         ExecStart = setupScript;
       };
-      path = [ pkgs.iproute2 ];
+      path = [ pkgs.iproute2 pkgs.iptables ];
     };
 }
