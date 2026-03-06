@@ -70,10 +70,19 @@ ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
         iifname $inet_ifs tcp dport { 57843 } dnat to 198.18.1.11
         iifname $inet_ifs udp dport { 57843 } dnat to 198.18.1.11
 
+        iifname "inet0" tcp dport 8080 dnat to 198.18.1.5
+        iifname "inet0" udp dport 8080 dnat to 198.18.1.5
+        iifname "inet0" tcp dport { 80, 443 } dnat to 198.18.1.1
+        iifname "inet0" udp dport { 80, 443 } dnat to 198.18.1.1
+        iifname "inet0" tcp dport { 993, 25, 465 } dnat to 198.18.1.6
+        iifname "inet0" tcp dport { 25565 } dnat to 198.18.1.8
+        iifname "inet0" tcp dport { 57843 } dnat to 198.18.1.11
+        iifname "inet0" udp dport { 57843 } dnat to 198.18.1.11
       }
       chain postrouting {
         type nat hook postrouting priority srcnat;
         ip saddr 198.18.0.0/16 oifname $inet_ifs masquerade
+        ip saddr 198.18.0.0/16 oifname "inet0" masquerade
       }
     }
 

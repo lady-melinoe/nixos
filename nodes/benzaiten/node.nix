@@ -47,7 +47,7 @@
   boot.initrd.availableKernelModules = [ "sd_mod" "usbhid" "usb_storage" "mpt3sas" "ehci_pci" ];
   boot.initrd.kernelModules = [ "kvm-intel" ];
 
-  melinoe.inetIfs = [ "eno1" "bond0" "inet0" ];
+  melinoe.inetIfs = [ "eno1" "bond0" ];
   melinoe.nodeId = 7;
   melinoe.incusDefaultStorageSource = "/array/incus/";
 
