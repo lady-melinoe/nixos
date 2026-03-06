@@ -115,8 +115,8 @@
 
         ip netns exec inet ip route add default via 130.95.13.129 dev eno1 || true
 
-        iptables -t nat -C PREROUTING -d 130.95.13.133 -j DNAT --to-destination 198.18.0.7 || true
-        iptables -t nat -A PREROUTING -d 130.95.13.133 -j DNAT --to-destination 198.18.0.7 
+        ip netns exec inet iptables -t nat -C PREROUTING -d 130.95.13.133 -j DNAT --to-destination 198.18.0.7 || true
+        ip netns exec inet iptables -t nat -A PREROUTING -d 130.95.13.133 -j DNAT --to-destination 198.18.0.7 
       '';
     in {
       description = "Configure inet netns veth pair for host<->inet connectivity";
