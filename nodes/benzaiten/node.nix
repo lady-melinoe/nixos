@@ -83,10 +83,9 @@
     let
       hostAddr = "198.18.0.${toString config.melinoe.nodeId}";
       setupScript = pkgs.writeShellScript "melinoe-inet-setup" ''
-        set -euo pipefail
 
-        ip netns add inet 2>/dev/null || true
-        ip link del inet0 2>/dev/null || true
+        ip netns add inet 2>/dev/null 
+        ip link del inet0 2>/dev/null 
 
         ip link add inet0 type veth peer name main
         ip link set main netns inet
@@ -99,21 +98,21 @@
 
         ip netns exec inet ip route replace ${hostAddr}/32 dev main
 
-        ip link set eno1 down 2>/dev/null || true
+        ip link set eno1 down 2>/dev/null 
         ip link set eno1 netns inet
 
         ip netns exec inet ip link set eno1 up
-        ip netns exec inet ip addr flush dev eno1 || true
+        ip netns exec inet ip addr flush dev eno1 
         ip netns exec inet ip addr replace 130.95.13.133/25 dev eno1
 
-        ip netns exec inet iptables -t nat -C POSTROUTING -o eno1 -j MASQUERADE || true
+        ip netns exec inet iptables -t nat -C POSTROUTING -o eno1 -j MASQUERADE 
         ip netns exec inet iptables -t nat -A POSTROUTING -o eno1 -j MASQUERADE
         
-        ip route add 198.18.0.255 dev inet0 || true
-        ip route add default via 198.18.0.255 dev inet0 || true
+        ip route add 198.18.0.255 dev inet0 
+        ip route add default via 198.18.0.255 dev inet0 
 
-        ip netns exec inet ip route add default via 130.95.13.129 dev eno1 || true
-        ip netns exec inet iptables -t nat -C PREROUTING -d 130.95.13.133 -j DNAT --to-destination 198.18.0.7 || true
+        ip netns exec inet ip route add default via 130.95.13.129 dev eno1 
+        ip netns exec inet iptables -t nat -C PREROUTING -d 130.95.13.133 -j DNAT --to-destination 198.18.0.7 
         ip netns exec inet iptables -t nat -A PREROUTING -d 130.95.13.133 -j DNAT --to-destination 198.18.0.7 
         ip netns exec inet sysctl -w net.ipv4.conf.default.rp_filter=0
         ip netns exec inet sysctl -w net.ipv4.conf.all.rp_filter=0
