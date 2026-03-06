@@ -118,8 +118,9 @@
       '';
     in {
       description = "Configure inet netns veth pair for host<->inet connectivity";
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+      after = [ "network-pre.target" ];
+      wants = [ "network-pre.target" ];
+      wantedBy = [ "multi-user.target" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
