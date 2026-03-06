@@ -17,7 +17,7 @@
   networking.hostName = "hecate";
   networking.domain = "";
   networking.useDHCP = false;
-  networking.interfaces.enp4s0.useDHCP = true;
+  networking.interfaces.enp4s0.useDHCP = false;
   networking.interfaces.enp5s0f0.useDHCP = false;
   networking.interfaces.enp5s0f1.useDHCP = false;
 
@@ -130,6 +130,6 @@
         RemainAfterExit = true;
         ExecStart = setupScript;
       };
-      path = [ pkgs.iproute2 pkgs.iptables ];
+      path = [ pkgs.iproute2 pkgs.iptables pkgs.procps ];
     };
 }

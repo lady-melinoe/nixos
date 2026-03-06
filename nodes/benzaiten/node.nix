@@ -127,6 +127,6 @@
         RemainAfterExit = true;
         ExecStart = setupScript;
       };
-      path = [ pkgs.iproute2 pkgs.iptables ];
+      path = [ pkgs.iproute2 pkgs.iptables pkgs.procps ];
     };
 }
