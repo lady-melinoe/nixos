@@ -59,6 +59,21 @@ let
     echo 1 > /proc/sys/net/ipv4/conf/$IFACE/proxy_arp
     ip addr replace 198.18.0.${toString nodeID}/32 dev "$IFACE"
   '';
+  disableBtrfsQuotas = pkgs.writeShellScript "disable-btrfs-quotas" ''
+    #!/usr/bin/env bash
+    for mnt in / /array; do
+      if ! mountpoint -q "$mnt"; then
+        continue
+      fi
+
+      fsType="$(findmnt -n -o FSTYPE --target "$mnt" || true)"
+      if [ "$fsType" != "btrfs" ]; then
+        continue
+      fi
+
+      btrfs quota disable "$mnt" || true
+    done
+  '';
 in {
   options.melinoe.incusRootSize = mkOption {
     type = types.str;
@@ -120,6 +135,16 @@ in {
         ExecStart = "${pkgs.python3}/bin/python ${routeListScript}/bin/melinoe-route-list";
         Restart = "on-failure";
         RestartSec = "5s";
+      };
+    };
+    systemd.services.disable-btrfs-quotas = {
+      description = "Disable btrfs quotas on main mounts";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "local-fs.target" ];
+      path = [ pkgs.util-linux pkgs.btrfs-progs ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${disableBtrfsQuotas}";
       };
     };
   };
