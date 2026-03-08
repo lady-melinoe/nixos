@@ -21,6 +21,33 @@ in {
       description = "Interface names (or patterns) used by nftables (e.g., eno1, bond0).";
     };
 
+    internet = mkOption {
+      type = types.listOf (types.submodule {
+        options = {
+          ip = mkOption {
+            type = types.str;
+            description = "Primary IP address for this uplink (use /32 notation).";
+          };
+          iface = mkOption {
+            type = types.str;
+            description = "Interface name that carries the internet uplink.";
+          };
+          subnet = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Subnet for the uplink if applicable.";
+          };
+          gateway = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Gateway address if needed for the uplink.";
+          };
+        };
+      });
+      default = [ ];
+      description = "Internet uplink definitions; each entry describes an IP, interface, and optional subnet/gateway.";
+    };
+
     pubroutefix = mkOption {
       type = types.listOf types.str;
       default = [ ];
