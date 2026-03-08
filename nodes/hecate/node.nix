@@ -10,6 +10,7 @@
     ../../common/firewall.nix
     ../../common/users.nix
     ../../common/container-backup.nix
+    ../../common/monitoring.nix
     ../../common/wireguard.nix
     ../../common/uplink.nix
     ./disk-config.nix

@@ -60,6 +60,8 @@ ${lib.optionalString (pubRouteFix != [ ]) ''
         tcp dport 8008 accept
 	      tcp dport 4269 accept
         udp dport 4269 accept
+        ip saddr 198.18.0.0/15 tcp dport 5201 accept # iperf3
+        ip saddr 198.18.0.0/15 tcp dport 5201 accept # iperf3
         iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept
         iifname $wg_ifs ip saddr 198.51.100.0/24 ip protocol gre accept
         ip saddr 198.18.0.0/24 tcp dport 60198 accept
