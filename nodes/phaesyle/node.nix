@@ -35,6 +35,7 @@
   melinoe.inetIfs = [ "ens99" ];
   melinoe.nodeId = 8;
   melinoe.incusDefaultStorageSource = "/array/incus/";
+  melinoe.pubroutefix = [ "103.249.239.233/32" ]; 
 
   melinoe.wgPeers = [
     {

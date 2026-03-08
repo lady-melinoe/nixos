@@ -21,6 +21,12 @@ in {
       description = "Interface names (or patterns) used by nftables (e.g., eno1, bond0).";
     };
 
+    pubroutefix = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      description = "Optional list of strings used to work around public routing quirks.";
+    };
+
     wgPorts = mkOption {
       type = types.listOf types.int;
       default = [ ];

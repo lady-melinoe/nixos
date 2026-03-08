@@ -11,6 +11,9 @@
     define node_gre_ifs = "node-*"
     define wg_ifs = "wg-*"
     define gre_ctmark = { ${builtins.concatStringsSep ", " (builtins.genList (i: "\"node-${toString (i)}\" : ${toString (1000 + i)}") 255)} }
+${lib.optionalString (config.melinoe.pubroutefix != [ ]) ''
+    define pubroutefix = { ${builtins.concatStringsSep ", " config.melinoe.pubroutefix} }
+''}
 
     table inet filter {
       chain INPUT {
@@ -22,7 +25,7 @@
         iif "lo" accept
         tcp dport 22 accept
         tcp dport 8008 accept
-	tcp dport 4269 accept
+	      tcp dport 4269 accept
         udp dport 4269 accept
         iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept
         iifname $wg_ifs ip saddr 198.51.100.0/24 ip protocol gre accept
@@ -83,6 +86,19 @@ ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
         type nat hook postrouting priority srcnat;
         ip saddr 198.18.0.0/16 oifname $inet_ifs masquerade
         oifname "inet0" masquerade
+      }
+      chain output {
+        type nat hook output priority dstnat; policy accept;
+${lib.optionalString (config.melinoe.pubroutefix != [ ]) ''
+        ip daddr $pubroutefix tcp dport 8080 dnat to 198.18.1.5
+        ip daddr $pubroutefix udp dport 8080 dnat to 198.18.1.5
+        ip daddr $pubroutefix tcp dport { 80, 443 } dnat to 198.18.1.1
+        ip daddr $pubroutefix udp dport { 80, 443 } dnat to 198.18.1.1
+        ip daddr $pubroutefix tcp dport { 993, 25, 465 } dnat to 198.18.1.6
+        ip daddr $pubroutefix tcp dport { 25565 } dnat to 198.18.1.8
+        ip daddr $pubroutefix tcp dport { 57843 } dnat to 198.18.1.11
+        ip daddr $pubroutefix udp dport { 57843 } dnat to 198.18.1.11
+''}
       }
     }
 
