@@ -57,32 +57,26 @@
     {
       id = 2;
       endpoint = "198.19.0.2";
-      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
     {
       id = 3;
       endpoint = "198.19.0.3";
-      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
     {
       id = 7;
       endpoint = "198.19.0.7";
-      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
     {
       id = 4;
       endpoint = "lachesis.infra.melinoe.xyz";
-      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
     {
       id = 5;
       endpoint = "atropos.infra.melinoe.xyz";
-      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
     {
       id = 8;
       endpoint = "phaesyle.infra.melinoe.xyz";
-      allowedIPs = [ "198.19.3.0/24" "198.51.100.0/24" ];
     }
   ];
 

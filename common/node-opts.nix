@@ -46,6 +46,7 @@ in {
           };
           allowedIPs = mkOption {
             type = types.listOf types.str;
+            default = [ "198.19.3.0/24" "198.51.100.0/24" ];
             description = "Allowed IPs to route via this peer.";
           };
           persistentKeepalive = mkOption {
