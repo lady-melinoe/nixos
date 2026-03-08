@@ -48,20 +48,28 @@
 
   melinoe.wgPeers = [
     {
-      id = 7;
-      endpoint = "benzaiten.infra.melinoe.xyz";
-    }
-    {
       id = 2;
       endpoint = "arke.infra.melinoe.xyz";
+    }
+    {
+      id = 3;
+      endpoint = "hecate.infra.melinoe.xyz";
+    }
+    {
+      id = 4;
+      endpoint = "lachesis.infra.melinoe.xyz";
+    }
+    {
+      id = 5;
+      endpoint = "atropos.infra.melinoe.xyz";
     }
     {
       id = 6;
       endpoint = "ceridwen.infra.melinoe.xyz";
     }
     {
-      id = 3;
-      endpoint = "hecate.infra.melinoe.xyz";
+      id = 7;
+      endpoint = "benzaiten.infra.melinoe.xyz";
     }
   ];
 }
