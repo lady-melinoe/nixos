@@ -18,7 +18,7 @@ in {
     inetIfs = mkOption {
       type = types.listOf types.str;
       default = [ ];
-      description = "Interface names (or patterns) used by nftables (e.g., eno1, bond0).";
+      description = "Interface names (or patterns) used by nftables (e.g., eno1, bond0); may be empty.";
     };
 
     internet = mkOption {
@@ -46,12 +46,6 @@ in {
       });
       default = [ ];
       description = "Internet uplink definitions; each entry describes an IP, interface, and optional subnet/gateway.";
-    };
-
-    pubroutefix = mkOption {
-      type = types.listOf types.str;
-      default = [ ];
-      description = "Optional list of strings used to work around public routing quirks.";
     };
 
     wgPorts = mkOption {
@@ -92,10 +86,6 @@ in {
     {
       assertion = config.melinoe.nodeId != null;
       message = "melinoe.nodeId must be set for this host.";
-    }
-    {
-      assertion = config.melinoe.inetIfs != [ ];
-      message = "melinoe.inetIfs must be set for this host.";
     }
   ];
 }

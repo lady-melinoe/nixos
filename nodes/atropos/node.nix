@@ -35,7 +35,7 @@
 
   services.qemuGuest.enable = true;
 
-  melinoe.inetIfs = [ "ens99" ];
+  melinoe.inetIfs = [ ];
   melinoe.nodeId = 5;
   melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [

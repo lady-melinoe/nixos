@@ -1,19 +1,23 @@
 { config, lib, ... }:
 
-{
+let
+  pubRouteFix = map (entry: entry.ip) config.melinoe.internet;
+in {
 
   networking.firewall.enable = false;
   networking.nftables.enable = true;
   networking.nftables.ruleset = ''
     flush ruleset
+${lib.optionalString (config.melinoe.inetIfs != [ ]) ''
     define inet_ifs = { ${lib.concatStringsSep ", " (map (i: "\"${i}\"") config.melinoe.inetIfs)} }
+''}
     define vm_ifs = "vm-*"
     define node_gre_ifs = "node-*"
     define wg_ifs = "wg-*"
     define gre_ctmark = { ${builtins.concatStringsSep ", " (builtins.genList (i: "\"node-${toString (i)}\" : ${toString (1000 + i)}") 255)} }
-${lib.optionalString (config.melinoe.pubroutefix != [ ]) ''
-    define pubroutefix = { ${builtins.concatStringsSep ", " config.melinoe.pubroutefix} }
-''}
+${lib.optionalString (pubRouteFix != [ ]) ''
+    define pubroutefix = { ${builtins.concatStringsSep ", " pubRouteFix} }
+''} 
 
     table inet filter {
       chain INPUT {
@@ -54,8 +58,10 @@ ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
     table inet raw {
       chain prerouting {
         type filter hook prerouting priority raw; policy accept;
+${lib.optionalString (config.melinoe.inetIfs != [ ]) ''
         iifname $inet_ifs ip saddr { 198.18.0.0/16, 198.51.100.0/24 } drop
         iifname $inet_ifs ip daddr { 198.18.0.0/16, 198.51.100.0/24 } drop
+''}
         iifname $vm_ifs ip saddr 198.18.0.0/24 drop
         iifname $vm_ifs ip saddr != 198.18.0.0/16 drop 
       }
@@ -64,6 +70,7 @@ ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
     table ip nat {
       chain prerouting {
         type nat hook prerouting priority dstnat;
+${lib.optionalString (config.melinoe.inetIfs != [ ]) ''
         iifname $inet_ifs tcp dport 8080 dnat to 198.18.1.5
         iifname $inet_ifs udp dport 8080 dnat to 198.18.1.5
         iifname $inet_ifs tcp dport { 80, 443 } dnat to 198.18.1.1
@@ -72,6 +79,7 @@ ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
         iifname $inet_ifs tcp dport { 25565 } dnat to 198.18.1.8
         iifname $inet_ifs tcp dport { 57843 } dnat to 198.18.1.11
         iifname $inet_ifs udp dport { 57843 } dnat to 198.18.1.11
+''}
 
         iifname "inet0" tcp dport 8080 dnat to 198.18.1.5
         iifname "inet0" udp dport 8080 dnat to 198.18.1.5
@@ -84,12 +92,14 @@ ${lib.optionalString (config.melinoe.wgPorts != [ ]) ''
       }
       chain postrouting {
         type nat hook postrouting priority srcnat;
+${lib.optionalString (config.melinoe.inetIfs != [ ]) ''
         ip saddr 198.18.0.0/16 oifname $inet_ifs masquerade
+''}
         oifname "inet0" masquerade
       }
       chain output {
         type nat hook output priority dstnat; policy accept;
-${lib.optionalString (config.melinoe.pubroutefix != [ ]) ''
+${lib.optionalString (pubRouteFix != [ ]) ''
         ip daddr $pubroutefix tcp dport 8080 dnat to 198.18.1.5
         ip daddr $pubroutefix udp dport 8080 dnat to 198.18.1.5
         ip daddr $pubroutefix tcp dport { 80, 443 } dnat to 198.18.1.1

@@ -33,10 +33,9 @@
 
   services.qemuGuest.enable = true;
 
-  melinoe.inetIfs = [ "ens99" ];
+  melinoe.inetIfs = [ ];
   melinoe.nodeId = 8;
   melinoe.incusDefaultStorageSource = "/array/incus/";
-  melinoe.pubroutefix = [ "103.249.239.233/32" ]; 
   melinoe.internet = [
     {
       ip = "103.249.239.233/32";
