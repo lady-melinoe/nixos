@@ -66,6 +66,7 @@ in
         RemainAfterExit = true;
         ExecStart = pkgs.writeShellScript "melinoe-inet-setup" ''
           ip netns add inet
+          ip netns exec inet ip link set lo up
           ip link del inet0
           ip link add inet0 type veth peer name main
           ip link set main netns inet
