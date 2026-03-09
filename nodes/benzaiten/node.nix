@@ -23,20 +23,6 @@
   networking.interfaces.eno1.useDHCP = false;
   networking.interfaces.eno3.useDHCP = false;
   networking.interfaces.eno4.useDHCP = false;
-  networking.bonds.bond0 = {
-    interfaces = [ "eno3" "eno4" ];
-    driverOptions = {
-      mode = "802.3ad";
-      lacp_rate = "fast";
-    };
-  };
-  networking.interfaces.bond0 = {
-    useDHCP = false;
-    ipv4.addresses = [{
-      address = "198.19.0.${toString config.melinoe.nodeId}";
-      prefixLength = 24;
-    }];
-  };
 
   boot.loader.grub = {
     efiSupport = true;
@@ -49,7 +35,7 @@
   boot.initrd.availableKernelModules = [ "sd_mod" "usbhid" "usb_storage" "mpt3sas" "ehci_pci" ];
   boot.initrd.kernelModules = [ "kvm-intel" ];
 
-  melinoe.inetIfs = [ "bond0" "eno3" "eno4" ];
+  melinoe.inetIfs = [ ];
   melinoe.nodeId = 7;
   melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [
@@ -58,6 +44,12 @@
       iface = [ "eno1" ];
       subnet = "130.95.13.128/25";
       gateway = "130.95.13.129";
+    }
+    {
+      ip = "198.19.0.${toString config.melinoe.nodeId}/24";
+      iface = [ "eno3" "eno4" ];
+      subnet = "198.19.0.0/24";
+      gateway = null;
     }
   ];
 
