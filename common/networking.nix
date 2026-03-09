@@ -291,7 +291,7 @@ let
   mkNeighborStanza = peer: ''
     neighbor ${peer.addr} remote-as ${toString (64512 + peer.id)}
     neighbor ${peer.addr} update-source ${localWgAddr}
-    neighbor ${peer.addr} bfd
+    neighbor ${peer.addr} bfd interface wg-${toString peer.id}
   '';
   mkNeighborAfi = peer: ''
     neighbor ${peer.addr} activate
@@ -339,6 +339,7 @@ ${lib.optionalString (pubRouteFix != [ ]) ''
         ip saddr 198.18.0.0/15 tcp dport 5201 accept # iperf3
         iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept
         iifname $wg_ifs ip saddr 198.19.3.0/24 udp dport 3784 accept
+        iifname $wg_ifs ip saddr 198.19.3.0/24 udp sport 3784 accept
         iifname $wg_ifs ip saddr 198.51.100.0/24 ip protocol gre accept
         ip saddr 198.18.0.0/24 tcp dport 60198 accept
         ip saddr 198.18.1.5 tcp dport 61208 accept
