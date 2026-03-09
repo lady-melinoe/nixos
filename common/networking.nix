@@ -303,6 +303,7 @@ let
       receive-interval 2000
       detect-multiplier 3
       echo-mode
+      echo
       echo transmit-interval 300
       echo receive-interval 300
       no shutdown
