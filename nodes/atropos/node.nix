@@ -12,7 +12,6 @@
     ../../common/users.nix
     ../../common/container-backup.nix
     ../../common/monitoring.nix
-    ../../common/uplink.nix
     ./disk-config.nix
   ];
 
