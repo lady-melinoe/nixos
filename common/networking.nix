@@ -298,7 +298,7 @@ let
     neighbor ${peer.addr} route-map NODE-IN in
     neighbor ${peer.addr} route-map NODE-OUT out
   '';
-  mkBfdStanza = peer ''
+  mkBfdStanza = peer: ''
     peer ${peer.addr} interface wg-${toString peer.id}
       no shutdown
     !
