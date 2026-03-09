@@ -50,7 +50,8 @@ let
       ip netns exec inet iptables -t nat -C POSTROUTING -o ${iface} -j MASQUERADE
       ip netns exec inet iptables -t nat -A POSTROUTING -o ${iface} -j MASQUERADE
       ip netns exec inet iptables -t nat -C PREROUTING -d ${ipAddr} -j DNAT --to-destination ${hostAddr}
-      ip netns exec inet iptables -t nat -A PREROUTING -d ${ipAddr} -j DNAT --to-destination ${hostAddr}
+      ip netns exec inet iptables -t nat -C PREROUTING -i ${iface} -d ${ipAddr} -j DNAT --to-destination ${hostAddr}
+      ip netns exec inet iptables -t nat -A PREROUTING -i ${iface} -d ${ipAddr} -j DNAT --to-destination ${hostAddr}
     '';
 in
 {
