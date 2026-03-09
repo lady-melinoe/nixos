@@ -30,14 +30,10 @@
   networking.hostName = "arke";
   networking.domain = "";
   networking.useDHCP = false;
-  networking.interfaces.ens18.useDHCP = false;
-  networking.interfaces.ens19.useDHCP = false;
-
   systemd.oomd.enable = false;
 
   services.qemuGuest.enable = true;
 
-  melinoe.inetIfs = [ ];
   melinoe.nodeId = 2;
   melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [

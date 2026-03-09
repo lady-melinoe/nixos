@@ -15,12 +15,6 @@ in {
       description = "Source path for the Incus default storage pool (e.g., /var/lib/incus/storage-pools/default).";
     };
 
-    inetIfs = mkOption {
-      type = types.listOf types.str;
-      default = [ ];
-      description = "Interface names (or patterns) used by nftables (e.g., eno1, bond0); may be empty.";
-    };
-
     internet = mkOption {
       type = types.listOf (types.submodule {
         options = {

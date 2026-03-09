@@ -30,13 +30,11 @@
   networking.hostName = "lachesis";
   networking.domain = "";
   networking.useDHCP = false;
-  networking.interfaces.ens3.useDHCP = false;
 
   systemd.oomd.enable = false;
 
   services.qemuGuest.enable = true;
 
-  melinoe.inetIfs = [ ];
   melinoe.nodeId = 4;
   melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [

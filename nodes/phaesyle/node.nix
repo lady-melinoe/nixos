@@ -28,13 +28,11 @@
   networking.hostName = "phaesyle";
   networking.domain = "";
   networking.useDHCP = false;
-  networking.interfaces.ens3.useDHCP = false;
 
   systemd.oomd.enable = false;
 
   services.qemuGuest.enable = true;
 
-  melinoe.inetIfs = [ ];
   melinoe.nodeId = 8;
   melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [

@@ -19,9 +19,6 @@
   networking.hostName = "hecate";
   networking.domain = "";
   networking.useDHCP = false;
-  networking.interfaces.enp4s0.useDHCP = false;
-  networking.interfaces.enp5s0f0.useDHCP = false;
-  networking.interfaces.enp5s0f1.useDHCP = false;
 
   environment.systemPackages = with pkgs; [
     python3
@@ -39,7 +36,6 @@
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
   boot.initrd.kernelModules = [ "nvme" ];
 
-  melinoe.inetIfs = [ ];
   melinoe.nodeId = 3;
   melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [

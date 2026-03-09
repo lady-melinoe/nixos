@@ -20,9 +20,6 @@
   networking.hostName = "benzaiten";
   networking.domain = "";
   networking.useDHCP = false;
-  networking.interfaces.eno1.useDHCP = false;
-  networking.interfaces.eno3.useDHCP = false;
-  networking.interfaces.eno4.useDHCP = false;
 
   boot.loader.grub = {
     efiSupport = true;
@@ -35,7 +32,6 @@
   boot.initrd.availableKernelModules = [ "sd_mod" "usbhid" "usb_storage" "mpt3sas" "ehci_pci" ];
   boot.initrd.kernelModules = [ "kvm-intel" ];
 
-  melinoe.inetIfs = [ ];
   melinoe.nodeId = 7;
   melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [
