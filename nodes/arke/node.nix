@@ -6,7 +6,7 @@
     inputs.disko.nixosModules.disko
     ../../common/node-opts.nix
     ../../common/incus.nix
-    ../../common/underlay.nix
+    ../../common/networking.nix
     ../../common/settings.nix
     ../../common/firewall.nix
     ../../common/users.nix
