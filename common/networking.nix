@@ -300,6 +300,12 @@ let
   mkBfdStanza = peer: ''
     peer ${peer.addr} interface wg-${toString peer.id}
       no shutdown
+      transmit-interval 300
+      receive-interval 300
+      detect-multiplier 3
+      echo-mode
+      echo transmit-interval 300
+      echo receive-interval 300
     !
   '';
 in {
@@ -509,12 +515,6 @@ ${neighborAfiLines}
           exit-address-family
         !
         bfd
-          profile fast
-            transmit-interval 300
-            receive-interval 300
-            detect-multiplier 3
-            echo-mode
-          !
 ${bfdLines}
         !
       '';
