@@ -31,19 +31,13 @@
   networking.domain = "";
   networking.useDHCP = false;
   networking.interfaces.ens18.useDHCP = false;
-  networking.interfaces.ens19 = {
-    useDHCP = false;
-    ipv4.addresses = [{
-      address = "198.19.0.${toString config.melinoe.nodeId}";
-      prefixLength = 24;
-    }];
-  };
+  networking.interfaces.ens19.useDHCP = false;
 
   systemd.oomd.enable = false;
 
   services.qemuGuest.enable = true;
 
-  melinoe.inetIfs = [ "ens19" ];
+  melinoe.inetIfs = [ ];
   melinoe.nodeId = 2;
   melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [
@@ -52,6 +46,12 @@
       iface = "ens18";
       subnet = "130.95.13.128/25";
       gateway = "130.95.13.129";
+    }
+    {
+      ip = "198.19.0.${toString config.melinoe.nodeId}/24";
+      iface = "ens19";
+      subnet = "198.19.0.0/24";
+      gateway = null;
     }
   ];
 
