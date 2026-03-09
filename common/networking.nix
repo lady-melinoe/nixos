@@ -490,14 +490,7 @@ ${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
         neighborAfiLines = lib.concatMapStrings mkNeighborAfi peers;
         bfdLines = lib.concatMapStrings mkBfdStanza peers;
       in ''
-        bfd
-          profile fast
-            transmit-interval 300
-            receive-interval 300
-            detect-multiplier 3
-          !
-${bfdLines}
-        !
+
         ip prefix-list NODE-LOOPS permit 198.51.100.0/24 le 32
 
         route-map NODE-IN permit 10
@@ -514,6 +507,14 @@ ${neighborLines}
             network 198.51.100.${toString nodeID}/32
 ${neighborAfiLines}
           exit-address-family
+        !
+        bfd
+          profile fast
+            transmit-interval 300
+            receive-interval 300
+            detect-multiplier 3
+          !
+${bfdLines}
         !
       '';
   };
