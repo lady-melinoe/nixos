@@ -7,7 +7,6 @@
     ../../common/incus.nix
     ../../common/networking.nix
     ../../common/settings.nix
-    ../../common/firewall.nix
     ../../common/users.nix
     ../../common/container-backup.nix
     ../../common/monitoring.nix
