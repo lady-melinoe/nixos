@@ -86,9 +86,6 @@ in
           ${lib.optionalString (firstUplink.gateway != null) ''
             ip netns exec inet ip route add default via ${firstUplink.gateway} dev ${if builtins.length firstUplink.iface > 1 then "bond0" else builtins.head firstUplink.iface}
           ''}
-
-
-
         '';
       };
       path = [ pkgs.iproute2 pkgs.iptables pkgs.procps ];
