@@ -53,9 +53,9 @@ in
           ip link set main netns inet
           ip addr replace ${hostAddr}/32 dev inet0
           ip link set inet0 up
-          ip netns exec inet ip route replace ${hostAddr}/32 dev main
           ip netns exec inet ip link set main up
           ip netns exec inet ip addr replace 198.18.0.255/32 dev main
+          ip netns exec inet ip route replace ${hostAddr}/32 dev main
           ip route add 198.18.0.255 dev inet0
           ip route add default via 198.18.0.255 dev inet0
           ip netns exec inet sysctl -w net.ipv4.conf.default.rp_filter=0
