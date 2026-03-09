@@ -513,7 +513,7 @@ ${neighborAfiLines}
             transmit-interval 300
             receive-interval 300
             detect-multiplier 3
-            echo transmit-interval 50
+            echo-mode
           !
 ${bfdLines}
         !
