@@ -7,9 +7,11 @@ let
 
   hostAddr = "198.18.0.${toString cfg.nodeId}";
 
-  mkUplinkScript = uplink:
+  mkUplinkScript = idx: uplink:
     let
-      iface = builtins.head uplink.iface;
+      ifaces = uplink.iface;
+      isBonded = builtins.length ifaces > 1;
+      iface = if isBonded then "bond${toString idx}" else builtins.head ifaces;
       ipParts = lib.splitString "/" uplink.ip;
       ipAddr = builtins.head ipParts;
       ipPrefixFromIp = if builtins.length ipParts > 1 then builtins.elemAt ipParts 1 else null;
@@ -23,9 +25,20 @@ let
         else "${ipAddr}/32";
     in
     ''
-      ip link set ${iface} down
-      ip link set ${iface} netns inet
-      ip netns exec inet ip link set ${iface} up
+      ${lib.concatMapStringsSep "\n" (name: ''
+        ip link set ${name} down
+        ip link set ${name} netns inet
+      '') ifaces}
+      ${lib.optionalString (!isBonded) ''
+        ip netns exec inet ip link set ${iface} up
+      ''}
+      ${lib.optionalString isBonded ''
+        ip netns exec inet ip link add ${iface} type bond mode 802.3ad
+        ip netns exec inet ip link set ${iface} up
+        ${lib.concatMapStringsSep "\n" (name: ''
+          ip netns exec inet ip link set ${name} master ${iface}
+        '') ifaces}
+      ''}
       ip netns exec inet ip addr flush dev ${iface}
       ip netns exec inet ip addr replace ${ipWithPrefix} dev ${iface}
       ${lib.optionalString (uplink.subnet != null) ''
@@ -62,11 +75,11 @@ in
           ip netns exec inet sysctl -w net.ipv4.conf.default.rp_filter=0
           ip netns exec inet sysctl -w net.ipv4.conf.all.rp_filter=0          
 
-          ${lib.concatStringsSep "\n" (map mkUplinkScript cfg.internet)}
+          ${lib.concatStringsSep "\n" (lib.imap0 mkUplinkScript cfg.internet)}
 
           # this one is only for the first interface for when we add multi iface support
           ${lib.optionalString (firstUplink.gateway != null) ''
-            ip netns exec inet ip route add default via ${firstUplink.gateway} dev ${builtins.head firstUplink.iface}
+            ip netns exec inet ip route add default via ${firstUplink.gateway} dev ${if builtins.length firstUplink.iface > 1 then "bond0" else builtins.head firstUplink.iface}
           ''}
 
 
