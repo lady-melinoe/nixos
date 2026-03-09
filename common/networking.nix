@@ -291,12 +291,17 @@ let
   mkNeighborStanza = peer: ''
     neighbor ${peer.addr} remote-as ${toString (64512 + peer.id)}
     neighbor ${peer.addr} update-source ${localWgAddr}
-    neighbor ${peer.addr} bfd interface wg-${toString peer.id}
+    neighbor ${peer.addr} bfd
   '';
   mkNeighborAfi = peer: ''
     neighbor ${peer.addr} activate
     neighbor ${peer.addr} route-map NODE-IN in
     neighbor ${peer.addr} route-map NODE-OUT out
+  '';
+  mkBfdStanza = peer ''
+    peer ${peer.addr} interface wg-${toString peer.id}
+      no shutdown
+    !
   '';
 in {
   networking.interfaces.lo.ipv4.addresses = [
@@ -484,6 +489,7 @@ ${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
       let
         neighborLines = lib.concatMapStrings mkNeighborStanza peers;
         neighborAfiLines = lib.concatMapStrings mkNeighborAfi peers;
+        bfdLines = lib.concatMapStrings mkBfdStanza peers;
       in ''
         bfd
           profile fast
@@ -491,6 +497,7 @@ ${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
             receive-interval 300
             detect-multiplier 3
           !
+${bfdLines}
         !
         ip prefix-list NODE-LOOPS permit 198.51.100.0/24 le 32
 
