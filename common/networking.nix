@@ -299,13 +299,13 @@ let
   '';
   mkBfdStanza = peer: ''
     peer ${peer.addr} interface wg-${toString peer.id}
-      no shutdown
-      transmit-interval 300
-      receive-interval 300
+      transmit-interval 2000
+      receive-interval 2000
       detect-multiplier 3
       echo-mode
       echo transmit-interval 300
       echo receive-interval 300
+      no shutdown
     !
   '';
 in {
