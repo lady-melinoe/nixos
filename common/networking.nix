@@ -291,6 +291,7 @@ let
   mkNeighborStanza = peer: ''
     neighbor ${peer.addr} remote-as ${toString (64512 + peer.id)}
     neighbor ${peer.addr} update-source ${localWgAddr}
+    neighbor ${peer.addr} bfd
   '';
   mkNeighborAfi = peer: ''
     neighbor ${peer.addr} activate
@@ -476,11 +477,19 @@ ${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
 
   services.frr = {
     bgpd.enable = true;
+    bfdd.enable = true;
     config =
       let
         neighborLines = lib.concatMapStrings mkNeighborStanza peers;
         neighborAfiLines = lib.concatMapStrings mkNeighborAfi peers;
       in ''
+        bfd
+          profile fast
+            transmit-interval 300
+            receive-interval 300
+            detect-multiplier 3
+          !
+        !
         ip prefix-list NODE-LOOPS permit 198.51.100.0/24 le 32
 
         route-map NODE-IN permit 10
