@@ -2,10 +2,42 @@
 let
   cfg = config.melinoe;
   nodeID = cfg.nodeId;
+  keys = import ./wg-keys.nix;
+  basePort = 64512;
   wgPrefix = "198.19.3";
   peers = map (p: { id = p.id; addr = "${wgPrefix}.${toString p.id}"; }) cfg.wgPeers;
   bgpAs = 64512 + nodeID;
   localWgAddr = "${wgPrefix}.${toString nodeID}";
+  peerToCfg = peer: let
+    pid = peer.id;
+    allowed = lib.unique (peer.allowedIPs ++ [ "${wgPrefix}.${toString pid}/32" ]);
+  in {
+    publicKey = keys."${toString pid}";
+    allowedIPs = allowed;
+    endpoint = "${peer.endpoint}:${toString (basePort + cfg.nodeId)}";
+    persistentKeepalive = peer.persistentKeepalive;
+  };
+  runtimeShell = "${pkgs.runtimeShell}";
+  ipBin = "${pkgs.iproute2}/bin/ip";
+  mkInterface = peer:
+    let
+      ifName = "wg-${toString peer.id}";
+    in {
+      name = ifName;
+      value = {
+        ips = [ ];
+        listenPort = basePort + peer.id;
+        privateKeyFile = "/etc/melinoe/wg.privatekey";
+        peers = [ (peerToCfg peer) ];
+        postSetup = ''
+          ip address replace ${localWgAddr}/32 peer ${wgPrefix}.${toString peer.id}/32 dev ${ifName}
+          ${runtimeShell} -c '${ipBin} route del 198.19.3.0/24 dev ${ifName} || true'
+          ${runtimeShell} -c '${ipBin} route del 198.51.100.0/24 dev ${ifName} || true'
+        '';
+      };
+    };
+  interfaces = lib.listToAttrs (map mkInterface cfg.wgPeers);
+  ports = map (peer: basePort + peer.id) cfg.wgPeers;
   routeListScript = pkgs.writeTextFile {
     name = "melinoe-route-list.py";
     destination = "/bin/melinoe-route-list";
@@ -202,6 +234,8 @@ in {
       prefixLength = 32;
     }
   ];
+  networking.wireguard.interfaces = lib.mkIf (cfg.wgPeers != [ ]) interfaces;
+  melinoe.wgPorts = lib.mkIf (cfg.wgPeers != [ ]) ports;
 
   systemd.services.melinoe-route-deploy = {
     description = "Run melinoe route deployment";

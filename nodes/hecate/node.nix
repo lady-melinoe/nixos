@@ -4,14 +4,13 @@
   imports = [
     inputs.disko.nixosModules.disko
     ../../common/node-opts.nix
-    ../../common/overlay.nix
+    ../../common/incus.nix
     ../../common/underlay.nix
     ../../common/settings.nix
     ../../common/firewall.nix
     ../../common/users.nix
     ../../common/container-backup.nix
     ../../common/monitoring.nix
-    ../../common/wireguard.nix
     ../../common/uplink.nix
     ./disk-config.nix
   ];
