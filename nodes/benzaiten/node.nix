@@ -46,7 +46,7 @@
       gateway = "130.95.13.129";
     }
     {
-      ip = "198.19.0.${toString config.melinoe.nodeId}/24";
+      ip = "198.19.0.${toString config.melinoe.nodeId}/32";
       iface = [ "eno3" "eno4" ];
       subnet = "198.19.0.0/24";
       gateway = null;
