@@ -29,8 +29,8 @@ let
         peers = [ (peerToCfg peer) ];
         postSetup = ''
           ip address replace ${localWgAddr}/32 peer ${wgPrefix}.${toString peer.id}/32 dev ${ifName}
-          ip route del 198.19.3.0/24 dev ${ifName}
-          ip route del 198.51.100.0/24 dev ${ifName}
+          sh -c 'ip route del 198.19.3.0/24 dev ${ifName} || true'
+          sh -c 'ip route del 198.51.100.0/24 dev ${ifName} || true'
         '';
       };
     };
