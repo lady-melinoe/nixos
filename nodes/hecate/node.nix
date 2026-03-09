@@ -27,20 +27,6 @@
     python3
     vorbis-tools
   ];
-  networking.bonds.bond0 = {
-    interfaces = [ "enp5s0f0" "enp5s0f1" ];
-    driverOptions = {
-      mode = "802.3ad";
-      lacp_rate = "fast";
-    };
-  };
-  networking.interfaces.bond0 = {
-    useDHCP = false;
-    ipv4.addresses = [{
-      address = "198.19.0.${toString config.melinoe.nodeId}";
-      prefixLength = 24;
-    }];
-  };
 
   boot.loader.grub = {
     efiSupport = true;
@@ -53,7 +39,7 @@
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
   boot.initrd.kernelModules = [ "nvme" ];
 
-  melinoe.inetIfs = [ "bond0" "enp5s0f0" "enp5s0f1" ];
+  melinoe.inetIfs = [ ];
   melinoe.nodeId = 3;
   melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [
@@ -62,6 +48,14 @@
       iface = [ "enp4s0" ];
       subnet = "130.95.13.128/25";
       gateway = "130.95.13.129";
+    }
+    {
+      ip = "198.19.0.${toString config.melinoe.nodeId}/32";
+      iface = [ "enp5s0f0" "enp5s0f1" ];
+      bondMode = "lacp";
+      lacpRate = "fast";
+      subnet = "198.19.0.0/24";
+      gateway = null;
     }
   ];
 
