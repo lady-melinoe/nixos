@@ -29,8 +29,8 @@ in {
             description = "Primary IP address for this uplink (use /32 notation).";
           };
           iface = mkOption {
-            type = types.str;
-            description = "Interface name that carries the internet uplink.";
+            type = types.listOf types.str;
+            description = "Interface names that carry the internet uplink; if multiple interfaces are specified, they will be LACP bonded.";
           };
           subnet = mkOption {
             type = types.nullOr types.str;

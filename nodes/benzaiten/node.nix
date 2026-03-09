@@ -55,7 +55,7 @@
   melinoe.internet = [
     {
       ip = "130.95.13.133/32";
-      iface = "eno1";
+      iface = [ "eno1" ];
       subnet = "130.95.13.128/25";
       gateway = "130.95.13.129";
     }

@@ -42,7 +42,7 @@
   melinoe.internet = [
     {
       ip = "198.19.1.4/32";
-      iface = "ens3";
+      iface = [ "ens3" ];
       subnet = "198.19.1.0/24";
       gateway = "198.19.1.1";
     }

@@ -43,13 +43,13 @@
   melinoe.internet = [
     {
       ip = "130.95.13.219/32";
-      iface = "ens18";
+      iface = [ "ens18" ];
       subnet = "130.95.13.128/25";
       gateway = "130.95.13.129";
     }
     {
       ip = "198.19.0.${toString config.melinoe.nodeId}/24";
-      iface = "ens19";
+      iface = [ "ens19" ];
       subnet = "198.19.0.0/24";
       gateway = null;
     }

@@ -9,6 +9,7 @@ let
 
   mkUplinkScript = uplink:
     let
+      iface = builtins.head uplink.iface;
       ipParts = lib.splitString "/" uplink.ip;
       ipAddr = builtins.head ipParts;
       ipPrefixFromIp = if builtins.length ipParts > 1 then builtins.elemAt ipParts 1 else null;
@@ -22,16 +23,16 @@ let
         else "${ipAddr}/32";
     in
     ''
-      ip link set ${uplink.iface} down
-      ip link set ${uplink.iface} netns inet
-      ip netns exec inet ip link set ${uplink.iface} up
-      ip netns exec inet ip addr flush dev ${uplink.iface}
-      ip netns exec inet ip addr replace ${ipWithPrefix} dev ${uplink.iface}
+      ip link set ${iface} down
+      ip link set ${iface} netns inet
+      ip netns exec inet ip link set ${iface} up
+      ip netns exec inet ip addr flush dev ${iface}
+      ip netns exec inet ip addr replace ${ipWithPrefix} dev ${iface}
       ${lib.optionalString (uplink.subnet != null) ''
-        ip netns exec inet ip route replace ${uplink.subnet} dev ${uplink.iface}
+        ip netns exec inet ip route replace ${uplink.subnet} dev ${iface}
       ''}
-      ip netns exec inet iptables -t nat -C POSTROUTING -o ${uplink.iface} -j MASQUERADE
-      ip netns exec inet iptables -t nat -A POSTROUTING -o ${uplink.iface} -j MASQUERADE
+      ip netns exec inet iptables -t nat -C POSTROUTING -o ${iface} -j MASQUERADE
+      ip netns exec inet iptables -t nat -A POSTROUTING -o ${iface} -j MASQUERADE
       ip netns exec inet iptables -t nat -C PREROUTING -d ${ipAddr} -j DNAT --to-destination ${hostAddr}
       ip netns exec inet iptables -t nat -A PREROUTING -d ${ipAddr} -j DNAT --to-destination ${hostAddr}
     '';
@@ -65,7 +66,7 @@ in
 
           # this one is only for the first interface for when we add multi iface support
           ${lib.optionalString (firstUplink.gateway != null) ''
-            ip netns exec inet ip route add default via ${firstUplink.gateway} dev ${firstUplink.iface}
+            ip netns exec inet ip route add default via ${firstUplink.gateway} dev ${builtins.head firstUplink.iface}
           ''}
 
 
