@@ -56,17 +56,22 @@
   ];
 
   melinoe.wgPeers = [
-    {
-      id = 5;
-      endpoint = "atropos.infra.melinoe.xyz";
-    }
+
     {
       id = 2;
       endpoint = "198.19.0.2";
     }
     {
+      id = 3;
+      endpoint = "198.19.0.3";
+    }
+    {
       id = 4;
       endpoint = "lachesis.infra.melinoe.xyz";
+    }
+    {
+      id = 5;
+      endpoint = "atropos.infra.melinoe.xyz";
     }
     {
       id = 6;
