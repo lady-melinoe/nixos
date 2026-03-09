@@ -32,6 +32,16 @@ in {
             type = types.listOf types.str;
             description = "Interface names that carry the internet uplink; if multiple interfaces are specified, they will be LACP bonded.";
           };
+          bondMode = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Bonding mode for a multi-interface uplink (currently only \"lacp\" is supported).";
+          };
+          lacpRate = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "LACP rate for a bonded uplink (e.g., \"fast\" or \"slow\").";
+          };
           subnet = mkOption {
             type = types.nullOr types.str;
             default = null;
@@ -82,10 +92,32 @@ in {
     };
   };
 
-  config.assertions = [
-    {
-      assertion = config.melinoe.nodeId != null;
-      message = "melinoe.nodeId must be set for this host.";
-    }
-  ];
+  config.assertions =
+    [
+      {
+        assertion = config.melinoe.nodeId != null;
+        message = "melinoe.nodeId must be set for this host.";
+      }
+    ]
+    ++ lib.concatMap (entry:
+      let
+        isBonded = builtins.length entry.iface > 1;
+        hasBondMode = entry.bondMode != null;
+        hasLacpRate = entry.lacpRate != null;
+      in
+      [
+        {
+          assertion = !(isBonded && !hasBondMode);
+          message = "melinoe.internet: bondMode must be set when multiple interfaces are specified.";
+        }
+        {
+          assertion = !(hasBondMode && entry.bondMode != "lacp");
+          message = "melinoe.internet: only bondMode = \"lacp\" is supported.";
+        }
+        {
+          assertion = !(hasLacpRate && !isBonded);
+          message = "melinoe.internet: lacpRate is only valid when multiple interfaces are specified.";
+        }
+      ]
+    ) config.melinoe.internet;
 }

@@ -34,6 +34,9 @@ let
       ''}
       ${lib.optionalString isBonded ''
         ip netns exec inet ip link add ${iface} type bond mode 802.3ad
+        ${lib.optionalString (uplink.lacpRate != null) ''
+          ip netns exec inet ip link set ${iface} type bond lacp_rate ${uplink.lacpRate}
+        ''}
         ip netns exec inet ip link set ${iface} up
         ${lib.concatMapStringsSep "\n" (name: ''
           ip netns exec inet ip link set ${name} master ${iface}

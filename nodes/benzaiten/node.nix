@@ -48,6 +48,8 @@
     {
       ip = "198.19.0.${toString config.melinoe.nodeId}/32";
       iface = [ "eno3" "eno4" ];
+      bondMode = "lacp";
+      lacpRate = "fast";
       subnet = "198.19.0.0/24";
       gateway = null;
     }
