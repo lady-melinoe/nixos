@@ -1,4 +1,4 @@
-{ config, lib, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   cfg = config.melinoe;
@@ -17,6 +17,9 @@ let
     persistentKeepalive = peer.persistentKeepalive;
   };
 
+  runtimeShell = "${pkgs.runtimeShell}";
+  ipBin = "${pkgs.iproute2}/bin/ip";
+
   mkInterface = peer:
     let
       ifName = "wg-${toString peer.id}";
@@ -29,8 +32,8 @@ let
         peers = [ (peerToCfg peer) ];
         postSetup = ''
           ip address replace ${localWgAddr}/32 peer ${wgPrefix}.${toString peer.id}/32 dev ${ifName}
-          bash -c 'ip route del 198.19.3.0/24 dev ${ifName} || true'
-          bash -c 'ip route del 198.51.100.0/24 dev ${ifName} || true'
+          ${runtimeShell} -c '${ipBin} route del 198.19.3.0/24 dev ${ifName} || true'
+          ${runtimeShell} -c '${ipBin} route del 198.51.100.0/24 dev ${ifName} || true'
         '';
       };
     };
