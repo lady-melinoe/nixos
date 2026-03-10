@@ -125,6 +125,9 @@ let
       PORT = 60198
 
       class RequestHandler(BaseHTTPRequestHandler):
+          def log_message(self, format, *args):
+              return
+
           def do_GET(self):
               if self.path != "/list":
                   self.send_response(404)
@@ -462,6 +465,7 @@ ${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${pkgs.coreutils}/bin/timeout 30 ${routeDeployScript}";
+      LogLevelMax = "warning";
     };
   };
 
