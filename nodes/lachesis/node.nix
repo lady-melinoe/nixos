@@ -21,12 +21,12 @@
     device = "nodev";
     extraConfig = ''
       serial --speed=115200 --unit=0 --word=8 --parity=no --stop=1
-      terminal_input serial console
-      terminal_output serial console
+      terminal_input serial
+      terminal_output serial
     '';
   };
   boot.loader.efi.efiSysMountPoint = "/boot/efi";
-  boot.kernelParams = [ "console=ttyS0,115200n8" "console=tty0" ];
+  boot.kernelParams = [ "console=ttyS0,115200n8" ];
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
   boot.initrd.kernelModules = [ "nvme" ];
 
@@ -36,11 +36,6 @@
 
   systemd.oomd.enable = false;
 
-  services.serial-getty = {
-    enable = true;
-    port = "ttyS0";
-    baudRate = 115200;
-  };
   services.qemuGuest.enable = true;
 
   melinoe.nodeId = 4;
