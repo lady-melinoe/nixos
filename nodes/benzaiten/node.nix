@@ -52,7 +52,7 @@
 
     {
       id = 2;
-      endpoint = "198.19.0.2";
+      endpoint = "arke.infra.melinoe.xyz";
     }
     {
       id = 3;

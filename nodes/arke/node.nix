@@ -51,11 +51,11 @@
   melinoe.wgPeers = [
     {
       id = 7;
-      endpoint = "198.19.0.7";
+      endpoint = "benzaiten.infra.melinoe.xyz";
     }
     {
       id = 3;
-      endpoint = "198.19.0.3";
+      endpoint = "hecate.infra.melinoe.xyz";
     }
     {
       id = 4;
@@ -67,7 +67,7 @@
     }
     {
       id = 6;
-      endpoint = "198.19.0.6";
+      endpoint = "ceridwen.infra.melinoe.xyz";
     }
     {
       id = 8;
