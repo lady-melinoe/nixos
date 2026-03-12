@@ -302,12 +302,9 @@ let
   '';
   mkBfdStanza = peer: ''
     peer ${peer.addr} interface wg-${toString peer.id}
-      transmit-interval 300
-      receive-interval 300
+      transmit-interval 1000
+      receive-interval 1000
       detect-multiplier 3
-      echo-mode
-      echo transmit-interval 300
-      echo receive-interval 300
       no shutdown
     !
   '';
