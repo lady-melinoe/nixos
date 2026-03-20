@@ -2,7 +2,7 @@
 let
   cfg = config.melinoe;
   nodeID = cfg.nodeId;
-  keys = import ./wg-keys.nix;
+  keys = import ./auth-certs/wg-keys.nix;
   basePort = 64512;
   wgPrefix = "198.19.3";
   peers = map (p: { id = p.id; addr = "${wgPrefix}.${toString p.id}"; }) cfg.wgPeers;
