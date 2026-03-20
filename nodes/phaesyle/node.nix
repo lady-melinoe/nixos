@@ -4,6 +4,7 @@
   imports = [
     (modulesPath + "/profiles/qemu-guest.nix")
     inputs.disko.nixosModules.disko
+    ../../common/shared.nix
     ../../common/node-opts.nix
     ../../common/incus.nix
     ../../common/networking.nix
@@ -22,16 +23,12 @@
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
   boot.initrd.kernelModules = [ "nvme" ];
 
-  networking.hostName = "phaesyle";
   networking.domain = "";
-  networking.useDHCP = false;
-
   systemd.oomd.enable = false;
 
   services.qemuGuest.enable = true;
 
   melinoe.nodeId = 8;
-  melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [
     {
       ip = "103.249.239.233/32";

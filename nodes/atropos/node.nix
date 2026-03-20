@@ -4,6 +4,7 @@
   imports = [
     (modulesPath + "/profiles/qemu-guest.nix")
     inputs.disko.nixosModules.disko
+    ../../common/shared.nix
     ../../common/node-opts.nix
     ../../common/incus.nix
     ../../common/networking.nix
@@ -30,15 +31,12 @@
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
   boot.initrd.kernelModules = [ "nvme" ];
 
-  networking.hostName = "atropos";
   networking.domain = "";
-  networking.useDHCP = false;
   systemd.oomd.enable = false;
 
   services.qemuGuest.enable = true;
 
   melinoe.nodeId = 5;
-  melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [
     {
       ip = "198.19.1.5/32";

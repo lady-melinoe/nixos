@@ -4,6 +4,7 @@
 
   imports = [
     inputs.disko.nixosModules.disko
+    ../../common/shared.nix
     ../../common/node-opts.nix
     ../../common/incus.nix
     ../../common/networking.nix
@@ -14,10 +15,7 @@
     ./disk-config.nix
   ];
 
-  networking.hostName = "ceridwen";
   networking.domain = "";
-  networking.useDHCP = false;
-
   boot.loader.grub = {
     efiSupport = true;
     configurationLimit = 20;
@@ -30,7 +28,6 @@
   boot.initrd.kernelModules = [ "kvm-intel" ];
 
   melinoe.nodeId = 6;
-  melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [
     {
       ip = "130.95.13.198/32";

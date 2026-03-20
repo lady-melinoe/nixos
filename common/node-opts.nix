@@ -9,12 +9,6 @@ in {
       description = "Unique node ID used for addressing and routing.";
     };
 
-    incusDefaultStorageSource = mkOption {
-      type = types.nullOr types.str;
-      default = "/var/lib/incus/storage-pools/default";
-      description = "Source path for the Incus default storage pool (e.g., /var/lib/incus/storage-pools/default).";
-    };
-
     internet = mkOption {
       type = types.listOf (types.submodule {
         options = {
@@ -83,6 +77,31 @@ in {
       });
       default = [ ];
       description = "WireGuard peers; used to render interfaces and derive BGP neighbors.";
+    };
+
+    publicNodes = mkOption {
+      type = types.attrsOf (types.submodule {
+        options = {
+          name = mkOption {
+            type = types.str;
+            description = "Human-readable node name for this public record.";
+          };
+          sshHostKeyPub = mkOption {
+            type = types.str;
+            description = "Public SSH host key for the node.";
+          };
+          sshHostCertPub = mkOption {
+            type = types.str;
+            description = "Signed SSH host certificate for the node.";
+          };
+          wgPubkey = mkOption {
+            type = types.str;
+            description = "Public WireGuard key for the node.";
+          };
+        };
+      });
+      default = { };
+      description = "Per-node public artifacts published by nodes/*/public.nix.";
     };
   };
 

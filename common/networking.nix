@@ -2,7 +2,7 @@
 let
   cfg = config.melinoe;
   nodeID = cfg.nodeId;
-  keys = import ./auth-certs/wg-pubkeys.nix;
+  keys = lib.filterAttrs (_: v: v != null) (lib.mapAttrs (_: node: node.wgPubkey) cfg.publicNodes);
   basePort = 64512;
   wgPrefix = "198.19.3";
   peers = map (p: { id = p.id; addr = "${wgPrefix}.${toString p.id}"; }) cfg.wgPeers;
@@ -309,6 +309,7 @@ let
     !
   '';
 in {
+  networking.useDHCP = false;
   networking.interfaces.lo.ipv4.addresses = [
     {
       address = "198.51.100.${toString nodeID}";

@@ -3,6 +3,7 @@
 {
   imports = [
     inputs.disko.nixosModules.disko
+    ../../common/shared.nix
     ../../common/node-opts.nix
     ../../common/incus.nix
     ../../common/networking.nix
@@ -13,10 +14,7 @@
     ./disk-config.nix
   ];
 
-  networking.hostName = "hecate";
   networking.domain = "";
-  networking.useDHCP = false;
-
   environment.systemPackages = with pkgs; [
     python3
     vorbis-tools
@@ -34,7 +32,6 @@
   boot.initrd.kernelModules = [ "nvme" ];
 
   melinoe.nodeId = 3;
-  melinoe.incusDefaultStorageSource = "/array/incus/";
   melinoe.internet = [
     {
       ip = "130.95.13.134/32";

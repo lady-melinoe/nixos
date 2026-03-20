@@ -5,7 +5,7 @@ let
     #!/usr/bin/env bash
     set -euo pipefail
 
-    SRC="${config.melinoe.incusDefaultStorageSource}containers"
+    SRC="/array/incus/containers"
     DEST_BASE="/array/container-snapshots"
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
@@ -251,13 +251,6 @@ if __name__ == "__main__":
     main()
 ''; };
 in {
-  assertions = [
-    {
-      assertion = config.melinoe.incusDefaultStorageSource == "/array/incus/";
-      message = "common/container-backup.nix requires melinoe.incusDefaultStorageSource to be /array/incus/ for now.";
-    }
-  ];
-
   systemd.services.melinoe-incus-snapshot = {
     description = "Create hourly Btrfs snapshots of Incus containers";
     serviceConfig = {

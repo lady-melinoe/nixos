@@ -1,10 +1,11 @@
 { config, pkgs, ... }:
 
 let
-  nodeCertDir = ../nodes/${config.networking.hostName};
+  nodePublic = config.melinoe.publicNodes.${toString config.melinoe.nodeId};
 in
 
 {
+  networking.hostName = nodePublic.name;
   boot.tmp.cleanOnBoot = true;
   zramSwap.enable = true;
   services.openssh.enable = true;
@@ -16,22 +17,14 @@ in
   environment.etc."ssh/ssh_known_hosts".text = ''
     @cert-authority *.infra.melinoe.xyz,198.18.0.*,198.19.0.*,198.19.1.*,198.51.100.* ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T
   '';
-  environment.etc."ssh/ssh-user-ca.pub" = {
-    source = ./auth-certs/ssh-user-ca.pub;
-    mode = "0644";
-  };
-  environment.etc."ssh/ssh-host-ca.pub" = {
-    source = ./auth-certs/ssh-host-ca.pub;
-    mode = "0644";
-  };
-  environment.etc."ssh/ssh_host_ed25519_key.pub" = {
-    source = "${nodeCertDir}/ssh_host_ed25519_key.pub";
-    mode = "0644";
-  };
-  environment.etc."ssh/ssh_host_ed25519_key-cert.pub" = {
-    source = "${nodeCertDir}/ssh_host_ed25519_key-cert.pub";
-    mode = "0644";
-  };
+  environment.etc."ssh/ssh-user-ca.pub".text = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINwS8hXHMP2ij1HmUL0N7oFU4+G8atQHtSRq9e8MOqkL SSH User CA";
+  environment.etc."ssh/ssh-user-ca.pub".mode = "0644";
+  environment.etc."ssh/ssh-host-ca.pub".text = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T SSH Host CA";
+  environment.etc."ssh/ssh-host-ca.pub".mode = "0644";
+  environment.etc."ssh/ssh_host_ed25519_key.pub".text = nodePublic.sshHostKeyPub;
+  environment.etc."ssh/ssh_host_ed25519_key.pub".mode = "0644";
+  environment.etc."ssh/ssh_host_ed25519_key-cert.pub".text = nodePublic.sshHostCertPub;
+  environment.etc."ssh/ssh_host_ed25519_key-cert.pub".mode = "0644";
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
   nix.settings.require-sigs = false;
   system.stateVersion = "25.05";
