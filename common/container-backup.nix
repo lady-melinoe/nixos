@@ -9,6 +9,8 @@ let
     DEST_BASE="/array/container-snapshots"
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
+    mkdir -p "$DEST_BASE"
+
     for sv in "$SRC"/*; do
         [ -d "$sv" ] || continue
         CONTAINER_NAME=$(basename "$sv")
