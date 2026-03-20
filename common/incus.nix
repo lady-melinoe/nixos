@@ -35,7 +35,7 @@ let
 in {
   options.melinoe.enableIncusPreseed = mkOption {
     type = types.bool;
-    default = true;
+    default = false;
     description = "Whether to apply the default Incus preseed (storage pool and profile).";
   };
 
