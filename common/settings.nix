@@ -11,7 +11,12 @@ in
   services.openssh.ports = [ 22 ];
   services.openssh.extraConfig = ''
     HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub
+    TrustedUserCAKeys /etc/ssh/ssh-user-ca.pub
   '';
+  environment.etc."ssh/ssh-user-ca.pub" = {
+    source = ./auth-certs/ssh-user-ca.pub;
+    mode = "0644";
+  };
   environment.etc."ssh/ssh_host_ed25519_key.pub" = {
     source = "${nodeCertDir}/ssh_host_ed25519_key.pub";
     mode = "0644";
