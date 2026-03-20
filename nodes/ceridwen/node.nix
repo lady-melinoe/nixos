@@ -31,7 +31,6 @@
 
   melinoe.nodeId = 6;
   melinoe.incusDefaultStorageSource = "/array/incus/";
-  melinoe.incusRootSize = "40GiB";
   melinoe.enableIncusPreseed = false;
   melinoe.internet = [
     {
