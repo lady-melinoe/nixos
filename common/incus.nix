@@ -43,7 +43,9 @@ in {
     virtualisation.incus.enable = true;
     users.users.melinoe.extraGroups = [ "incus-admin" ];
     virtualisation.incus.preseed = lib.mkIf incusPreseedEnabled {
-      config = { };
+      config = {
+        "core.https_address" = "198.18.0.${toString nodeID}:8008";
+      };
       networks = [];
       profiles = [
         {
