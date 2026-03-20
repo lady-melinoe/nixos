@@ -31,7 +31,6 @@
 
   melinoe.nodeId = 6;
   melinoe.incusDefaultStorageSource = "/array/incus/";
-  melinoe.enableIncusPreseed = false;
   melinoe.internet = [
     {
       ip = "130.95.13.198/32";

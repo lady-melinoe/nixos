@@ -1,10 +1,6 @@
 { config, lib, pkgs, ... }:
 let
-  inherit (lib) mkOption types;
   nodeID = config.melinoe.nodeId;
-  incusStorageSource = config.melinoe.incusDefaultStorageSource;
-  incusRootSize = config.melinoe.incusRootSize;
-  incusPreseedEnabled = config.melinoe.enableIncusPreseed;
   configureIface = pkgs.writeShellScriptBin "configure-iface" ''
     #!/usr/bin/env bash
     IFACE="$1"
@@ -33,60 +29,9 @@ let
     done
   '';
 in {
-  options.melinoe.enableIncusPreseed = mkOption {
-    type = types.bool;
-    default = false;
-    description = "Whether to apply the default Incus preseed (storage pool and profile).";
-  };
-
   config = {
     virtualisation.incus.enable = true;
     users.users.melinoe.extraGroups = [ "incus-admin" ];
-    virtualisation.incus.preseed = lib.mkIf incusPreseedEnabled {
-      config = {
-        "core.https_address" = "198.18.0.${toString nodeID}:8008";
-      };
-      networks = [];
-      profiles = [
-        {
-          config = { };
-          description = "Default Incus profile";
-          devices = {
-            root = {
-              path = "/";
-              pool = "default";
-              type = "disk";
-            };
-          };
-          name = "default";
-        }
-      ];
-      storage_volumes = [ ];
-      storage_pools = [
-        {
-          config = {
-            source = incusStorageSource;
-          };
-          driver = "btrfs";
-          name = "default";
-        }
-      ];
-      projects = [
-        {
-          config = {
-            "features.images" = "true";
-            "features.networks" = "true";
-            "features.networks.zones" = "true";
-            "features.profiles" = "true";
-            "features.storage.buckets" = "true";
-            "features.storage.volumes" = "true";
-          };
-          description = "Default Incus project";
-          name = "default";
-        }
-      ];
-      certificates = [ ];
-    };
 
     system.activationScripts.incusConfigureIface = {
       text = ''
