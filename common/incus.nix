@@ -33,14 +33,9 @@ let
     done
   '';
 in {
-  options.melinoe.incusRootSize = mkOption {
-    type = types.str;
-    default = "35GiB";
-    description = "Size for the default Incus root disk profile.";
-  };
   options.melinoe.enableIncusPreseed = mkOption {
     type = types.bool;
-    default = false;
+    default = true;
     description = "Whether to apply the default Incus preseed (storage pool and profile).";
   };
 
@@ -48,20 +43,23 @@ in {
     virtualisation.incus.enable = true;
     users.users.melinoe.extraGroups = [ "incus-admin" ];
     virtualisation.incus.preseed = lib.mkIf incusPreseedEnabled {
+      config = { };
       networks = [];
       profiles = [
         {
+          config = { };
+          description = "Default Incus profile";
           devices = {
             root = {
               path = "/";
               pool = "default";
-              size = incusRootSize;
               type = "disk";
             };
           };
           name = "default";
         }
       ];
+      storage_volumes = [ ];
       storage_pools = [
         {
           config = {
@@ -71,6 +69,21 @@ in {
           name = "default";
         }
       ];
+      projects = [
+        {
+          config = {
+            "features.images" = "true";
+            "features.networks" = "true";
+            "features.networks.zones" = "true";
+            "features.profiles" = "true";
+            "features.storage.buckets" = "true";
+            "features.storage.volumes" = "true";
+          };
+          description = "Default Incus project";
+          name = "default";
+        }
+      ];
+      certificates = [ ];
     };
 
     system.activationScripts.incusConfigureIface = {
@@ -82,12 +95,22 @@ in {
 
     systemd.services.disable-btrfs-quotas = {
       description = "Disable btrfs quotas on main mounts";
-      wantedBy = [ "multi-user.target" ];
       after = [ "local-fs.target" ];
       path = [ pkgs.util-linux pkgs.btrfs-progs ];
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${disableBtrfsQuotas}";
+      };
+    };
+
+    systemd.timers.disable-btrfs-quotas = {
+      description = "Run btrfs quota disabling every 10 minutes";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "0";
+        OnUnitActiveSec = "10min";
+        Unit = "disable-btrfs-quotas.service";
+        Persistent = true;
       };
     };
   };
