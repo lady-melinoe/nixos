@@ -4,7 +4,7 @@
   imports = [
     inputs.disko.nixosModules.disko
     ../../common/shared.nix
-    ../../common/default-efi.nix
+    ../../common/bootloader.nix
     ../../common/node-opts.nix
     ../../common/incus.nix
     ../../common/networking.nix

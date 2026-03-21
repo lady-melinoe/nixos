@@ -15,6 +15,12 @@ in {
       description = "Enable serial console support for EFI/GRUB on this node.";
     };
 
+    legacyBoot = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Enable legacy GRUB boot settings for this node.";
+    };
+
     internet = mkOption {
       type = types.listOf (types.submodule {
         options = {

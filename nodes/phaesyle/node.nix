@@ -5,6 +5,7 @@
     (modulesPath + "/profiles/qemu-guest.nix")
     inputs.disko.nixosModules.disko
     ../../common/shared.nix
+    ../../common/bootloader.nix
     ../../common/node-opts.nix
     ../../common/incus.nix
     ../../common/networking.nix
@@ -15,10 +16,7 @@
     ./disk-config.nix
   ];
 
-  boot.loader.grub = {
-    enable = true;
-    configurationLimit = 20;
-  };
+  melinoe.legacyBoot = true;
   melinoe.nodeId = 8;
   melinoe.internet = [
     {
