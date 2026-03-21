@@ -5,6 +5,7 @@
     (modulesPath + "/profiles/qemu-guest.nix")
     inputs.disko.nixosModules.disko
     ../../common/shared.nix
+    ../../common/default-efi.nix
     ../../common/node-opts.nix
     ../../common/incus.nix
     ../../common/networking.nix
@@ -15,19 +16,7 @@
     ./disk-config.nix
   ];
 
-  boot.loader.grub = {
-    efiSupport = true;
-    configurationLimit = 20;
-    efiInstallAsRemovable = true;
-    device = "nodev";
-    extraConfig = ''
-      serial --speed=115200 --unit=0 --word=8 --parity=no --stop=1
-      terminal_input serial
-      terminal_output serial
-    '';
-  };
-  boot.loader.efi.efiSysMountPoint = "/boot/efi";
-  boot.kernelParams = [ "console=ttyS0,115200n8" ];
+  melinoe.serialMode = true;
   melinoe.nodeId = 4;
   melinoe.internet = [
     {

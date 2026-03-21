@@ -9,6 +9,12 @@ in {
       description = "Unique node ID used for addressing and routing.";
     };
 
+    serialMode = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Enable serial console support for EFI/GRUB on this node.";
+    };
+
     internet = mkOption {
       type = types.listOf (types.submodule {
         options = {
