@@ -5,7 +5,7 @@ let
   keys = lib.filterAttrs (_: v: v != null) (lib.mapAttrs (_: node: node.wgPubkey) cfg.publicNodes);
   basePort = 64512;
   wgPrefix = "198.19.3";
-  peers = map (p: { id = p.id; addr = "${wgPrefix}.${toString p.id}"; }) cfg.wgPeers;
+  peers = map (p: { id = p.id; addr = "${wgPrefix}.${toString p.id}"; }) cfg.peers;
   bgpAs = 64512 + nodeID;
   localWgAddr = "${wgPrefix}.${toString nodeID}";
   firstUplink = lib.head cfg.internet;
@@ -64,8 +64,8 @@ let
         '';
       };
     };
-  interfaces = lib.listToAttrs (map mkInterface cfg.wgPeers);
-  ports = map (peer: basePort + peer.id) cfg.wgPeers;
+  interfaces = lib.listToAttrs (map mkInterface cfg.peers);
+  ports = map (peer: basePort + peer.id) cfg.peers;
   mkUplinkScript = idx: uplink:
     let
       ifaces = uplink.iface;
@@ -309,6 +309,7 @@ let
     !
   '';
 in {
+  networking.domain = "infra.melinoe.xyz";
   networking.useDHCP = false;
   networking.interfaces.lo.ipv4.addresses = [
     {
@@ -320,8 +321,8 @@ in {
       prefixLength = 32;
     }
   ];
-  networking.wireguard.interfaces = lib.mkIf (cfg.wgPeers != [ ]) interfaces;
-  melinoe.wgPorts = lib.mkIf (cfg.wgPeers != [ ]) ports;
+  networking.wireguard.interfaces = lib.mkIf (cfg.peers != [ ]) interfaces;
+  melinoe.wgPorts = lib.mkIf (cfg.peers != [ ]) ports;
   networking.firewall.enable = false;
   networking.nftables.enable = true;
   networking.nftables.ruleset = ''

@@ -4,6 +4,7 @@
   imports = [
     inputs.disko.nixosModules.disko
     ../../common/shared.nix
+    ../../common/default-efi.nix
     ../../common/node-opts.nix
     ../../common/incus.nix
     ../../common/networking.nix
@@ -13,23 +14,6 @@
     ../../common/monitoring.nix
     ./disk-config.nix
   ];
-
-  networking.domain = "";
-  environment.systemPackages = with pkgs; [
-    python3
-    vorbis-tools
-  ];
-
-  boot.loader.grub = {
-    efiSupport = true;
-    configurationLimit = 20;
-    efiInstallAsRemovable = true;
-    device = "nodev";
-  };
-
-  boot.loader.efi.efiSysMountPoint = "/boot/efi";
-  boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
-  boot.initrd.kernelModules = [ "nvme" ];
 
   melinoe.nodeId = 3;
   melinoe.internet = [
@@ -49,7 +33,7 @@
     }
   ];
 
-  melinoe.wgPeers = [
+  melinoe.peers = [
     {
       id = 2;
       endpoint = "arke.infra.melinoe.xyz";

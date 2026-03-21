@@ -8,7 +8,12 @@ in
   networking.hostName = nodePublic.name;
   boot.tmp.cleanOnBoot = true;
   zramSwap.enable = true;
+  systemd.oomd.enable = false;
+  boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" "sd_mod" "usbhid" "usb_storage" "mpt3sas" "ehci_pci" ];
+  boot.initrd.kernelModules = [ "nvme" "kvm-intel" ];
   services.openssh.enable = true;
+  services.qemuGuest.enable = true;
+  systemd.services.qemu-guest-agent.unitConfig.ConditionVirtualization = "vm";
   services.openssh.ports = [ 22 ];
   services.openssh.extraConfig = ''
     HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub
@@ -28,7 +33,7 @@ in
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
   nix.settings.require-sigs = false;
   system.stateVersion = "25.05";
-  environment.systemPackages = [ pkgs.git pkgs.tcpdump pkgs.nftables pkgs.jq pkgs.screen pkgs.btop pkgs.iperf3 pkgs.iptables ];
+  environment.systemPackages = [ pkgs.git pkgs.tcpdump pkgs.nftables pkgs.jq pkgs.screen pkgs.btop pkgs.iperf3 pkgs.iptables pkgs.python3 ];
   boot.kernelPackages = pkgs.linuxPackages_latest;
   boot.kernel.sysctl = {
     "net.ipv6.conf.all.autoconf" = false;

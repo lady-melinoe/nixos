@@ -19,15 +19,6 @@
     enable = true;
     configurationLimit = 20;
   };
-
-  boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
-  boot.initrd.kernelModules = [ "nvme" ];
-
-  networking.domain = "";
-  systemd.oomd.enable = false;
-
-  services.qemuGuest.enable = true;
-
   melinoe.nodeId = 8;
   melinoe.internet = [
     {
@@ -38,7 +29,7 @@
     }
   ];
 
-  melinoe.wgPeers = [
+  melinoe.peers = [
     {
       id = 2;
       endpoint = "arke.infra.melinoe.xyz";

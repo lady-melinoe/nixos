@@ -5,6 +5,7 @@
   imports = [
     inputs.disko.nixosModules.disko
     ../../common/shared.nix
+    ../../common/default-efi.nix
     ../../common/node-opts.nix
     ../../common/incus.nix
     ../../common/networking.nix
@@ -14,19 +15,6 @@
     ../../common/monitoring.nix
     ./disk-config.nix
   ];
-
-  networking.domain = "";
-  boot.loader.grub = {
-    efiSupport = true;
-    configurationLimit = 20;
-    efiInstallAsRemovable = true;
-    device = "nodev";
-  };
-
-  boot.loader.efi.efiSysMountPoint = "/boot/efi";
-  boot.initrd.availableKernelModules = [ "sd_mod" "usbhid" "usb_storage" "mpt3sas" "ehci_pci" ];
-  boot.initrd.kernelModules = [ "kvm-intel" ];
-
   melinoe.nodeId = 7;
   melinoe.internet = [
     {
@@ -45,7 +33,7 @@
     }
   ];
 
-  melinoe.wgPeers = [
+  melinoe.peers = [
 
     {
       id = 2;

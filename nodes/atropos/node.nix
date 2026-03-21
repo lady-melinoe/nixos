@@ -28,14 +28,6 @@
   };
   boot.loader.efi.efiSysMountPoint = "/boot/efi";
   boot.kernelParams = [ "console=ttyS0,115200n8" ];
-  boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
-  boot.initrd.kernelModules = [ "nvme" ];
-
-  networking.domain = "";
-  systemd.oomd.enable = false;
-
-  services.qemuGuest.enable = true;
-
   melinoe.nodeId = 5;
   melinoe.internet = [
     {
@@ -46,7 +38,7 @@
     }
   ];
 
-  melinoe.wgPeers = [
+  melinoe.peers = [
     {
       id = 4;
       endpoint = "198.19.1.4";

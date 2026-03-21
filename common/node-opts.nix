@@ -52,7 +52,7 @@ in {
       description = "UDP ports to allow for WireGuard (derived automatically when using the wireguard module).";
     };
 
-    wgPeers = mkOption {
+    peers = mkOption {
       type = types.listOf (types.submodule {
         options = {
           id = mkOption {
