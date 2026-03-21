@@ -1,11 +1,6 @@
 { config, pkgs, ... }:
 
-let
-  nodePublic = config.melinoe.publicNodes.${toString config.melinoe.nodeId};
-in
-
 {
-  networking.hostName = nodePublic.name;
   boot.tmp.cleanOnBoot = true;
   zramSwap.enable = true;
   systemd.oomd.enable = false;
@@ -26,9 +21,9 @@ in
   environment.etc."ssh/ssh-user-ca.pub".mode = "0644";
   environment.etc."ssh/ssh-host-ca.pub".text = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T SSH Host CA";
   environment.etc."ssh/ssh-host-ca.pub".mode = "0644";
-  environment.etc."ssh/ssh_host_ed25519_key.pub".text = nodePublic.sshHostKeyPub;
+  environment.etc."ssh/ssh_host_ed25519_key.pub".text = config.melinoe.sshHostKeyPub;
   environment.etc."ssh/ssh_host_ed25519_key.pub".mode = "0644";
-  environment.etc."ssh/ssh_host_ed25519_key-cert.pub".text = nodePublic.sshHostCertPub;
+  environment.etc."ssh/ssh_host_ed25519_key-cert.pub".text = config.melinoe.sshHostCertPub;
   environment.etc."ssh/ssh_host_ed25519_key-cert.pub".mode = "0644";
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
   nix.settings.require-sigs = false;

@@ -94,18 +94,6 @@ in {
     publicNodes = mkOption {
       type = types.attrsOf (types.submodule {
         options = {
-          name = mkOption {
-            type = types.str;
-            description = "Human-readable node name for this public record.";
-          };
-          sshHostKeyPub = mkOption {
-            type = types.str;
-            description = "Public SSH host key for the node.";
-          };
-          sshHostCertPub = mkOption {
-            type = types.str;
-            description = "Signed SSH host certificate for the node.";
-          };
           wgPubkey = mkOption {
             type = types.str;
             description = "Public WireGuard key for the node.";
@@ -114,6 +102,18 @@ in {
       });
       default = { };
       description = "Per-node public artifacts published by nodes/*/public.nix.";
+    };
+
+    sshHostKeyPub = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "Public SSH host key for this node.";
+    };
+
+    sshHostCertPub = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "Signed SSH host certificate for this node.";
     };
   };
 

@@ -18,6 +18,9 @@
 
   melinoe.legacyBoot = true;
   melinoe.nodeId = 8;
+  networking.hostName = "phaesyle";
+  melinoe.sshHostKeyPub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILJ6nAuIeJB9nySz1l9Q+8DrZzhlcEpfiOJF6gvXQh4i root@phaesyle";
+  melinoe.sshHostCertPub = "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAAIJu0pFJifeqQPs+XALBvGWcxp2gLIvL71xaXH8/LxYo3AAAAILJ6nAuIeJB9nySz1l9Q+8DrZzhlcEpfiOJF6gvXQh4iAAAAAAAAAAAAAAACAAAACHBoYWVzeWxlAAAAWwAAAAhwaGFlc3lsZQAAABpwaGFlc3lsZS5pbmZyYS5tZWxpbm9lLnh5egAAAA8xMDMuMjQ5LjIzOS4yMzMAAAAKMTk4LjE4LjAuOAAAAAwxOTguNTEuMTAwLjgAAAAAabuKOwAAAAB8iN67AAAAAAAAAAAAAAAAAAAAMwAAAAtzc3gtZWQyNTUxOQAAACD27+D1gphC0+F8Xrwi/pPEZ468IDn1C1xoFkLFSVIPUwAAAFMAAAALc3NoLWVkMjU1MTkAAABAv7ANIhqPsUBNdvay8Jjjb98FyBC5wzbYm2frjaDCCXiKvEurD3RbJb6frlJTkbw0GH69akHiWG9Z/+n8URjSDw== root@phaesyle";
   melinoe.internet = [
     {
       ip = "103.249.239.233/32";
