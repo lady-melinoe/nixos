@@ -345,7 +345,9 @@ ${lib.optionalString (pubRouteFix != [ ]) ''
         iif "lo" accept
         tcp dport 22 accept
         tcp dport 8008 accept
-	      tcp dport 4269 accept
+        tcp dport 2049 accept
+        udp dport 2049 accept
+	tcp dport 4269 accept
         udp dport 4269 accept
         ip saddr 198.18.0.0/15 tcp dport 5201 accept # iperf3
         ip saddr 198.18.0.0/15 tcp dport 5201 accept # iperf3
