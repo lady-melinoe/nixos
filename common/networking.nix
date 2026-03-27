@@ -53,12 +53,11 @@ let
     in {
       name = ifName;
       value = {
-        address = [ ];
+        address = ["${localWgAddr}/32" ];
         listenPort = basePort + peer.id;
         privateKeyFile = "/etc/melinoe/wg.privatekey";
         peers = [ (peerToCfg peer) ];
         postUp = ''
-          
           ${runtimeShell} -c '${ipBin} route del ${wgPrefix}.${toString peer.id}/32 dev ${ifName} || true'
           ${runtimeShell} -c '${ipBin} address replace ${localWgAddr}/32 peer ${wgPrefix}.${toString peer.id}/32 dev ${ifName}'
           ${runtimeShell} -c '${ipBin} route del 198.19.3.0/24 dev ${ifName} || true'
