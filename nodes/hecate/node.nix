@@ -65,7 +65,7 @@
   services.nfs.server = {
     enable = true;
     exports = ''
-      /big/Music *(ro,fsid=0,no_subtree_check)
+      /big/store *(ro,fsid=0,no_subtree_check)
     '';
   };
 }
