@@ -163,7 +163,7 @@ let
     set -euo pipefail
 
     for IFACE in ${lib.concatStringsSep " " (map (peer: "wg-${toString peer.id}") cfg.peers)}; do
-      UNIT="wg-quick-$${IFACE}.service"
+      UNIT="wg-quick-''${IFACE}.service"
 
       if systemctl is-active --quiet "$UNIT" && ip link show "$IFACE" >/dev/null 2>&1; then
         continue
