@@ -158,6 +158,20 @@ let
           server.serve_forever()
     '';
   };
+  wgWatchdogScript = pkgs.writeShellScript "melinoe-wg-watchdog" ''
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    for IFACE in ${lib.concatStringsSep " " (map (peer: "wg-${toString peer.id}") cfg.peers)}; do
+      UNIT="wg-quick-${IFACE}.service"
+
+      if systemctl is-active --quiet "$UNIT" && ip link show "$IFACE" >/dev/null 2>&1; then
+        continue
+      fi
+
+      systemctl restart "$UNIT"
+    done
+  '';
   routeDeployScript = pkgs.writeShellScript "route-deploy.sh" ''
     #!/usr/bin/env bash
 
@@ -490,6 +504,27 @@ ${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
       OnBootSec = "3s";
       OnUnitInactiveSec = "3s";
       AccuracySec = "1s";
+    };
+  };
+
+  systemd.services.melinoe-wg-watchdog = lib.mkIf (cfg.peers != [ ]) {
+    description = "Restart WireGuard interfaces that are down";
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+    path = [ pkgs.iproute2 pkgs.systemd pkgs.gnugrep ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = wgWatchdogScript;
+    };
+  };
+
+  systemd.timers.melinoe-wg-watchdog = lib.mkIf (cfg.peers != [ ]) {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "2min";
+      OnUnitActiveSec = "2min";
+      AccuracySec = "30s";
+      Persistent = true;
     };
   };
 
