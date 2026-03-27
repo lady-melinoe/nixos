@@ -53,7 +53,7 @@ let
     in {
       name = ifName;
       value = {
-        address = ["${localWgAddr}/32" ];
+        address = [ ];
         listenPort = basePort + peer.id;
         privateKeyFile = "/etc/melinoe/wg.privatekey";
         peers = [ (peerToCfg peer) ];
