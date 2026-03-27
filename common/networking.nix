@@ -53,12 +53,11 @@ let
     in {
       name = ifName;
       value = {
-        ips = [ ];
+        address = [ "${localWgAddr}/32" ];
         listenPort = basePort + peer.id;
         privateKeyFile = "/etc/melinoe/wg.privatekey";
         peers = [ (peerToCfg peer) ];
-        postSetup = ''
-          ip address replace ${localWgAddr}/32 peer ${wgPrefix}.${toString peer.id}/32 dev ${ifName}
+        postUp = ''
           ${runtimeShell} -c '${ipBin} route del 198.19.3.0/24 dev ${ifName} || true'
           ${runtimeShell} -c '${ipBin} route del 198.51.100.0/24 dev ${ifName} || true'
         '';
@@ -321,7 +320,7 @@ in {
       prefixLength = 32;
     }
   ];
-  networking.wireguard.interfaces = lib.mkIf (cfg.peers != [ ]) interfaces;
+  networking.wg-quick.interfaces = lib.mkIf (cfg.peers != [ ]) interfaces;
   melinoe.wgPorts = lib.mkIf (cfg.peers != [ ]) ports;
   networking.firewall.enable = false;
   networking.nftables.enable = true;
