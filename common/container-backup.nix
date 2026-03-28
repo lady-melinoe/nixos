@@ -277,19 +277,4 @@ in {
     ];
   };
 
-  systemd.timers.melinoe-incus-snapshot = {
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnCalendar = "*:0/10";
-      Persistent = true;
-    };
-  };
-
-  systemd.timers.melinoe-incus-snapshot-prune = {
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnCalendar = "*:0/5";
-      Persistent = true;
-    };
-  };
 }
