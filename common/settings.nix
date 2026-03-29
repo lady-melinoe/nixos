@@ -27,6 +27,7 @@
   environment.etc."ssh/ssh_host_ed25519_key-cert.pub".mode = "0644";
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
   nix.settings.require-sigs = false;
+  programs.nix-ld.enable = true;
   system.stateVersion = "25.05";
   environment.systemPackages = [ pkgs.git pkgs.tcpdump pkgs.nftables pkgs.jq pkgs.screen pkgs.btop pkgs.iperf3 pkgs.iptables pkgs.python3 pkgs.borgbackup ];
   boot.kernelPackages = pkgs.linuxPackages_latest;
