@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ config, pkgs, inputs, ... }:
 
 {
   boot.tmp.cleanOnBoot = true;
@@ -29,7 +29,18 @@
   nix.settings.require-sigs = false;
   programs.nix-ld.enable = true;
   system.stateVersion = "25.05";
-  environment.systemPackages = [ pkgs.git pkgs.tcpdump pkgs.nftables pkgs.jq pkgs.screen pkgs.btop pkgs.iperf3 pkgs.iptables pkgs.python3 ];
+  environment.systemPackages = [
+    pkgs.git
+    pkgs.tcpdump
+    pkgs.nftables
+    pkgs.jq
+    pkgs.screen
+    pkgs.btop
+    pkgs.iperf3
+    pkgs.iptables
+    pkgs.python3
+    inputs.self.packages.${pkgs.system}.borg-beta
+  ];
   boot.kernelPackages = pkgs.linuxPackages_latest;
   boot.kernel.sysctl = {
     "net.ipv6.conf.all.autoconf" = false;
