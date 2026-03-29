@@ -39,7 +39,7 @@
     pkgs.iperf3
     pkgs.iptables
     pkgs.python3
-    inputs.self.packages.${pkgs.system}.borg-beta
+    inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.borg-beta
   ];
   boot.kernelPackages = pkgs.linuxPackages_latest;
   boot.kernel.sysctl = {
