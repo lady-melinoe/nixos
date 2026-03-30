@@ -79,7 +79,8 @@ def snapshot_container(container_path: Path, timestamp: str) -> None:
         print(f"ERROR: {container_name}/{timestamp} failed", flush=True)
         return
 
-    subprocess.run(["btrfs", "subvolume", "delete", str(dest)], check=True)
+    subprocess.run(["btrfs", "subvolume", "delete", str(dest / container_name)], check=True)
+    subprocess.run(["rm", "-rf", str(dest)], check=True)
     print(f"  -> ingested and removed {container_name}/{timestamp}")
 
 
@@ -119,7 +120,7 @@ in {
     description = "Continuously create BTRFS snapshots of Incus containers";
     serviceConfig = {
       Type = "simple";
-      ExecStart = incusSnapshotScript;
+      ExecStart = "${incusSnapshotScript}/bin/incus-container-snapshot";
       Restart = "always";
       RestartSec = "5s";
     };
