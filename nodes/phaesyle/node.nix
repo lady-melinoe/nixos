@@ -16,7 +16,6 @@
     ./disk-config.nix
   ];
 
-  melinoe.legacyBoot = true;
   melinoe.nodeId = 8;
   networking.hostName = "phaesyle";
   melinoe.sshHostKeyPub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILJ6nAuIeJB9nySz1l9Q+8DrZzhlcEpfiOJF6gvXQh4i root@phaesyle";

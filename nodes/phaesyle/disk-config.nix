@@ -7,10 +7,15 @@
         content = {
           type = "gpt";
           partitions = {
-            GRUB = {
-              name = "GRUB";
-              type = "EF02";
-              size = "2M";
+            EFI = {
+              name = "EFI";
+              type = "EF00";
+              size = "256M";
+              content = {
+                type = "filesystem";
+                format = "vfat";
+                mountpoint = "/boot/efi";
+              };
             };
             root = {
               name = "BTRFS";
