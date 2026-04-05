@@ -49,7 +49,9 @@
                     mountpoint = "/.swap";
                     swap.swapfile.size = "2G";
                   };
-                  "/@incus" = {};
+                  "/@array" = {
+                    mountpoint = "/array";
+                  };
                 };
               };
             };
