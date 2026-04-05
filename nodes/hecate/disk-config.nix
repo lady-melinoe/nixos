@@ -49,6 +49,7 @@
                     mountpoint = "/.swap";
                     swap.swapfile.size = "2G";
                   };
+                  "/@array" = {};
                 };
               };
             };
