@@ -14,6 +14,27 @@
       pkgs = import nixpkgs {
         inherit system;
       };
+
+      nodeDir = ./nodes;
+      nodes =
+        let
+          dirEntries = builtins.readDir nodeDir;
+          nodeNames = lib.filterAttrs (name: type: type == "directory" && builtins.pathExists (nodeDir + "/${name}/node.nix")) dirEntries;
+        in lib.mapAttrs (name: _: nodeDir + "/${name}/node.nix") nodeNames;
+
+      mkNixosConfiguration = _: module: lib.nixosSystem {
+        inherit system;
+        specialArgs = { inherit inputs system; };
+        modules = [ module ];
+      };
+
+      mkDeployNode = name: _: {
+        hostname = "${name}.infra.melinoe.xyz";
+        profiles.system = {
+          user = "root";
+          path = deploy-rs.lib.${system}.activate.nixos self.nixosConfigurations.${name};
+        };
+      };
     in {
       packages.${system}.borg-beta = pkgs.stdenvNoCC.mkDerivation {
         pname = "borg-beta";
@@ -34,105 +55,8 @@
         '';
       };
 
-      nixosConfigurations = {
-        arke = lib.nixosSystem {
-          inherit system;
-          specialArgs = { inherit inputs system; };
-          modules = [ ./nodes/arke/node.nix ];
-        };
+      nixosConfigurations = lib.mapAttrs mkNixosConfiguration nodes;
 
-        hecate = lib.nixosSystem {
-          inherit system;
-          specialArgs = { inherit inputs system; };
-          modules = [ ./nodes/hecate/node.nix ];
-        };
-
-        ceridwen = lib.nixosSystem {
-          inherit system;
-          specialArgs = { inherit inputs system; };
-          modules = [ ./nodes/ceridwen/node.nix ];
-        };
-
-        benzaiten = lib.nixosSystem {
-          inherit system;
-          specialArgs = { inherit inputs system; };
-          modules = [ ./nodes/benzaiten/node.nix ];
-        };
-
-        lachesis = lib.nixosSystem {
-          inherit system;
-          specialArgs = { inherit inputs system; };
-          modules = [ ./nodes/lachesis/node.nix ];
-        };
-
-        atropos = lib.nixosSystem {
-          inherit system;
-          specialArgs = { inherit inputs system; };
-          modules = [ ./nodes/atropos/node.nix ];
-        };
-
-        phaesyle = lib.nixosSystem {
-          inherit system;
-          specialArgs = { inherit inputs system; };
-          modules = [ ./nodes/phaesyle/node.nix ];
-        };
-      };
-
-      deploy.nodes = {
-        arke = {
-          hostname = "arke.infra.melinoe.xyz";
-          profiles.system = {
-            user = "root";
-            path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.arke;
-          };
-        };
-
-        hecate = {
-          hostname = "hecate.infra.melinoe.xyz";
-          profiles.system = {
-            user = "root";
-            path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.hecate;
-          };
-        };
-
-        ceridwen = {
-          hostname = "ceridwen.infra.melinoe.xyz";
-          profiles.system = {
-            user = "root";
-            path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.ceridwen;
-          };
-        };
-
-        benzaiten = {
-          hostname = "benzaiten.infra.melinoe.xyz";
-          profiles.system = {
-            user = "root";
-            path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.benzaiten;
-          };
-        };
-
-        lachesis = {
-          hostname = "lachesis.infra.melinoe.xyz";
-          profiles.system = {
-            user = "root";
-            path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.lachesis;
-          };
-        };
-
-        atropos = {
-          hostname = "atropos.infra.melinoe.xyz";
-          profiles.system = {
-            user = "root";
-            path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.atropos;
-          };
-        };
-        phaesyle = {
-          hostname = "phaesyle.infra.melinoe.xyz";
-          profiles.system = {
-            user = "root";
-            path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.phaesyle;
-          };
-        };
-      };
+      deploy.nodes = lib.mapAttrs mkDeployNode nodes;
     };
 }
