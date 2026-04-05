@@ -80,7 +80,7 @@
 
       deploy.nodes = {
         arke = {
-          hostname = "arke";
+          hostname = "arke.infra.melinoe.xyz";
           profiles.system = {
             user = "root";
             path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.arke;
@@ -88,7 +88,7 @@
         };
 
         hecate = {
-          hostname = "hecate";
+          hostname = "hecate.infra.melinoe.xyz";
           profiles.system = {
             user = "root";
             path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.hecate;
@@ -96,7 +96,7 @@
         };
 
         ceridwen = {
-          hostname = "ceridwen";
+          hostname = "ceridwen.infra.melinoe.xyz";
           profiles.system = {
             user = "root";
             path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.ceridwen;
@@ -104,7 +104,7 @@
         };
 
         benzaiten = {
-          hostname = "benzaiten";
+          hostname = "benzaiten.infra.melinoe.xyz";
           profiles.system = {
             user = "root";
             path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.benzaiten;
@@ -112,7 +112,7 @@
         };
 
         lachesis = {
-          hostname = "lachesis";
+          hostname = "lachesis.infra.melinoe.xyz";
           profiles.system = {
             user = "root";
             path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.lachesis;
@@ -120,14 +120,14 @@
         };
 
         atropos = {
-          hostname = "atropos";
+          hostname = "atropos.infra.melinoe.xyz";
           profiles.system = {
             user = "root";
             path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.atropos;
           };
         };
         phaesyle = {
-          hostname = "phaesyle";
+          hostname = "phaesyle.infra.melinoe.xyz";
           profiles.system = {
             user = "root";
             path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.phaesyle;
