@@ -13,7 +13,7 @@
     ../../common/users.nix
     ../../common/container-backup.nix
     ../../common/monitoring.nix
-    ../../common/update.nix
+    ../../common/helpers.nix
     ./disk-config.nix
   ];
   melinoe.nodeId = 7;
