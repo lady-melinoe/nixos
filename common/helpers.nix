@@ -64,19 +64,19 @@ EOF
     #!/usr/bin/env bash
     set -euo pipefail
 
-    if [ -z "${1:-}" ] && [ -z "${2:-}" ]; then
+    if [ -z "''${1:-}" ] && [ -z "''${2:-}" ]; then
       echo "Usage: $0 <source-container> <target-host>"
       echo "!!! Error: Missing both source and target arguments."
       exit 1
     fi
 
-    if [ -z "${1:-}" ]; then
+    if [ -z "''${1:-}" ]; then
       echo "Usage: $0 <source-container> <target-host>"
       echo "!!! Error: Missing source container argument."
       exit 1
     fi
 
-    if [ -z "${2:-}" ]; then
+    if [ -z "''${2:-}" ]; then
       echo "Usage: $0 <source-container> <target-host>"
       echo "!!! Error: Missing target host argument."
       exit 1
@@ -103,9 +103,9 @@ EOF
       fi
     fi
 
-    transfer="${src}-transfer"
+    transfer="''${src}-transfer"
     snapshot="pre-transfer"
-    old="${src}-old"
+    old="''${src}-old"
 
     echo "=== Snapshotting Instance ==="
     if ! incus snapshot create "$src" "$snapshot"; then
