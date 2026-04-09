@@ -355,7 +355,7 @@ in {
     define vm_ifs = "vm-*"
     define node_gre_ifs = "node-*"
     define wg_ifs = "wg-*"
-    define inet_ifs = { ${builtins.concatStringsSep ", " (map (iface: "\"${iface}\"") inetIfs)} }
+    define inet_ifs = { "bond*", ${builtins.concatStringsSep ", " (map (iface: "\"${iface}\"") inetIfs)} }
     define gre_ctmark = { ${builtins.concatStringsSep ", " (builtins.genList (i: "\"node-${toString (i)}\" : ${toString (1000 + i)}") 255)} }
     table inet filter {
       chain INPUT {
