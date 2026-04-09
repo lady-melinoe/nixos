@@ -11,6 +11,7 @@ let
   firstUplink = lib.head cfg.internet;
   hostAddr = "198.18.0.${toString cfg.nodeId}";
   pubRouteFix = map (entry: entry.ip) cfg.internet;
+  pubIps = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) cfg.internet);
   natMappings = [
     { dst = "198.18.1.5"; tcp = [ 8080 ]; udp = [ 8080 ]; }
     { dst = "198.18.1.1"; tcp = [ 80 443 1080 1443 ]; udp = [ 80 443 1080 1443 ]; }
@@ -121,7 +122,7 @@ let
     name = "melinoe-route-list.py";
     destination = "/bin/melinoe-route-list";
     executable = true;
-    text = ''
+      text = ''
       #!/usr/bin/env python3
       import subprocess
       from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -132,6 +133,11 @@ let
       class RequestHandler(BaseHTTPRequestHandler):
           def log_message(self, format, *args):
               return
+
+          def add_route(self, routes, route):
+              if "/" not in route:
+                  route = f"{route}/32"
+              routes.append(route)
 
           def do_GET(self):
               if self.path != "/list":
@@ -145,8 +151,11 @@ let
                   for line in result.splitlines():
                       if "dev vm-" not in line: continue
                       ip = line.split()[0]
-                      if "/" not in ip: ip = f"{ip}/32"
-                      routes.append(ip)
+                      self.add_route(routes, ip)
+                  for pub_ip in [
+${lib.concatMapStringsSep "\n" (ip: "                      \"${ip}\",") pubIps}
+                  ]:
+                      self.add_route(routes, pub_ip)
                   response = "\n".join(routes) + "\n"
                   self.send_response(200)
                   self.send_header("Content-Type", "text/plain")

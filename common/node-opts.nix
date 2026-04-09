@@ -28,6 +28,11 @@ in {
             type = types.str;
             description = "Primary IP address for this uplink (use /32 notation).";
           };
+          pub_ip = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Optional public IP address associated with this uplink.";
+          };
           iface = mkOption {
             type = types.listOf types.str;
             description = "Interface names that carry the internet uplink; if multiple interfaces are specified, they will be LACP bonded.";

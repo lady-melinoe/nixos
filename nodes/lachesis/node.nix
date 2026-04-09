@@ -25,6 +25,7 @@
   melinoe.internet = [
     {
       ip = "198.19.1.4/32";
+      pub_ip = "161.33.94.79/32";
       iface = [ "ens3" ];
       subnet = "198.19.1.0/24";
       gateway = "198.19.1.1";
