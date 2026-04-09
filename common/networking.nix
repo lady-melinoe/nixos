@@ -122,53 +122,53 @@ let
     name = "melinoe-route-list.py";
     destination = "/bin/melinoe-route-list";
     executable = true;
-      text = ''
-      #!/usr/bin/env python3
-      import subprocess
-      from http.server import BaseHTTPRequestHandler, HTTPServer
+    text = ''
+#!/usr/bin/env python3
+import subprocess
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-      HOST = "198.18.0.${toString nodeID}"
-      PORT = 60198
+HOST = "198.18.0.${toString nodeID}"
+PORT = 60198
 
-      class RequestHandler(BaseHTTPRequestHandler):
-          def log_message(self, format, *args):
-              return
+class RequestHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        return
 
-          def add_route(self, routes, route):
-              if "/" not in route:
-                  route = f"{route}/32"
-              routes.append(route)
+    def add_route(self, routes, route):
+        if "/" not in route:
+            route = f"{route}/32"
+        routes.append(route)
 
-          def do_GET(self):
-              if self.path != "/list":
-                  self.send_response(404)
-                  self.end_headers()
-                  self.wfile.write(b"Not Found\n")
-                  return
-              try:
-                  result = subprocess.check_output(["/run/current-system/sw/bin/ip", "route"], text=True)
-                  routes = []
-                  for line in result.splitlines():
-                      if "dev vm-" not in line: continue
-                      ip = line.split()[0]
-                      self.add_route(routes, ip)
-                  for pub_ip in [
-${lib.concatMapStringsSep "\n" (ip: "                      \"${ip}\",") pubIps}
-                  ]:
-                      self.add_route(routes, pub_ip)
-                  response = "\n".join(routes) + "\n"
-                  self.send_response(200)
-                  self.send_header("Content-Type", "text/plain")
-                  self.end_headers()
-                  self.wfile.write(response.encode())
-              except Exception as e:
-                  self.send_response(500)
-                  self.end_headers()
-                  self.wfile.write(f"Error: {e}\\n".encode())
+    def do_GET(self):
+        if self.path != "/list":
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Not Found\n")
+            return
+        try:
+            result = subprocess.check_output(["/run/current-system/sw/bin/ip", "route"], text=True)
+            routes = []
+            for line in result.splitlines():
+                if "dev vm-" not in line: continue
+                ip = line.split()[0]
+                self.add_route(routes, ip)
+            for pub_ip in [
+${lib.concatMapStringsSep "\n" (ip: "    \"${ip}\",") pubIps}
+            ]:
+                self.add_route(routes, pub_ip)
+            response = "\n".join(routes) + "\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(response.encode())
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(f"Error: {e}\\n".encode())
 
-      if __name__ == "__main__":
-          server = HTTPServer((HOST, PORT), RequestHandler)
-          server.serve_forever()
+if __name__ == "__main__":
+    server = HTTPServer((HOST, PORT), RequestHandler)
+    server.serve_forever()
     '';
   };
   wgWatchdogScript = pkgs.writeShellScript "melinoe-wg-watchdog" ''
