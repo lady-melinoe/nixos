@@ -452,6 +452,9 @@ ${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
         ip netns exec inet ip route replace ${hostAddr}/32 dev main
         ip route add 198.18.0.255 dev inet0
         ip route add default via 198.18.0.255 dev inet0
+        ip rule del fwmark 51820 lookup 51820 >/dev/null 2>&1 || true
+        ip rule add fwmark 51820 lookup 51820
+        ip route replace default via 198.18.0.255 dev inet0 table 51820
         ip netns exec inet sysctl -w net.ipv4.conf.default.rp_filter=0
         ip netns exec inet sysctl -w net.ipv4.conf.all.rp_filter=0
 
