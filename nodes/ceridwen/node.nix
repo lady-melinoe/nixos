@@ -28,7 +28,7 @@
       subnet = "130.95.13.128/25";
       gateway = "130.95.13.129";
     }
-    {
+/*    {
       ip = "198.19.0.${toString config.melinoe.nodeId}/32";
       iface = [ "eno3" "eno4" ];
       bondMode = "lacp";
@@ -36,36 +36,33 @@
       subnet = "198.19.0.0/24";
       gateway = null;
     }
+*/
   ];
 
   melinoe.peers = [
-/*
     {
       id = 2;
-      endpoint = "130.95.13.219";
+      endpoint = "arke.ucc.asn.au";
     }
     {
       id = 3;
-      endpoint = "198.19.0.3";
+      endpoint = "hecate.ucc.asn.au";
     }
     {
       id = 7;
-      endpoint = "198.19.0.7";
+      endpoint = "benzaiten.ucc.asn.au";
     }
     {
       id = 4;
       endpoint = "lachesis.infra.melinoe.xyz";
     }
-*/
     {
       id = 5;
       endpoint = "atropos.infra.melinoe.xyz";
     }
-/*
     {
       id = 8;
       endpoint = "phaesyle.infra.melinoe.xyz";
     }
-*/
   ];
 }
