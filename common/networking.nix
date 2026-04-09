@@ -57,9 +57,9 @@ let
         address = [ ];
         listenPort = basePort + peer.id;
         privateKeyFile = "/etc/melinoe/wg.privatekey";
-        extraOptions = [
-          "FwMark = 51820"
-        ];
+        extraOptions = {
+          FwMark = 51820;
+        };
         peers = [ (peerToCfg peer) ];
         postUp = ''
           ${runtimeShell} -c '${ipBin} route del ${wgPrefix}.${toString peer.id}/32 dev ${ifName} || true'
