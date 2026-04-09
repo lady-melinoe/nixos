@@ -10,7 +10,6 @@ let
   localWgAddr = "${wgPrefix}.${toString nodeID}";
   firstUplink = lib.head cfg.internet;
   hostAddr = "198.18.0.${toString cfg.nodeId}";
-  pubRouteFix = map (entry: entry.ip) cfg.internet;
   pubIps = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) cfg.internet);
   natMappings = [
     { dst = "198.18.1.5"; tcp = [ 8080 ]; udp = [ 8080 ]; }
@@ -359,10 +358,6 @@ in {
     define node_gre_ifs = "node-*"
     define wg_ifs = "wg-*"
     define gre_ctmark = { ${builtins.concatStringsSep ", " (builtins.genList (i: "\"node-${toString (i)}\" : ${toString (1000 + i)}") 255)} }
-${lib.optionalString (pubRouteFix != [ ]) ''
-    define pubroutefix = { ${builtins.concatStringsSep ", " pubRouteFix} }
-''}
-
     table inet filter {
       chain INPUT {
         type filter hook input priority filter; policy drop;
@@ -377,7 +372,6 @@ ${lib.optionalString (pubRouteFix != [ ]) ''
         udp dport 2049 accept
 	tcp dport 4269 accept
         udp dport 4269 accept
-        ip saddr 198.18.0.0/15 tcp dport 5201 accept # iperf3
         ip saddr 198.18.0.0/15 tcp dport 5201 accept # iperf3
         iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept
         iifname $wg_ifs ip saddr 198.19.3.0/24 udp dport { 3784, 3785 } accept
@@ -424,7 +418,6 @@ ${renderIfaceRules "\"inet0\""}
       }
       chain output {
         type nat hook output priority dstnat; policy accept;
-${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
       }
     }
 
