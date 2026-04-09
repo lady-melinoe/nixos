@@ -28,7 +28,7 @@
       subnet = "130.95.13.128/25";
       gateway = "130.95.13.129";
     }
-/*    {
+    {
       ip = "198.19.0.${toString config.melinoe.nodeId}/32";
       iface = [ "eno3" "eno4" ];
       bondMode = "lacp";
@@ -36,7 +36,6 @@
       subnet = "198.19.0.0/24";
       gateway = null;
     }
-*/
   ];
 
   melinoe.peers = [
@@ -46,7 +45,7 @@
     }
     {
       id = 3;
-      endpoint = "hecate.ucc.asn.au";
+      endpoint = "198.19.0.3";
     }
     {
       id = 7;

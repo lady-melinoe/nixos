@@ -53,7 +53,7 @@
     }
     {
       id = 6;
-      endpoint = "ceridwen.infra.melinoe.xyz";
+      endpoint = "198.19.0.6";
     }
     {
       id = 7;
