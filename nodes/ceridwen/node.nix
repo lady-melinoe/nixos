@@ -39,11 +39,12 @@
   ];
 
   melinoe.peers = [
+/*
     {
       id = 2;
       endpoint = "130.95.13.219";
     }
-/*    {
+    {
       id = 3;
       endpoint = "198.19.0.3";
     }
@@ -55,10 +56,12 @@
       id = 4;
       endpoint = "lachesis.infra.melinoe.xyz";
     }
+*/
     {
       id = 5;
       endpoint = "atropos.infra.melinoe.xyz";
     }
+/*
     {
       id = 8;
       endpoint = "phaesyle.infra.melinoe.xyz";
