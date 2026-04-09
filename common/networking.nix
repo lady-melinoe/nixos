@@ -470,7 +470,7 @@ ${renderIfaceRules "$inet_ifs"}
     ];
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${pkgs.coreutils}/bin/timeout 30 ${routeDeployScript}";
+      ExecStart = "${pkgs.coreutils}/bin/timeout 120 ${routeDeployScript}";
       LogLevelMax = "warning";
     };
   };
