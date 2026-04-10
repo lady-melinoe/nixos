@@ -512,8 +512,8 @@ ${renderIfaceRules "$inet_ifs"}
 
   systemd.services.melinoe-routemake = {
     description = "Maintain melinoe routes over GRE tunnels";
-    after = [ "network-online.target" "melinoe-meshmake.service" ];
-    wants = [ "network-online.target" "melinoe-meshmake.service" ];
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
     path = [
       pkgs.coreutils
       pkgs.bash
