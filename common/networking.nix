@@ -116,8 +116,8 @@ let
       ''}
     '';
   routeListScript = pkgs.writeTextFile {
-    name = "melinoe-route-list.py";
-    destination = "/bin/melinoe-route-list";
+    name = "melinoe-routeserve.py";
+    destination = "/bin/melinoe-routeserve";
     executable = true;
     text = ''
 #!/usr/bin/env python3
@@ -182,23 +182,16 @@ if __name__ == "__main__":
       systemctl restart "$UNIT"
     done
   '';
-  routeDeployScript = pkgs.writeShellScript "route-deploy.sh" ''
+  meshMakeScript = pkgs.writeShellScript "melinoe-meshmake.sh" ''
     #!/usr/bin/env bash
 
     BASE_PREFIX="198.51.100."
     INNER_PREFIX="198.18.0."
     TUN_PREFIX="node-"
 
-    for cmd in vtysh jq ip curl grep awk sed sort uniq; do
+    for cmd in vtysh jq ip grep awk sed sort uniq; do
       command -v "$cmd" >/dev/null 2>&1 || { echo "missing command: $cmd" >&2; exit 1; }
     done
-
-    normalize_prefix() {
-        case "$1" in
-            */*) echo "$1" ;;
-            *)   echo "$1/32" ;;
-        esac
-    }
 
     LOCAL_NODE_ID=${toString nodeID}
 
@@ -213,7 +206,6 @@ if __name__ == "__main__":
 
     LOCAL_VIP="$BASE_PREFIX$LOCAL_NODE_ID"
     LOCAL_INNER="$INNER_PREFIX$LOCAL_NODE_ID"
-    LOCAL_INNER_ROUTE="$LOCAL_INNER/32"
 
     REMOTE_NODE_IDS=$(
       jq -r '
@@ -251,7 +243,7 @@ if __name__ == "__main__":
       fi
     done
 
-    # Ensure tunnels and policy routing exist, then sync prefixes per peer
+    # Ensure tunnels and policy routing exist
     for RID in $REMOTE_NODE_IDS; do
       if ! echo "$RID" | grep -Eq '^[0-9]+$'; then
         continue
@@ -262,7 +254,7 @@ if __name__ == "__main__":
       TABLE=$((1000 + RID))
 
       if ! ip link show "$TUN" >/dev/null 2>&1; then
-      ip tunnel add "$TUN" mode gre \
+        ip tunnel add "$TUN" mode gre \
           local "$LOCAL_VIP" \
           remote "$R_VIP" \
           ttl 64 || continue
@@ -273,7 +265,42 @@ if __name__ == "__main__":
       ip rule del fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
       ip rule add fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
       ip route replace default dev "$TUN" table "$TABLE"
+    done
+  '';
+  routemakeScript = pkgs.writeShellScript "melinoe-routemake.sh" ''
+    #!/usr/bin/env bash
 
+    INNER_PREFIX="198.18.0."
+
+    for cmd in ip curl grep awk sed sort uniq; do
+      command -v "$cmd" >/dev/null 2>&1 || { echo "missing command: $cmd" >&2; exit 1; }
+    done
+
+    normalize_prefix() {
+        case "$1" in
+            */*) echo "$1" ;;
+            *)   echo "$1/32" ;;
+        esac
+    }
+
+    LOCAL_NODE_ID=${toString nodeID}
+    LOCAL_INNER_ROUTE="198.18.0.${toString nodeID}/32"
+
+    EXISTING_TUNNELS=$(
+      ip -o link show type gre 2>/dev/null |
+      awk -F': ' '{print $2}' |
+      cut -d@ -f1 |
+      sed 's/:$//' |
+      grep "^node-" || true
+    )
+
+    for TUN in $EXISTING_TUNNELS; do
+      RID=$(printf '%s\n' "$TUN" | sed 's/^node-//')
+      if ! echo "$RID" | grep -Eq '^[0-9]+$'; then
+        continue
+      fi
+
+      R_INNER="$INNER_PREFIX$RID"
       ROUTE_LIST=$(curl -m 5 -sf "http://$R_INNER:60198/list" || echo "")
 
       NEW_ROUTES=$(
@@ -283,7 +310,6 @@ if __name__ == "__main__":
         sort -u
       )
 
-      # Currently installed routes for this tunnel
       CURRENT_ROUTES=$(
         ip route show dev "$TUN" |
         awk '{print $1}' |
@@ -452,8 +478,8 @@ ${renderIfaceRules "$inet_ifs"}
     path = [ pkgs.iproute2 pkgs.procps ];
   };
 
-  systemd.services.melinoe-route-deploy = {
-    description = "Run melinoe route deployment";
+  systemd.services.melinoe-meshmake = {
+    description = "Maintain melinoe GRE tunnels from BGP";
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     path = [
@@ -470,25 +496,54 @@ ${renderIfaceRules "$inet_ifs"}
     ];
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${pkgs.coreutils}/bin/timeout 120 ${routeDeployScript}";
+      ExecStart = "${pkgs.coreutils}/bin/timeout 120 ${meshMakeScript}";
       LogLevelMax = "warning";
     };
   };
 
-  systemd.services.melinoe-route-list = {
-    description = "Melinoe resident route list server";
+  systemd.timers.melinoe-meshmake = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "3s";
+      OnUnitInactiveSec = "3s";
+      AccuracySec = "1s";
+    };
+  };
+
+  systemd.services.melinoe-routemake = {
+    description = "Maintain melinoe routes over GRE tunnels";
+    after = [ "network-online.target" "melinoe-meshmake.service" ];
+    wants = [ "network-online.target" "melinoe-meshmake.service" ];
+    path = [
+      pkgs.coreutils
+      pkgs.bash
+      pkgs.iproute2
+      pkgs.curl
+      pkgs.gnugrep
+      pkgs.gawk
+      pkgs.gnused
+    ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.coreutils}/bin/timeout 120 ${routemakeScript}";
+      LogLevelMax = "warning";
+    };
+  };
+
+  systemd.services.melinoe-routeserve = {
+    description = "Melinoe resident route server";
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     serviceConfig = {
       Environment = "PATH=/run/current-system/sw/bin";
-      ExecStart = "${pkgs.python3}/bin/python ${routeListScript}/bin/melinoe-route-list";
+      ExecStart = "${pkgs.python3}/bin/python ${routeListScript}/bin/melinoe-routeserve";
       Restart = "on-failure";
       RestartSec = "5s";
     };
   };
 
-  systemd.timers.melinoe-route-deploy = {
+  systemd.timers.melinoe-routemake = {
     wantedBy = [ "timers.target" ];
     timerConfig = {
       OnBootSec = "3s";
