@@ -319,7 +319,6 @@ if __name__ == "__main__":
   mkNeighborStanza = peer: ''
     neighbor ${peer.addr} remote-as ${toString (64512 + peer.id)}
     neighbor ${peer.addr} update-source ${localWgAddr}
-    neighbor ${peer.addr} bfd
   '';
   mkNeighborAfi = peer: ''
     neighbor ${peer.addr} activate
