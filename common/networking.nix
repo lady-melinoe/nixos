@@ -88,6 +88,11 @@ if __name__ == "__main__":
     LOCAL_VIP="$BASE_PREFIX$LOCAL_NODE_ID"
     LOCAL_INNER="$INNER_PREFIX$LOCAL_NODE_ID"
     LOCAL_INNER_ROUTE="$LOCAL_INNER/32"
+    LOCAL_VIP_ROUTE="$LOCAL_VIP/32"
+
+    if ! ip a show dev lo | grep -qF "$LOCAL_VIP_ROUTE"; then
+      ip a add "$LOCAL_VIP_ROUTE" dev lo
+    fi
 
     REMOTE_NODE_IDS=$(
       jq -r '
