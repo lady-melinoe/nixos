@@ -139,8 +139,7 @@ if __name__ == "__main__":
         ip tunnel add "$TUN" mode gre \
           local "$LOCAL_VIP" \
           remote "$R_VIP" \
-          ttl 64 \
-          mtu 1396 || continue
+          ttl 64 || continue
         ip addr replace "$LOCAL_INNER/32" peer "$R_INNER/32" dev "$TUN"
       fi
 
