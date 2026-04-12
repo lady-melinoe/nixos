@@ -46,7 +46,7 @@
       endpoint = "arke.infra.melinoe.xyz";
     }
     {
-      id = 9;
+      id = 6;
       endpoint = "ceridwen.infra.melinoe.xyz";
     }
     {

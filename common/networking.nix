@@ -8,7 +8,8 @@ let
   peers = map (p: { id = p.id; addr = "${wgPrefix}.${toString p.id}"; }) cfg.peers;
   bgpAs = 64512 + nodeID;
   localWgAddr = "${wgPrefix}.${toString nodeID}";
-  inetIfs = lib.unique (lib.concatMap (entry: entry.iface) cfg.internet);
+  firstUplink = lib.head cfg.internet;
+  hostAddr = "198.18.0.${toString cfg.nodeId}";
   pubIps = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) cfg.internet);
   natMappings = [
     { dst = "198.18.1.5"; tcp = [ 8080 ]; udp = [ 8080 ]; }
@@ -90,34 +91,35 @@ let
     ''
       ${lib.concatMapStringsSep "\n" (name: ''
         ip link set ${name} down
+        ip link set ${name} netns inet
       '') ifaces}
       ${lib.optionalString (!isBonded) ''
-        ip link set ${iface} up
+        ip netns exec inet ip link set ${iface} up
       ''}
       ${lib.optionalString isBonded ''
-        ip link add ${iface} type bond mode 802.3ad
+        ip netns exec inet ip link add ${iface} type bond mode 802.3ad
         ${lib.optionalString (uplink.lacpRate != null) ''
-          ip link set ${iface} type bond lacp_rate ${uplink.lacpRate}
+          ip netns exec inet ip link set ${iface} type bond lacp_rate ${uplink.lacpRate}
         ''}
-        ip link set ${iface} up
+        ip netns exec inet ip link set ${iface} up
         ${lib.concatMapStringsSep "\n" (name: ''
-          ip link set ${name} master ${iface}
+          ip netns exec inet ip link set ${name} master ${iface}
         '') ifaces}
       ''}
-      ip addr flush dev ${iface}
-      ip addr replace ${ipWithPrefix} dev ${iface}
+      ip netns exec inet ip addr flush dev ${iface}
+      ip netns exec inet ip addr replace ${ipWithPrefix} dev ${iface}
       ${lib.optionalString (uplink.subnet != null) ''
-        ip route replace ${uplink.subnet} dev ${iface}
-        ip route replace ${uplink.subnet} dev ${iface} table 51820
+        ip netns exec inet ip route replace ${uplink.subnet} dev ${iface}
       ''}
-      ${lib.optionalString (uplink.gateway != null) ''
-        ip route replace default via ${uplink.gateway} dev ${iface}
-        ip route replace default via ${uplink.gateway} dev ${iface} table 51820
-      ''}
+      ip netns exec inet iptables -t nat -C POSTROUTING -o ${iface} -j MASQUERADE
+      ip netns exec inet iptables -t nat -A POSTROUTING -o ${iface} -j MASQUERADE
+      ip netns exec inet iptables -t nat -C PREROUTING -d ${ipAddr} -j DNAT --to-destination ${hostAddr}
+      ip netns exec inet iptables -t nat -C PREROUTING -i ${iface} -d ${ipAddr} -j DNAT --to-destination ${hostAddr}
+      ip netns exec inet iptables -t nat -A PREROUTING -i ${iface} -d ${ipAddr} -j DNAT --to-destination ${hostAddr}
     '';
   routeListScript = pkgs.writeTextFile {
-    name = "melinoe-routeserve.py";
-    destination = "/bin/melinoe-routeserve";
+    name = "melinoe-route-list.py";
+    destination = "/bin/melinoe-route-list";
     executable = true;
     text = ''
 #!/usr/bin/env python3
@@ -182,16 +184,23 @@ if __name__ == "__main__":
       systemctl restart "$UNIT"
     done
   '';
-  meshMakeScript = pkgs.writeShellScript "melinoe-meshmake.sh" ''
+  routeDeployScript = pkgs.writeShellScript "route-deploy.sh" ''
     #!/usr/bin/env bash
 
     BASE_PREFIX="198.51.100."
     INNER_PREFIX="198.18.0."
     TUN_PREFIX="node-"
 
-    for cmd in vtysh jq ip grep awk sed sort uniq; do
+    for cmd in vtysh jq ip curl grep awk sed sort uniq; do
       command -v "$cmd" >/dev/null 2>&1 || { echo "missing command: $cmd" >&2; exit 1; }
     done
+
+    normalize_prefix() {
+        case "$1" in
+            */*) echo "$1" ;;
+            *)   echo "$1/32" ;;
+        esac
+    }
 
     LOCAL_NODE_ID=${toString nodeID}
 
@@ -206,6 +215,7 @@ if __name__ == "__main__":
 
     LOCAL_VIP="$BASE_PREFIX$LOCAL_NODE_ID"
     LOCAL_INNER="$INNER_PREFIX$LOCAL_NODE_ID"
+    LOCAL_INNER_ROUTE="$LOCAL_INNER/32"
 
     REMOTE_NODE_IDS=$(
       jq -r '
@@ -243,7 +253,7 @@ if __name__ == "__main__":
       fi
     done
 
-    # Ensure tunnels and policy routing exist
+    # Ensure tunnels and policy routing exist, then sync prefixes per peer
     for RID in $REMOTE_NODE_IDS; do
       if ! echo "$RID" | grep -Eq '^[0-9]+$'; then
         continue
@@ -254,7 +264,7 @@ if __name__ == "__main__":
       TABLE=$((1000 + RID))
 
       if ! ip link show "$TUN" >/dev/null 2>&1; then
-        ip tunnel add "$TUN" mode gre \
+      ip tunnel add "$TUN" mode gre \
           local "$LOCAL_VIP" \
           remote "$R_VIP" \
           ttl 64 || continue
@@ -265,42 +275,7 @@ if __name__ == "__main__":
       ip rule del fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
       ip rule add fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
       ip route replace default dev "$TUN" table "$TABLE"
-    done
-  '';
-  routemakeScript = pkgs.writeShellScript "melinoe-routemake.sh" ''
-    #!/usr/bin/env bash
 
-    INNER_PREFIX="198.18.0."
-
-    for cmd in ip curl grep awk sed sort uniq; do
-      command -v "$cmd" >/dev/null 2>&1 || { echo "missing command: $cmd" >&2; exit 1; }
-    done
-
-    normalize_prefix() {
-        case "$1" in
-            */*) echo "$1" ;;
-            *)   echo "$1/32" ;;
-        esac
-    }
-
-    LOCAL_NODE_ID=${toString nodeID}
-    LOCAL_INNER_ROUTE="198.18.0.${toString nodeID}/32"
-
-    EXISTING_TUNNELS=$(
-      ip -o link show type gre 2>/dev/null |
-      awk -F': ' '{print $2}' |
-      cut -d@ -f1 |
-      sed 's/:$//' |
-      grep "^node-" || true
-    )
-
-    for TUN in $EXISTING_TUNNELS; do
-      RID=$(printf '%s\n' "$TUN" | sed 's/^node-//')
-      if ! echo "$RID" | grep -Eq '^[0-9]+$'; then
-        continue
-      fi
-
-      R_INNER="$INNER_PREFIX$RID"
       ROUTE_LIST=$(curl -m 5 -sf "http://$R_INNER:60198/list" || echo "")
 
       NEW_ROUTES=$(
@@ -310,6 +285,7 @@ if __name__ == "__main__":
         sort -u
       )
 
+      # Currently installed routes for this tunnel
       CURRENT_ROUTES=$(
         ip route show dev "$TUN" |
         awk '{print $1}' |
@@ -381,7 +357,6 @@ in {
     define vm_ifs = "vm-*"
     define node_gre_ifs = "node-*"
     define wg_ifs = "wg-*"
-    define inet_ifs = { "bond*", ${builtins.concatStringsSep ", " (map (iface: "\"${iface}\"") inetIfs)} }
     define gre_ctmark = { ${builtins.concatStringsSep ", " (builtins.genList (i: "\"node-${toString (i)}\" : ${toString (1000 + i)}") 255)} }
     table inet filter {
       chain INPUT {
@@ -435,11 +410,11 @@ ${lib.optionalString (cfg.wgPorts != [ ]) ''
     table ip nat {
       chain prerouting {
         type nat hook prerouting priority dstnat;
-${renderIfaceRules "$inet_ifs"}
+${renderIfaceRules "\"inet0\""}
       }
       chain postrouting {
         type nat hook postrouting priority srcnat;
-        oifname $inet_ifs masquerade
+        oifname "inet0" masquerade
       }
       chain output {
         type nat hook output priority dstnat; policy accept;
@@ -459,7 +434,7 @@ ${renderIfaceRules "$inet_ifs"}
     }
   '';
   systemd.services.melinoe-inet-setup = lib.mkIf (cfg.internet != [ ]) {
-    description = "Configure uplink interfaces and policy routing";
+    description = "Configure inet netns veth pair for host<->inet connectivity";
     after = [ "network-pre.target" ];
     wants = [ "network-pre.target" ];
     wantedBy = [ "multi-user.target" ];
@@ -467,19 +442,37 @@ ${renderIfaceRules "$inet_ifs"}
       Type = "oneshot";
       RemainAfterExit = true;
       ExecStart = pkgs.writeShellScript "melinoe-inet-setup" ''
+        ip netns add inet
+        ip netns exec inet ip link set lo up
+        ip link del inet0
+        ip link add inet0 type veth peer name main
+        ip link set main netns inet
+        ip addr replace ${hostAddr}/32 dev inet0
+        ip link set inet0 up
+        ip netns exec inet ip link set main up
+        ip netns exec inet ip addr replace 198.18.0.255/32 dev main
+        ip netns exec inet ip route replace ${hostAddr}/32 dev main
+        ip route add 198.18.0.255 dev inet0
+        ip route add default via 198.18.0.255 dev inet0
         ip rule del fwmark 51820 lookup 51820 >/dev/null 2>&1 || true
         ip rule add fwmark 51820 lookup 51820
-        sysctl -w net.ipv4.conf.default.rp_filter=0
-        sysctl -w net.ipv4.conf.all.rp_filter=0
+        ip route replace default via 198.18.0.255 dev inet0 table 51820
+        ip netns exec inet sysctl -w net.ipv4.conf.default.rp_filter=0
+        ip netns exec inet sysctl -w net.ipv4.conf.all.rp_filter=0
 
         ${lib.concatStringsSep "\n" (lib.imap0 mkUplinkScript cfg.internet)}
+
+        # this one is only for the first interface for when we add multi iface support
+        ${lib.optionalString (firstUplink.gateway != null) ''
+          ip netns exec inet ip route add default via ${firstUplink.gateway} dev ${if builtins.length firstUplink.iface > 1 then "bond0" else builtins.head firstUplink.iface}
+        ''}
       '';
     };
-    path = [ pkgs.iproute2 pkgs.procps ];
+    path = [ pkgs.iproute2 pkgs.iptables pkgs.procps ];
   };
 
-  systemd.services.melinoe-meshmake = {
-    description = "Maintain melinoe GRE tunnels from BGP";
+  systemd.services.melinoe-route-deploy = {
+    description = "Run melinoe route deployment";
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     path = [
@@ -496,54 +489,25 @@ ${renderIfaceRules "$inet_ifs"}
     ];
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${pkgs.coreutils}/bin/timeout 120 ${meshMakeScript}";
+      ExecStart = "${pkgs.coreutils}/bin/timeout 30 ${routeDeployScript}";
       LogLevelMax = "warning";
     };
   };
 
-  systemd.timers.melinoe-meshmake = {
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnBootSec = "3s";
-      OnUnitInactiveSec = "3s";
-      AccuracySec = "1s";
-    };
-  };
-
-  systemd.services.melinoe-routemake = {
-    description = "Maintain melinoe routes over GRE tunnels";
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
-    path = [
-      pkgs.coreutils
-      pkgs.bash
-      pkgs.iproute2
-      pkgs.curl
-      pkgs.gnugrep
-      pkgs.gawk
-      pkgs.gnused
-    ];
-    serviceConfig = {
-      Type = "oneshot";
-      ExecStart = "${pkgs.coreutils}/bin/timeout 120 ${routemakeScript}";
-      LogLevelMax = "warning";
-    };
-  };
-
-  systemd.services.melinoe-routeserve = {
-    description = "Melinoe resident route server";
+  systemd.services.melinoe-route-list = {
+    description = "Melinoe resident route list server";
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     serviceConfig = {
       Environment = "PATH=/run/current-system/sw/bin";
-      ExecStart = "${pkgs.python3}/bin/python ${routeListScript}/bin/melinoe-routeserve";
+      ExecStart = "${pkgs.python3}/bin/python ${routeListScript}/bin/melinoe-route-list";
       Restart = "on-failure";
       RestartSec = "5s";
     };
   };
 
-  systemd.timers.melinoe-routemake = {
+  systemd.timers.melinoe-route-deploy = {
     wantedBy = [ "timers.target" ];
     timerConfig = {
       OnBootSec = "3s";
