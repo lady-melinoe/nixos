@@ -136,13 +136,15 @@ if __name__ == "__main__":
       TABLE=$((1000 + RID))
 
       if ! ip link show "$TUN" >/dev/null 2>&1; then
-      ip tunnel add "$TUN" mode gre \
+        ip tunnel add "$TUN" mode gre \
           local "$LOCAL_VIP" \
           remote "$R_VIP" \
-          ttl 64 || continue
+          ttl 64 \
+          mtu 1396 || continue
         ip addr replace "$LOCAL_INNER/32" peer "$R_INNER/32" dev "$TUN"
       fi
 
+      ip link set "$TUN" mtu 1396 || true
       ip link set "$TUN" up || true
       ip rule del fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
       ip rule add fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
