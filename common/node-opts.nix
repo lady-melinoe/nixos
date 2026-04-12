@@ -63,6 +63,12 @@ in {
       description = "Internet uplink definitions; each entry describes an IP, interface, and optional subnet/gateway.";
     };
 
+    advertisedRoutes = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      description = "Additional IPv4 prefixes or host routes to advertise via melinoe-route-list.";
+    };
+
     wgPorts = mkOption {
       type = types.listOf types.int;
       default = [ ];

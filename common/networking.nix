@@ -41,6 +41,10 @@ class RequestHandler(BaseHTTPRequestHandler):
 ${lib.concatMapStringsSep "\n" (ip: "    \"${ip}\",") pubIps}
             ]:
                 self.add_route(routes, pub_ip)
+            for route in [
+${lib.concatMapStringsSep "\n" (route: "    \"${route}\",") cfg.advertisedRoutes}
+            ]:
+                self.add_route(routes, route)
             response = "\n".join(routes) + "\n"
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
