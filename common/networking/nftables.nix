@@ -105,7 +105,7 @@ ${renderIfaceRules "\"inet0\""}
       chain output {
         type route hook output priority mangle;
         ct direction reply ct mark 1000-1254 meta mark set ct mark
-        ct direction reply ct mark 999 ct meta mark set 51820
+        ct direction reply ct mark 999 meta mark set 51820
       }
     }
   '';
