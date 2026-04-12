@@ -99,10 +99,13 @@ ${renderIfaceRules "\"inet0\""}
         type filter hook prerouting priority mangle;
         iifname $vm_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
         iifname $node_gre_ifs ct direction original ct mark != 1000-1254 ct mark set iifname map $gre_ctmark
+        iifname inet0 ct direction reply ct mark 999 meta mark set 51820
+        iifname inet0 ct direction original ct mark != 999 ct mark set 999
       }
       chain output {
         type route hook output priority mangle;
         ct direction reply ct mark 1000-1254 meta mark set ct mark
+        ct direction reply ct mark 999 ct meta mark set 51820
       }
     }
   '';
