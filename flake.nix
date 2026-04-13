@@ -36,23 +36,49 @@
         };
       };
     in {
-      packages.${system}.borg-beta = pkgs.stdenvNoCC.mkDerivation {
-        pname = "borg-beta";
-        version = "2.0.0b21";
+      packages.${system} = {
+        tunudp = pkgs.stdenv.mkDerivation {
+          pname = "tunudp";
+          version = "0.1.0";
 
-        src = pkgs.fetchurl {
-          url = "https://github.com/borgbackup/borg/releases/download/2.0.0b21/borg-linux-glibc235-x86_64-gh";
-          hash = "sha256-HN5TudJIwaYA32+TjuoyB/JxQb4OjXqAVC+o+QHyIcU=";
+          src = ./.;
+          sourceRoot = "pkg_dump/tunudp";
+
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.liburing ];
+
+          buildPhase = ''
+            runHook preBuild
+            cc -O3 -pthread $(pkg-config --cflags liburing) tunudp.c \
+              $(pkg-config --libs liburing) -o tunudp
+            runHook postBuild
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 tunudp "$out/bin/tunudp"
+            runHook postInstall
+          '';
         };
 
-        dontUnpack = true;
-        dontBuild = true;
+        borg-beta = pkgs.stdenvNoCC.mkDerivation {
+          pname = "borg-beta";
+          version = "2.0.0b21";
 
-        installPhase = ''
-          runHook preInstall
-          install -Dm755 "$src" "$out/bin/borg"
-          runHook postInstall
-        '';
+          src = pkgs.fetchurl {
+            url = "https://github.com/borgbackup/borg/releases/download/2.0.0b21/borg-linux-glibc235-x86_64-gh";
+            hash = "sha256-HN5TudJIwaYA32+TjuoyB/JxQb4OjXqAVC+o+QHyIcU=";
+          };
+
+          dontUnpack = true;
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 "$src" "$out/bin/borg"
+            runHook postInstall
+          '';
+        };
       };
 
       nixosConfigurations = lib.mapAttrs mkNixosConfiguration nodes;
