@@ -42,13 +42,14 @@
           version = "0.1.0";
 
           src = ./.;
-          sourceRoot = "pkg_dump/tunudp";
+          dontUnpack = true;
 
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [ pkgs.liburing ];
 
           buildPhase = ''
             runHook preBuild
+            cd "$src/pkg_dump/tunudp"
             cc -O3 -pthread $(pkg-config --cflags liburing) tunudp.c \
               $(pkg-config --libs liburing) -o tunudp
             runHook postBuild
