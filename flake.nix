@@ -49,8 +49,7 @@
 
           buildPhase = ''
             runHook preBuild
-            cd "$src/pkg_dump/tunudp"
-            cc -O3 -pthread $(pkg-config --cflags liburing) tunudp.c \
+            cc -O3 -pthread $(pkg-config --cflags liburing) "$src/pkg_dump/tunudp/tunudp.c" \
               $(pkg-config --libs liburing) -o tunudp
             runHook postBuild
           '';
