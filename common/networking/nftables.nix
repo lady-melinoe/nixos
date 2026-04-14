@@ -1,6 +1,7 @@
 { config, lib, ... }:
 let
   cfg = config.melinoe;
+  pubRouteFix = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) cfg.internet);
   natMappings = [
     { dst = "198.18.1.5"; tcp = [ 8080 ]; udp = [ 8080 ]; }
     { dst = "198.18.1.1"; tcp = [ 80 443 1080 1443 ]; udp = [ 80 443 1080 1443 ]; }
@@ -22,6 +23,11 @@ let
       (renderProtoRule "tcp" mapping.tcp "iifname ${ifaceExpr}" mapping.dst)
       + (renderProtoRule "udp" mapping.udp "iifname ${ifaceExpr}" mapping.dst)
     ) natMappings;
+  renderDestRules = destExpr:
+    lib.concatMapStrings (mapping:
+      (renderProtoRule "tcp" mapping.tcp "ip daddr ${destExpr}" mapping.dst)
+      + (renderProtoRule "udp" mapping.udp "ip daddr ${destExpr}" mapping.dst)
+    ) natMappings;
 in {
   networking.firewall.enable = false;
   networking.nftables.enable = true;
@@ -31,6 +37,9 @@ in {
     define node_gre_ifs = "node-*"
     define wg_ifs = "wg-*"
     define gre_ctmark = { ${builtins.concatStringsSep ", " (builtins.genList (i: "\"node-${toString (i)}\" : ${toString (1000 + i)}") 255)} }
+${lib.optionalString (pubRouteFix != [ ]) ''
+    define pubroutefix = { ${builtins.concatStringsSep ", " pubRouteFix} }
+''}
     table inet filter {
       chain INPUT {
         type filter hook input priority filter; policy drop;
@@ -85,6 +94,7 @@ ${lib.optionalString (cfg.wgPorts != [ ]) ''
       chain prerouting {
         type nat hook prerouting priority dstnat;
 ${renderIfaceRules "\"inet0\""}
+${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
       }
       chain postrouting {
         type nat hook postrouting priority srcnat;
@@ -92,6 +102,7 @@ ${renderIfaceRules "\"inet0\""}
       }
       chain output {
         type nat hook output priority dstnat; policy accept;
+${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
       }
     }
 
