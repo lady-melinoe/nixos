@@ -54,7 +54,7 @@
       endpoint = "hecate.infra.melinoe.xyz";
     }
     {
-      id = 8;
+      id = 1;
       endpoint = "phaesyle.infra.melinoe.xyz";
     }
   ];

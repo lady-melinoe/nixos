@@ -60,7 +60,7 @@
       endpoint = "198.19.0.7";
     }
     {
-      id = 8;
+      id = 1;
       endpoint = "phaesyle.infra.melinoe.xyz";
     }
   ];
