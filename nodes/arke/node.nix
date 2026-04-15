@@ -47,7 +47,7 @@
       endpoint = "hecate.infra.melinoe.xyz";
     }
     {
-      id =6;
+      id = 6;
       endpoint = "lachesis.infra.melinoe.xyz";
     }
     {
@@ -55,7 +55,7 @@
       endpoint = "atropos.infra.melinoe.xyz";
     }
     {
-      id = 9;
+      id = 3;
       endpoint = "ceridwen.infra.melinoe.xyz";
     }
     {

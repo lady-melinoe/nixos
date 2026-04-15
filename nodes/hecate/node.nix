@@ -52,8 +52,8 @@
       endpoint = "atropos.infra.melinoe.xyz";
     }
     {
-      id = 9;
-      endpoint = "198.19.0.9";
+      id = 3;
+      endpoint = "198.19.0.3";
     }
     {
       id = 4;
