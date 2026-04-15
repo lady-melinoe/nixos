@@ -56,7 +56,7 @@
       endpoint = "lachesis.infra.melinoe.xyz";
     }
     {
-      id = 5;
+      id = 7;
       endpoint = "atropos.infra.melinoe.xyz";
     }
     {

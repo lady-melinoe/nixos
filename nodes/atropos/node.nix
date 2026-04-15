@@ -18,7 +18,7 @@
   ];
 
   melinoe.serialMode = true;
-  melinoe.nodeId = 5;
+  melinoe.nodeId = 7;
   networking.hostName = "atropos";
   melinoe.sshHostKeyPub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICfpGK2VmmUnpdezvnj+8CsJ4AHeMTKC5gVoyjU9Xqlh root@thanatos";
   melinoe.sshHostCertPub = "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAAIJgr18mK5Uy5lF995QwGM6Z7tbuVs7sdKo9dlFuUbuwYAAAAICfpGK2VmmUnpdezvnj+8CsJ4AHeMTKC5gVoyjU9XqlhAAAAAAAAAAAAAAACAAAAB2F0cm9wb3MAAABUAAAAB2F0cm9wb3MAAAAZYXRyb3Bvcy5pbmZyYS5tZWxpbm9lLnh5egAAAAoxOTguMTkuMS41AAAACjE5OC4xOC4wLjUAAAAMMTk4LjUxLjEwMC41AAAAAGm7iiIAAAAAfIjeogAAAAAAAAAAAAAAAAAAADMAAAALc3NoLWVkMjU1MTkAAAAg9u/g9YKYQtPhfF68Iv6TxGeOvCA59QtcaBZCxUlSD1MAAABTAAAAC3NzaC1lZDI1NTE5AAAAQGDOfGfg67S0AUmYiTWLjri7xGXc6co9G49UkrViW/x/H45egSHakOUX5dfPBcJRbW9NNgjwxDpKP9HAWTmhoQI= root@thanatos";
