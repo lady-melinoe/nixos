@@ -1,6 +1,6 @@
 { ... }:
 {
-  melinoe.publicNodes."4" = {
+  melinoe.publicNodes."6" = {
     wgPubkey = "0vW0eCXm1xwZohBU50pirElC1K6niM+0ziXToi3O3l4=";
   };
 }
