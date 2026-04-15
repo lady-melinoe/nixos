@@ -42,7 +42,7 @@
       endpoint = "benzaiten.infra.melinoe.xyz";
     }
     {
-      id = 2;
+      id = 5;
       endpoint = "arke.infra.melinoe.xyz";
     }
     {
