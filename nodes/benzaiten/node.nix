@@ -45,8 +45,8 @@
       endpoint = "arke.infra.melinoe.xyz";
     }
     {
-      id = 3;
-      endpoint = "198.19.0.3";
+      id = 2;
+      endpoint = "198.19.0.2";
     }
     {
       id = 6;
