@@ -41,7 +41,7 @@
       endpoint = "hecate.infra.melinoe.xyz";
     }
     {
-      id = 4;
+      id = 6;
       endpoint = "lachesis.infra.melinoe.xyz";
     }
     {

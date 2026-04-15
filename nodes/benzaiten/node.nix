@@ -49,7 +49,7 @@
       endpoint = "198.19.0.3";
     }
     {
-      id = 4;
+      id = 6;
       endpoint = "lachesis.infra.melinoe.xyz";
     }
     {
