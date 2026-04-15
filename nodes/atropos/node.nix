@@ -38,7 +38,7 @@
       endpoint = "198.19.1.4";
     }
     {
-      id = 7;
+      id = 4;
       endpoint = "benzaiten.infra.melinoe.xyz";
     }
     {
