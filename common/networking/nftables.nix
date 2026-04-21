@@ -1,6 +1,7 @@
 { config, lib, ... }:
 let
   cfg = config.melinoe;
+  hostAddr = "198.18.0.${toString cfg.nodeId}";
   pubRouteFix = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) cfg.internet);
   natMappings = [
     { dst = "198.18.1.5"; tcp = [ 8080 ]; udp = [ 8080 ]; }
@@ -95,6 +96,9 @@ ${lib.optionalString (cfg.wgPorts != [ ]) ''
         type nat hook prerouting priority dstnat;
 ${renderIfaceRules "\"inet0\""}
 ${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
+${lib.optionalString (pubRouteFix != [ ]) ''
+        ip daddr $pubroutefix dnat to ${hostAddr}
+''}
       }
       chain postrouting {
         type nat hook postrouting priority srcnat;
@@ -103,6 +107,9 @@ ${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
       chain output {
         type nat hook output priority dstnat; policy accept;
 ${lib.optionalString (pubRouteFix != [ ]) (renderDestRules "$pubroutefix")}
+${lib.optionalString (pubRouteFix != [ ]) ''
+        ip daddr $pubroutefix dnat to ${hostAddr}
+''}
       }
     }
 
