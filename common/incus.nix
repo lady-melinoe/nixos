@@ -31,6 +31,7 @@ let
 in {
   config = {
     virtualisation.incus.enable = true;
+    virtualisation.incus.package = pkgs.incus;
     users.users.melinoe.extraGroups = [ "incus-admin" ];
 
     system.activationScripts.incusConfigureIface = {
