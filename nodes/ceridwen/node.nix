@@ -70,6 +70,11 @@
     value = {
       enable = true;
       wantedBy = [ "getty.target" ];
+    } // lib.optionalAttrs (port >= 1 && port <= 3) {
+      serviceConfig.ExecStart = lib.mkForce [
+        ""
+        "${pkgs.util-linux}/bin/agetty --login-program ${pkgs.shadow}/bin/login --noclear --keep-baud -L ttyS${toString port} 115200 vt220"
+      ];
     };
   }) [ 0 1 2 3 4 ]);
 }
