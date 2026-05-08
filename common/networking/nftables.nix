@@ -60,7 +60,7 @@ ${lib.optionalString (pubRouteFix != [ ]) ''
         iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept
         iifname $wg_ifs ip saddr 198.19.3.0/24 udp dport { 3784, 3785 } accept
         iifname $wg_ifs ip saddr 198.19.3.0/24 udp sport { 3784, 3785 } accept
-        iifname $wg_ifs ip saddr 198.51.100.0/24 ip protocol gre accept
+        iifname $wg_ifs ip saddr 198.51.100.0/24 ip protocol 4 accept
         ip saddr 198.18.0.0/24 tcp dport 60198 accept
         ip saddr 198.18.1.5 tcp dport 61208 accept
 ${lib.optionalString (cfg.wgPorts != [ ]) ''

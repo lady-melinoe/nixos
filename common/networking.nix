@@ -112,14 +112,14 @@ if __name__ == "__main__":
     )
 
     EXISTING_TUNNELS=$(
-      ip -o link show type gre 2>/dev/null |
+      ip -o link show type ipip 2>/dev/null |
       awk -F': ' '{print $2}' |
       cut -d@ -f1 |
       sed 's/:$//' |
       grep "^$TUN_PREFIX" || true
     )
 
-    # Tear down GRE state for peers that disappeared from BGP
+    # Tear down tunnel state for peers that disappeared from BGP
     for TUN in $EXISTING_TUNNELS; do
       RID=$(printf '%s\n' "$TUN" | sed "s/^$TUN_PREFIX//")
       if ! echo "$RID" | grep -Eq '^[0-9]+$'; then
@@ -145,7 +145,7 @@ if __name__ == "__main__":
       TABLE=$((1000 + RID))
 
       if ! ip link show "$TUN" >/dev/null 2>&1; then
-        ip tunnel add "$TUN" mode gre \
+        ip tunnel add "$TUN" mode ipip \
           local "$LOCAL_VIP" \
           remote "$R_VIP" \
           ttl 64 || continue
@@ -175,12 +175,12 @@ if __name__ == "__main__":
         sort -u
       )
 
-      GRE_PEER_ROUTE="$R_INNER/32"
+      TUN_PEER_ROUTE="$R_INNER/32"
 
       for PREFIX in $NEW_ROUTES; do
         case "$PREFIX" in
           "$LOCAL_INNER_ROUTE") continue ;;
-          "$GRE_PEER_ROUTE")    continue ;;
+          "$TUN_PEER_ROUTE")    continue ;;
         esac
 
         if ! grep -qx "$PREFIX" <<<"$CURRENT_ROUTES"; then
@@ -190,7 +190,7 @@ if __name__ == "__main__":
 
       for PREFIX in $CURRENT_ROUTES; do
         case "$PREFIX" in
-          "$GRE_PEER_ROUTE") continue ;;
+          "$TUN_PEER_ROUTE") continue ;;
           "$LOCAL_INNER_ROUTE") continue ;;
         esac
 
