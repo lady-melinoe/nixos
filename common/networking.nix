@@ -152,7 +152,7 @@ if __name__ == "__main__":
         ip addr replace "$LOCAL_INNER/32" peer "$R_INNER/32" dev "$TUN"
       fi
 
-      ip link set "$TUN" mtu 1396 || true
+      ip link set "$TUN" mtu 1400 || true
       ip link set "$TUN" up || true
       ip rule del fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
       ip rule add fwmark "$TABLE" lookup "$TABLE" >/dev/null 2>&1 || true
