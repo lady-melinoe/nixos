@@ -64,4 +64,12 @@
       endpoint = "phaesyle.infra.melinoe.xyz";
     }
   ];
+
+  systemd.services = builtins.listToAttrs (map (port: {
+    name = "serial-getty@ttyS${toString port}";
+    value = {
+      enable = true;
+      wantedBy = [ "getty.target" ];
+    };
+  }) [ 0 1 2 3 4 ]);
 }
