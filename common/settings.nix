@@ -36,7 +36,6 @@
     pkgs.iptables
     pkgs.python3
     inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.borg-beta
-    inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.tunudp
   ];
   boot.kernelPackages = pkgs.linuxPackages_latest;
   boot.kernel.sysctl = {
