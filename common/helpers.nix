@@ -5,15 +5,17 @@ let
     set -euo pipefail
 
     no_pull=0
+    no_verify=0
     rebuild_mode="switch"
     hostname=""
 
     usage() {
       cat <<'EOF'
-Usage: update [--no-pull] [--boot] [--hostname HOSTNAME]
+Usage: update [--no-pull] [--no-verify] [--boot] [--hostname HOSTNAME]
 
 Options:
   --no-pull         Skip git pull in /etc/nixos
+  --no-verify       Skip verification of the fetched commit signature
   --boot            Run nixos-rebuild boot instead of switch
   --hostname NAME   Rebuild a different host than the local machine
   -h, --help        Show this help
@@ -24,6 +26,9 @@ EOF
       case "$1" in
         --no-pull)
           no_pull=1
+          ;;
+        --no-verify)
+          no_verify=1
           ;;
         --boot)
           rebuild_mode="boot"
@@ -54,7 +59,18 @@ EOF
     fi
 
     if [ "$no_pull" -eq 0 ]; then
-      git -C /etc/nixos pull
+      repo=/etc/nixos
+      allowed_signers="$repo/allowed_signers"
+      upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}')"
+
+      git -C "$repo" fetch
+      upstream_commit="$(git -C "$repo" rev-parse --verify "$upstream^{commit}")"
+
+      if [ "$no_verify" -eq 0 ]; then
+        git -C "$repo" -c "gpg.ssh.allowedSignersFile=$allowed_signers" verify-commit "$upstream_commit"
+      fi
+
+      git -C "$repo" merge --ff-only "$upstream_commit"
     fi
 
     exec nixos-rebuild "$rebuild_mode" --flake "/etc/nixos/#''${hostname}"
