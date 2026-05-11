@@ -50,10 +50,6 @@
                     swap.swapfile.size = "2G";
                   };
                   "/@array" = {};
-                  "/@1710pack" = {
-                    mountpoint = "/1710pack";
-                    mountOptions = [ "noatime" ];
-                  };
                 };
               };
             };
