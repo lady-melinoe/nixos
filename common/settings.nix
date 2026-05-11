@@ -12,6 +12,7 @@
   services.openssh.ports = [ 22 ];
   services.openssh.extraConfig = ''
     TrustedUserCAKeys /etc/ssh/ssh-user-ca.pub
+    HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub
   '';
   environment.etc."ssh/ssh_known_hosts".text = ''
     @cert-authority *.infra.melinoe.xyz,*.intra.melinoe.xyz,198.18.0.*,198.19.0.*,198.19.1.*,198.19.3.*,198.51.100.* ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T
