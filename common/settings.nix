@@ -11,22 +11,17 @@
   systemd.services.qemu-guest-agent.unitConfig.ConditionVirtualization = "vm";
   services.openssh.ports = [ 22 ];
   services.openssh.extraConfig = ''
-    HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub
     TrustedUserCAKeys /etc/ssh/ssh-user-ca.pub
   '';
   environment.etc."ssh/ssh_known_hosts".text = ''
-    @cert-authority *.infra.melinoe.xyz,198.18.0.*,198.19.0.*,198.19.1.*,198.51.100.* ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T
+    @cert-authority *.infra.melinoe.xyz,*.intra.melinoe.xyz,198.18.0.*,198.19.0.*,198.19.1.*,198.19.3.*,198.51.100.* ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T
   '';
   environment.etc."ssh/ssh-user-ca.pub".text = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINwS8hXHMP2ij1HmUL0N7oFU4+G8atQHtSRq9e8MOqkL SSH User CA";
   environment.etc."ssh/ssh-user-ca.pub".mode = "0644";
   environment.etc."ssh/ssh-host-ca.pub".text = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T SSH Host CA";
   environment.etc."ssh/ssh-host-ca.pub".mode = "0644";
-  environment.etc."ssh/ssh_host_ed25519_key.pub".text = config.melinoe.sshHostKeyPub;
-  environment.etc."ssh/ssh_host_ed25519_key.pub".mode = "0644";
-  environment.etc."ssh/ssh_host_ed25519_key-cert.pub".text = config.melinoe.sshHostCertPub;
-  environment.etc."ssh/ssh_host_ed25519_key-cert.pub".mode = "0644";
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
-  nix.settings.require-sigs = false;
+  nix.settings.require-sigs = true;
   programs.nix-ld.enable = true;
   system.stateVersion = "25.05";
   environment.systemPackages = [

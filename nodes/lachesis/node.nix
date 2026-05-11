@@ -20,8 +20,6 @@
   melinoe.serialMode = true;
   melinoe.nodeId = 6;
   networking.hostName = "lachesis";
-  melinoe.sshHostKeyPub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEaUb7HXvGZXhsa9dre8X/6MGctmbCCkQ+YnELtYviKb root@hypnos";
-  melinoe.sshHostCertPub = "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAAIISl1efhTELyBwMeFawrt1dScxAY7RDAPNyTsz96HpuBAAAAIEaUb7HXvGZXhsa9dre8X/6MGctmbCCkQ+YnELtYviKbAAAAAAAAAAAAAAACAAAACGxhY2hlc2lzAAAAVgAAAAhsYWNoZXNpcwAAABpsYWNoZXNpcy5pbmZyYS5tZWxpbm9lLnh5egAAAAoxOTguMTkuMS40AAAACjE5OC4xOC4wLjQAAAAMMTk4LjUxLjEwMC40AAAAAGm7ijcAAAAAfIjetwAAAAAAAAAAAAAAAAAAADMAAAALc3NoLWVkMjU1MTkAAAAg9u/g9YKYQtPhfF68Iv6TxGeOvCA59QtcaBZCxUlSD1MAAABTAAAAC3NzaC1lZDI1NTE5AAAAQFj72PDcGXM6ztYLlKbcPjZ7bPov44UYeptrSW/LiTBVj165qf6RGJNEEveuusvdtq3bpeT7FqeT/ggqq3P17gE= root@hypnos";
   melinoe.internet = [
     {
       ip = "198.19.1.4/32";

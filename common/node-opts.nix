@@ -114,18 +114,6 @@ in {
       default = { };
       description = "Per-node public artifacts published by nodes/*/public.nix.";
     };
-
-    sshHostKeyPub = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Public SSH host key for this node.";
-    };
-
-    sshHostCertPub = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Signed SSH host certificate for this node.";
-    };
   };
 
   config.assertions =
