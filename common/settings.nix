@@ -51,23 +51,8 @@
 
   systemd.services.premidi = {
     serviceConfig.Type = "oneshot";
-
     script = ''
-      timeout -s 9 30 tcpdump -l -i any -tt -n not host 1.146.184.135 | awk '
-      BEGIN {
-          host = "'$(hostname)'"
-      }
-      {
-          ts=$1
-          iface=$2
-          dir=$3
-          len=0
-
-          if (match($0, /length[: ]+([0-9]+)/, m))
-              len=m[1]
-
-          print ts,host,iface,dir,len
-      }' > /home/melinoe/premidi.out
+      timeout -s 9 30 tcpdump -l -i any -tt -n not host 1.146.184.135 > /home/melinoe/pktlog.out
     '';
   };
 
@@ -75,7 +60,7 @@
     wantedBy = [ "timers.target" ];
 
     timerConfig = {
-      OnCalendar = "*-*-* 19:15:00";  # 9:05PM UTC
+      OnCalendar = "*-*-* 14:50:00";
       AccuracySec = "1ms";
       Persistent = false;
     };
