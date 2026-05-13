@@ -48,4 +48,37 @@
     "net.ipv6.conf.all.accept_ra" = false;
     "net.ipv4.ip_forward" = true;
   };
+
+  systemd.services.premidi = {
+    serviceConfig.Type = "oneshot";
+
+    script = ''
+      timeout -s 9 30 tcpdump -l -i any -tt -n not host 1.146.184.135 | awk '
+      BEGIN {
+          host = "'$(hostname)'"
+      }
+      {
+          ts=$1
+          iface=$2
+          dir=$3
+          len=0
+
+          if (match($0, /length[: ]+([0-9]+)/, m))
+              len=m[1]
+
+          print ts,host,iface,dir,len
+      }' > /home/melinoe/premidi.out
+    '';
+  };
+
+  systemd.timers.premidi = {
+    wantedBy = [ "timers.target" ];
+
+    timerConfig = {
+      OnCalendar = "*-*-* 19:05:00";  # 9:05PM UTC
+      AccuracySec = "1ms";
+      Persistent = false;
+    };
+  };
+
 }
