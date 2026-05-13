@@ -54,13 +54,17 @@
     script = ''
       timeout -s 9 30 tcpdump -l -i any -tt -n not host 1.146.184.135 > /home/melinoe/pktlog.out
     '';
+    path = [
+      pkgs.coreutils
+      pkgs.tcpdump
+    ];
   };
 
   systemd.timers.premidi = {
     wantedBy = [ "timers.target" ];
 
     timerConfig = {
-      OnCalendar = "*-*-* 14:50:00";
+      OnCalendar = "*-*-* 15:05:00";
       AccuracySec = "1ms";
       Persistent = false;
     };
