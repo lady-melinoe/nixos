@@ -6,6 +6,11 @@
   systemd.oomd.enable = false;
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" "sd_mod" "usbhid" "usb_storage" "mpt3sas" "ehci_pci" ];
   boot.initrd.kernelModules = [ "nvme" "kvm-intel" ];
+
+  services.chrony = {
+    enable = true;
+    servers = [ "time.uwa.edu.au:123" ];
+  };
   services.openssh.enable = true;
   services.qemuGuest.enable = true;
   systemd.services.qemu-guest-agent.unitConfig.ConditionVirtualization = "vm";
