@@ -75,7 +75,7 @@
     wantedBy = [ "timers.target" ];
 
     timerConfig = {
-      OnCalendar = "*-*-* 19:05:00";  # 9:05PM UTC
+      OnCalendar = "*-*-* 19:10:00";  # 9:05PM UTC
       AccuracySec = "1ms";
       Persistent = false;
     };
