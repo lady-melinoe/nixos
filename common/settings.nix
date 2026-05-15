@@ -11,7 +11,10 @@
     enable = true;
     servers = [ "time.uwa.edu.au:123" ];
   };
+
   services.openssh.enable = true;
+  services.openssh.settings.PasswordAuthentication = false;
+  services.openssh.settings.KbdInteractiveAuthentication = false;
   services.qemuGuest.enable = true;
   systemd.services.qemu-guest-agent.unitConfig.ConditionVirtualization = "vm";
   services.openssh.ports = [ 22 ];
@@ -48,26 +51,4 @@
     "net.ipv6.conf.all.accept_ra" = false;
     "net.ipv4.ip_forward" = true;
   };
-
-  systemd.services.premidi = {
-    serviceConfig.Type = "oneshot";
-    script = ''
-      timeout -s 9 30 tcpdump -l -i any -tt -n not host 1.146.184.135 > /home/melinoe/pktlog.out
-    '';
-    path = [
-      pkgs.coreutils
-      pkgs.tcpdump
-    ];
-  };
-
-  systemd.timers.premidi = {
-    wantedBy = [ "timers.target" ];
-
-    timerConfig = {
-      OnCalendar = "*-*-* 15:05:00";
-      AccuracySec = "1ms";
-      Persistent = false;
-    };
-  };
-
 }
