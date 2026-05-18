@@ -1,4 +1,3 @@
-```nix
 { config, lib, pkgs, ... }:
 let
   cfg = config.melinoe;
@@ -280,4 +279,3 @@ in {
     };
   };
 }
-```
