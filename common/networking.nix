@@ -1,8 +1,10 @@
+```nix
 { config, lib, pkgs, ... }:
 let
   cfg = config.melinoe;
   nodeID = cfg.nodeId;
   pubIps = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) cfg.internet);
+
   routeListScript = pkgs.writeTextFile {
     name = "melinoe-route-list.py";
     destination = "/bin/melinoe-route-list";
@@ -60,6 +62,7 @@ if __name__ == "__main__":
     server.serve_forever()
     '';
   };
+
   routeDeployScript = pkgs.writeShellScript "route-deploy.sh" ''
     #!/usr/bin/env bash
 
@@ -98,16 +101,23 @@ if __name__ == "__main__":
       ip a add "$LOCAL_VIP_ROUTE" dev lo
     fi
 
-    REMOTE_NODE_IDS=$(
+    PEER_HOPS_TSV=$(
       jq -r '
         .routes
         | to_entries[]
         | select(.key | test("^198\\.51\\.100\\.[0-9]+/32$"))
         | .value[0] as $p
         | select($p.path != "")
-        | .key
-      ' <<<"$BGP_JSON" |
-      awk -F"[./]" '{print $4}' |
+        | [
+            (.key | capture("^198\\.51\\.100\\.(?<id>[0-9]+)/32$").id),
+            ($p.path | gsub("^ +| +$"; "") | split(" ") | map(select(length > 0)) | length)
+          ]
+        | @tsv
+      ' <<<"$BGP_JSON"
+    )
+
+    REMOTE_NODE_IDS=$(
+      awk '{print $1}' <<<"$PEER_HOPS_TSV" |
       sort -n | uniq
     )
 
@@ -139,6 +149,13 @@ if __name__ == "__main__":
       if ! echo "$RID" | grep -Eq '^[0-9]+$'; then
         continue
       fi
+
+      HOPS=$(awk -v rid="$RID" '$1 == rid { print $2; exit }' <<<"$PEER_HOPS_TSV")
+
+      if ! echo "$HOPS" | grep -Eq '^[1-9][0-9]*$'; then
+        continue
+      fi
+
       R_VIP="$BASE_PREFIX$RID"
       R_INNER="$INNER_PREFIX$RID"
       TUN="$TUN_PREFIX$RID"
@@ -167,7 +184,6 @@ if __name__ == "__main__":
         sort -u
       )
 
-      # Currently installed routes for this tunnel
       CURRENT_ROUTES=$(
         ip route show dev "$TUN" |
         awk '{print $1}' |
@@ -183,9 +199,7 @@ if __name__ == "__main__":
           "$TUN_PEER_ROUTE")    continue ;;
         esac
 
-        if ! grep -qx "$PREFIX" <<<"$CURRENT_ROUTES"; then
-          ip route replace "$PREFIX" dev "$TUN"
-        fi
+        ip route replace "$PREFIX" dev "$TUN" metric "$HOPS"
       done
 
       for PREFIX in $CURRENT_ROUTES; do
@@ -239,7 +253,7 @@ in {
     ];
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${pkgs.coreutils}/bin/timeout 30 ${routeDeployScript}";
+      ExecStart = "${pkgs.coreutils}/bin/timeout 300 ${routeDeployScript}";
       LogLevelMax = "warning";
     };
   };
@@ -265,5 +279,5 @@ in {
       AccuracySec = "1s";
     };
   };
-
 }
+```
