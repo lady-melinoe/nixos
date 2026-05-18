@@ -5,7 +5,7 @@ let
   pubRouteFix = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) cfg.internet);
   natMappings = [
     { dst = "198.18.1.5"; tcp = [ 8080 ]; udp = [ 8080 ]; }
-    { dst = "198.18.1.1"; tcp = [ 80 443 1080 1443 ]; udp = [ 80 443 1080 1443 ]; }
+    { dst = "198.18.1.16"; tcp = [ 80 443 1080 1443 ]; udp = [ 80 443 1080 1443 ]; }
     { dst = "198.18.1.6"; tcp = [ 993 25 465 ]; udp = [ ]; }
     { dst = "198.18.1.8"; tcp = [ 25565 ]; udp = [ 25565 ]; }
     { dst = "198.18.1.11"; tcp = [ 57843 ]; udp = [ 57843 ]; }
