@@ -95,27 +95,6 @@ def local_advertised_routes():
     return set(build_route_list().splitlines())
 
 
-def ping_ms(target, *, mark=None):
-    cmd = ["ping", "-n", "-c", "3", "-W", "1"]
-
-    if mark is not None:
-        cmd += ["-m", str(mark)]
-
-    cmd.append(target)
-
-    result = run(cmd, check=False, timeout=5)
-
-    if result.returncode != 0:
-        return None
-
-    match = re.search(r"rtt min/avg/max/(?:mdev|stddev) = [0-9.]+/([0-9.]+)/", result.stdout)
-
-    if not match:
-        return None
-
-    return float(match.group(1))
-
-
 class RequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
@@ -258,9 +237,6 @@ def deploy_once():
             ip("link", "set", tun, "down", check=False)
             ip("tunnel", "del", tun, check=False)
 
-    route_candidates = {}
-    managed_tunnels = set()
-
     for remote_id in remote_node_ids:
         if not re.match(r"^[0-9]+$", remote_id):
             continue
@@ -274,7 +250,6 @@ def deploy_once():
         remote_inner = f"{INNER_PREFIX}{remote_id}"
         tun = f"{TUN_PREFIX}{remote_id}"
         table = str(1000 + int(remote_id))
-        table_mark = 1000 + int(remote_id)
 
         if ip("link", "show", tun, check=False).returncode != 0:
             created = ip(
@@ -313,14 +288,9 @@ def deploy_once():
 
         ip("route", "replace", "default", "dev", tun, "table", table)
 
-        managed_tunnels.add(tun)
-
-        host_ping = ping_ms(remote_inner, mark=table_mark)
-
-        if host_ping is None:
-            continue
-
         new_routes = fetch_remote_route_list(remote_inner)
+        current_routes = get_current_routes_for_tunnel(tun)
+
         tunnel_peer_route = f"{remote_inner}/32"
 
         for prefix in new_routes:
@@ -333,48 +303,16 @@ def deploy_once():
             if prefix in locally_advertised:
                 continue
 
-            route_candidates.setdefault(prefix, []).append({
-                "tun": tun,
-                "remote_id": remote_id,
-                "ping": host_ping,
-                "hops": hops,
-            })
-
-    wanted = {}
-
-    for prefix, candidates in route_candidates.items():
-        best = min(candidates, key=lambda candidate: (
-            candidate["ping"],
-            candidate["hops"],
-            int(candidate["remote_id"]),
-        ))
-
-        wanted[prefix] = best["tun"]
-
-        metric = max(1, int(round(best["ping"])))
-
-        ip(
-            "route",
-            "replace",
-            prefix,
-            "dev",
-            best["tun"],
-            "metric",
-            str(metric),
-            check=False,
-        )
-
-    for tun in sorted(set(existing_tunnels) | managed_tunnels):
-        current_routes = get_current_routes_for_tunnel(tun)
+            ip("route", "replace", prefix, "dev", tun, "metric", str(hops), check=False)
 
         for prefix in current_routes:
+            if prefix == tunnel_peer_route:
+                continue
+
             if prefix == local_inner_route:
                 continue
 
-            if prefix.startswith(INNER_PREFIX):
-                continue
-
-            if wanted.get(prefix) != tun:
+            if prefix not in new_routes or prefix in locally_advertised:
                 ip("route", "del", prefix, "dev", tun, check=False)
 
 
@@ -447,7 +385,6 @@ in {
       pkgs.coreutils
       pkgs.iproute2
       pkgs.frr
-      pkgs.iputils
     ];
 
     serviceConfig = {
