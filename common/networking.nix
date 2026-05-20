@@ -268,17 +268,19 @@ def deploy_once():
             )
 
             if created.returncode != 0:
+                print(f"failed to create {tun}: {created.stderr}", file=sys.stderr)
                 continue
 
-            ip(
-                "addr",
-                "replace",
-                f"{local_inner}/32",
-                "peer",
-                f"{remote_inner}/32",
-                "dev",
-                tun,
-            )
+        ip(
+            "addr",
+            "replace",
+            f"{local_inner}/32",
+            "peer",
+            f"{remote_inner}/32",
+            "dev",
+            tun,
+            check=False,
+        )
 
         ip("link", "set", tun, "mtu", "1400", check=False)
         ip("link", "set", tun, "up", check=False)
