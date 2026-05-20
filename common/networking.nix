@@ -303,7 +303,7 @@ def deploy_once():
             if prefix in locally_advertised:
                 continue
 
-            ip("route", "replace", prefix, "dev", tun, "metric", str(hops), check=False)
+            ip("route", "replace", prefix, "dev", tun, "metric", "1", check=False)
 
         for prefix in current_routes:
             if prefix == tunnel_peer_route:
