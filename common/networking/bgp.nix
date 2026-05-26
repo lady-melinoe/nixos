@@ -8,7 +8,6 @@ let
   localWgAddr = "${wgPrefix}.${toString nodeID}";
   mkNeighborStanza = peer: ''
     neighbor ${peer.addr} remote-as ${toString (64512 + peer.id)}
-    neighbor ${peer.addr} bfd
     neighbor ${peer.addr} update-source ${localWgAddr}
   '';
   mkNeighborAfi = peer: ''
