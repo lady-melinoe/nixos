@@ -19,12 +19,10 @@ let
 in {
   services.frr = {
     bgpd.enable = true;
-    bfdd.enable = true;
     config =
       let
         neighborLines = lib.concatMapStrings mkNeighborStanza peers;
         neighborAfiLines = lib.concatMapStrings mkNeighborAfi peers;
-        bfdLines = lib.concatMapStrings mkBfdStanza peers;
       in ''
 
         ip prefix-list NODE-LOOPS permit 198.51.100.0/24 le 32
