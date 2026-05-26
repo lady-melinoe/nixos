@@ -52,6 +52,9 @@ ${neighborLines}
 ${neighborAfiLines}
           exit-address-family
         !
+        bfd
+${bfdLines}
+        !
       '';
   };
 }
