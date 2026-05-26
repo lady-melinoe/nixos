@@ -16,14 +16,6 @@ let
     neighbor ${peer.addr} route-map NODE-IN in
     neighbor ${peer.addr} route-map NODE-OUT out
   '';
-  mkBfdStanza = peer: ''
-    peer ${peer.addr} interface wg-${toString peer.id}
-      transmit-interval 1000
-      receive-interval 1000
-      detect-multiplier 3
-      no shutdown
-    !
-  '';
 in {
   services.frr = {
     bgpd.enable = true;
@@ -52,9 +44,6 @@ ${neighborLines}
             network 198.51.100.${toString nodeID}/32
 ${neighborAfiLines}
           exit-address-family
-        !
-        bfd
-${bfdLines}
         !
       '';
   };
