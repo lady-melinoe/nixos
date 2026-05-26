@@ -9,6 +9,7 @@ let
   mkNeighborStanza = peer: ''
     neighbor ${peer.addr} remote-as ${toString (64512 + peer.id)}
     neighbor ${peer.addr} update-source ${localWgAddr}
+    neighbor ${peer.addr} timers 1 3
   '';
   mkNeighborAfi = peer: ''
     neighbor ${peer.addr} activate
@@ -44,6 +45,7 @@ in {
 
         router bgp ${toString bgpAs}
           bgp router-id 198.51.100.${toString nodeID}
+          bgp fast-convergence
 ${neighborLines}
 
           address-family ipv4 unicast
