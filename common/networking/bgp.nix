@@ -7,9 +7,8 @@ let
   peers = map (p: { id = p.id; addr = "${wgPrefix}.${toString p.id}"; }) cfg.peers;
   localWgAddr = "${wgPrefix}.${toString nodeID}";
   mkNeighborStanza = peer: ''
-    neighbor ${peer.addr} interface wg-${toString peer.id} remote-as ${toString (64512 + peer.id)}
+    neighbor ${peer.addr} remote-as ${toString (64512 + peer.id)}
     neighbor ${peer.addr} update-source ${localWgAddr}
-    neighbor ${peer.addr} bfd
   '';
   mkNeighborAfi = peer: ''
     neighbor ${peer.addr} activate
