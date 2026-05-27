@@ -3,7 +3,13 @@
 let
   cfg = config.melinoe;
   nodeID = cfg.nodeId;
-  pubIps = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) cfg.internet);
+
+  pubIps =
+    lib.filter (ip: ip != null)
+      (map (entry: entry.pub_ip or null) cfg.internet);
+
+  pyList = values:
+    lib.concatMapStringsSep "\n" (value: "    \"${value}\",") values;
 
   routeScript = pkgs.writeTextFile {
     name = "melinoe-route.py";
@@ -12,6 +18,8 @@ let
     text = ''
 #!/usr/bin/env python3
 
+import ipaddress
+import json
 import multiprocessing
 import re
 import subprocess
@@ -32,11 +40,11 @@ HOST = f"{INNER_PREFIX}{LOCAL_NODE_ID}"
 PORT = 60198
 
 PUB_IPS = [
-${lib.concatMapStringsSep "\n" (ip: "    \"${ip}\",") pubIps}
+${pyList pubIps}
 ]
 
 ADVERTISED_ROUTES = [
-${lib.concatMapStringsSep "\n" (route: "    \"${route}\",") cfg.advertisedRoutes}
+${pyList cfg.advertisedRoutes}
 ]
 
 
@@ -56,38 +64,47 @@ def ip(*args, check=True):
     return run(["ip", *args], check=check)
 
 
-def normalize_prefix(route):
-    if "/" in route:
-        return route
-    return f"{route}/32"
+def node_id_valid(value):
+    return re.match(r"^[0-9]+$", value) is not None
 
 
-def valid_ipv4_or_prefix(value):
-    return re.match(r"^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$", value) is not None
+def normalize_prefix(value):
+    try:
+        return str(ipaddress.ip_network(value, strict=False))
+    except ValueError:
+        return None
+
+
+def add_route(routes, value):
+    route = normalize_prefix(value)
+
+    if route is not None:
+        routes.add(route)
 
 
 def build_route_list():
-    routes = []
+    routes = set()
 
-    result = run(["ip", "route"]).stdout
+    result = ip("-j", "route", check=False)
 
-    for line in result.splitlines():
-        if "dev vm-" not in line:
-            continue
+    if result.returncode == 0:
+        for route in json.loads(result.stdout):
+            dev = route.get("dev")
+            dst = route.get("dst")
 
-        parts = line.split()
-        if not parts:
-            continue
+            if dev is None or dst is None:
+                continue
 
-        routes.append(normalize_prefix(parts[0]))
+            if dev.startswith("vm-"):
+                add_route(routes, dst)
 
     for pub_ip in PUB_IPS:
-        routes.append(normalize_prefix(pub_ip))
+        add_route(routes, pub_ip)
 
     for route in ADVERTISED_ROUTES:
-        routes.append(normalize_prefix(route))
+        add_route(routes, route)
 
-    return "\n".join(routes) + "\n"
+    return "\n".join(sorted(routes)) + "\n"
 
 
 def local_advertised_routes():
@@ -106,11 +123,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            response = build_route_list()
+            body = build_route_list()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
-            self.wfile.write(response.encode())
+            self.wfile.write(body.encode())
         except Exception as e:
             self.send_response(500)
             self.end_headers()
@@ -118,8 +135,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 
 def serve_route_list():
-    server = HTTPServer((HOST, PORT), RequestHandler)
-    server.serve_forever()
+    HTTPServer((HOST, PORT), RequestHandler).serve_forever()
 
 
 def fetch_remote_route_list(remote_inner):
@@ -127,43 +143,38 @@ def fetch_remote_route_list(remote_inner):
         with urllib.request.urlopen(f"http://{remote_inner}:60198/list", timeout=5) as response:
             body = response.read().decode()
     except Exception:
-        body = ""
+        return []
 
-    routes = []
+    routes = set()
 
     for line in body.splitlines():
-        route = line.strip()
+        add_route(routes, line.strip())
 
-        if not valid_ipv4_or_prefix(route):
-            continue
-
-        routes.append(normalize_prefix(route))
-
-    return sorted(set(routes))
+    return sorted(routes)
 
 
 def get_current_routes_for_tunnel(tun):
-    result = ip("route", "show", "dev", tun, check=False).stdout
+    result = ip("-j", "route", "show", "dev", tun, check=False)
 
-    routes = []
+    if result.returncode != 0:
+        return []
 
-    for line in result.splitlines():
-        parts = line.split()
+    routes = set()
 
-        if not parts:
-            continue
+    for route in json.loads(result.stdout):
+        dst = route.get("dst")
 
-        routes.append(normalize_prefix(parts[0]))
+        if dst is not None:
+            add_route(routes, dst)
 
-    return sorted(set(routes))
+    return sorted(routes)
 
 
 def get_bgp_route_table_peer_ids():
-    result = ip("route", "show", "proto", "bgp", check=False).stdout
+    result = ip("route", "show", "proto", "bgp", check=False)
+    remote_ids = set()
 
-    remote_ids = []
-
-    for line in result.splitlines():
+    for line in result.stdout.splitlines():
         parts = line.split()
 
         if not parts:
@@ -171,23 +182,122 @@ def get_bgp_route_table_peer_ids():
 
         match = re.match(r"^198\.51\.100\.([0-9]+)(?:/32)?$", parts[0])
 
-        if not match:
+        if match is None:
             continue
 
         remote_id = match.group(1)
 
-        if remote_id == str(LOCAL_NODE_ID):
+        if remote_id != str(LOCAL_NODE_ID):
+            remote_ids.add(remote_id)
+
+    return sorted(remote_ids, key=int)
+
+
+def existing_melinoe_tunnels():
+    result = ip("-o", "link", "show", "type", "ipip", check=False)
+    tunnels = []
+
+    for line in result.stdout.splitlines():
+        parts = line.split(": ", 2)
+
+        if len(parts) < 2:
             continue
 
-        remote_ids.append(remote_id)
+        tun = parts[1].split("@", 1)[0].rstrip(":")
 
-    return sorted(set(remote_ids), key=lambda value: int(value))
+        if tun.startswith(TUN_PREFIX):
+            tunnels.append(tun)
+
+    return tunnels
+
+
+def flush_tunnel(tun):
+    remote_id = tun.removeprefix(TUN_PREFIX)
+
+    if not node_id_valid(remote_id):
+        return
+
+    table = str(1000 + int(remote_id))
+
+    ip("route", "flush", "table", table, check=False)
+    ip("rule", "del", "fwmark", table, "lookup", table, check=False)
+    ip("link", "set", tun, "down", check=False)
+    ip("tunnel", "del", tun, check=False)
+
+
+def ensure_tunnel(remote_id, local_vip, local_inner, remote_vip, remote_inner, tun, table):
+    if ip("link", "show", tun, check=False).returncode != 0:
+        created = ip(
+            "tunnel",
+            "add",
+            tun,
+            "mode",
+            "ipip",
+            "local",
+            local_vip,
+            "remote",
+            remote_vip,
+            "ttl",
+            "64",
+            check=False,
+        )
+
+        if created.returncode != 0:
+            print(f"failed to create {tun}: {created.stderr}", file=sys.stderr)
+            return False
+
+    ip(
+        "addr",
+        "replace",
+        f"{local_inner}/32",
+        "peer",
+        f"{remote_inner}/32",
+        "dev",
+        tun,
+        check=False,
+    )
+
+    ip("link", "set", tun, "mtu", "1400", check=False)
+    ip("link", "set", tun, "up", check=False)
+
+    ip("rule", "del", "fwmark", table, "lookup", table, check=False)
+    ip("rule", "add", "fwmark", table, "lookup", table, check=False)
+
+    ip("route", "replace", "default", "dev", tun, "table", table)
+
+    return True
+
+
+def reconcile_routes(tun, local_inner_route, tunnel_peer_route, locally_advertised, new_routes):
+    current_routes = get_current_routes_for_tunnel(tun)
+
+    for prefix in new_routes:
+        if prefix == local_inner_route:
+            continue
+
+        if prefix == tunnel_peer_route:
+            continue
+
+        if prefix in locally_advertised:
+            continue
+
+        ip("route", "replace", prefix, "dev", tun, "metric", "1", check=False)
+
+    for prefix in current_routes:
+        if prefix == tunnel_peer_route:
+            continue
+
+        if prefix == local_inner_route:
+            continue
+
+        if prefix not in new_routes or prefix in locally_advertised:
+            ip("route", "del", prefix, "dev", tun, check=False)
 
 
 def deploy_once():
     local_node_id = str(LOCAL_NODE_ID)
 
-    if not re.match(r"^[0-9]+$", local_node_id):
+    if not node_id_valid(local_node_id):
         print(f"invalid local node id: {local_node_id}", file=sys.stderr)
         return
 
@@ -197,44 +307,19 @@ def deploy_once():
     local_inner_route = f"{local_inner}/32"
     local_vip_route = f"{local_vip}/32"
 
+    ip("addr", "replace", local_vip_route, "dev", "lo", check=False)
+
     locally_advertised = local_advertised_routes()
-
-    if local_vip_route not in ip("a", "show", "dev", "lo").stdout:
-        ip("a", "add", local_vip_route, "dev", "lo")
-
     remote_node_ids = get_bgp_route_table_peer_ids()
 
-    existing_tunnels = []
-
-    existing = ip("-o", "link", "show", "type", "ipip", check=False).stdout
-
-    for line in existing.splitlines():
-        parts = line.split(": ", 2)
-
-        if len(parts) < 2:
-            continue
-
-        tun = parts[1].split("@", 1)[0].rstrip(":")
-
-        if tun.startswith(TUN_PREFIX):
-            existing_tunnels.append(tun)
-
-    for tun in existing_tunnels:
+    for tun in existing_melinoe_tunnels():
         remote_id = tun.removeprefix(TUN_PREFIX)
 
-        if not re.match(r"^[0-9]+$", remote_id):
-            continue
-
-        table = str(1000 + int(remote_id))
-
         if remote_id not in remote_node_ids:
-            ip("route", "flush", "table", table, check=False)
-            ip("rule", "del", "fwmark", table, "lookup", table, check=False)
-            ip("link", "set", tun, "down", check=False)
-            ip("tunnel", "del", tun, check=False)
+            flush_tunnel(tun)
 
     for remote_id in remote_node_ids:
-        if not re.match(r"^[0-9]+$", remote_id):
+        if not node_id_valid(remote_id):
             continue
 
         remote_vip = f"{BASE_PREFIX}{remote_id}"
@@ -242,71 +327,19 @@ def deploy_once():
         tun = f"{TUN_PREFIX}{remote_id}"
         table = str(1000 + int(remote_id))
 
-        if ip("link", "show", tun, check=False).returncode != 0:
-            created = ip(
-                "tunnel",
-                "add",
-                tun,
-                "mode",
-                "ipip",
-                "local",
-                local_vip,
-                "remote",
-                remote_vip,
-                "ttl",
-                "64",
-                check=False,
-            )
-
-            if created.returncode != 0:
-                print(f"failed to create {tun}: {created.stderr}", file=sys.stderr)
-                continue
-
-        ip(
-            "addr",
-            "replace",
-            f"{local_inner}/32",
-            "peer",
-            f"{remote_inner}/32",
-            "dev",
-            tun,
-            check=False,
-        )
-
-        ip("link", "set", tun, "mtu", "1400", check=False)
-        ip("link", "set", tun, "up", check=False)
-
-        ip("rule", "del", "fwmark", table, "lookup", table, check=False)
-        ip("rule", "add", "fwmark", table, "lookup", table, check=False)
-
-        ip("route", "replace", "default", "dev", tun, "table", table)
+        if not ensure_tunnel(remote_id, local_vip, local_inner, remote_vip, remote_inner, tun, table):
+            continue
 
         new_routes = fetch_remote_route_list(remote_inner)
-        current_routes = get_current_routes_for_tunnel(tun)
-
         tunnel_peer_route = f"{remote_inner}/32"
 
-        for prefix in new_routes:
-            if prefix == local_inner_route:
-                continue
-
-            if prefix == tunnel_peer_route:
-                continue
-
-            if prefix in locally_advertised:
-                continue
-
-            ip("route", "replace", prefix, "dev", tun, "metric", "1", check=False)
-
-        for prefix in current_routes:
-            if prefix == tunnel_peer_route:
-                continue
-
-            if prefix == local_inner_route:
-                continue
-
-            if prefix not in new_routes or prefix in locally_advertised:
-                ip("route", "del", prefix, "dev", tun, check=False)
+        reconcile_routes(
+            tun,
+            local_inner_route,
+            tunnel_peer_route,
+            locally_advertised,
+            new_routes,
+        )
 
 
 def deploy_worker():
@@ -335,9 +368,7 @@ def deploy_loop():
 
 
 def main():
-    server_thread = threading.Thread(target=serve_route_list, daemon=True)
-    server_thread.start()
-
+    threading.Thread(target=serve_route_list, daemon=True).start()
     deploy_loop()
 
 
