@@ -290,29 +290,49 @@ def ensure_tunnel(remote_id, local_vip, local_inner, remote_vip, remote_inner, t
     return True
 
 
-def reconcile_routes(tun, local_inner_route, tunnel_peer_route, locally_advertised, new_routes):
-    current_routes = get_current_routes_for_tunnel(tun)
+def compute_desired_routes(peer_routes, local_inner_route, locally_advertised):
+    desired = {}
 
-    for prefix in new_routes:
-        if prefix == local_inner_route:
-            continue
+    for state, routes in peer_routes:
+        for prefix in routes:
+            if prefix == local_inner_route:
+                continue
 
-        if prefix == tunnel_peer_route:
-            continue
+            if prefix == state["tunnel_peer_route"]:
+                continue
 
-        if prefix in locally_advertised:
-            continue
+            if prefix in locally_advertised:
+                continue
 
-        ip("route", "replace", prefix, "dev", tun, "metric", "1", check=False)
+            if prefix not in desired:
+                desired[prefix] = state["tun"]
 
-    for prefix in current_routes:
-        if prefix == tunnel_peer_route:
-            continue
+    return desired
 
-        if prefix == local_inner_route:
-            continue
 
-        if prefix not in new_routes or prefix in locally_advertised:
+def reconcile_all_routes(peer_state, desired_routes):
+    current_routes = {}
+
+    tunnel_peer_routes = {
+        state["tunnel_peer_route"]
+        for state in peer_state
+    }
+
+    for state in peer_state:
+        tun = state["tun"]
+
+        for prefix in get_current_routes_for_tunnel(tun):
+            if prefix in tunnel_peer_routes:
+                continue
+
+            current_routes[prefix] = tun
+
+    for prefix, tun in desired_routes.items():
+        if current_routes.get(prefix) != tun:
+            ip("route", "replace", prefix, "dev", tun, "metric", "1", check=False)
+
+    for prefix, tun in current_routes.items():
+        if desired_routes.get(prefix) != tun:
             ip("route", "del", prefix, "dev", tun, check=False)
 
 
@@ -364,19 +384,18 @@ def deploy_once():
         return
 
     with ThreadPoolExecutor(max_workers=min(32, len(peer_state))) as executor:
-        fetched_routes = executor.map(
+        fetched_routes = list(executor.map(
             lambda state: fetch_remote_route_list(state["remote_inner"]),
             peer_state,
-        )
+        ))
 
-        for state, new_routes in zip(peer_state, fetched_routes):
-            reconcile_routes(
-                state["tun"],
-                local_inner_route,
-                state["tunnel_peer_route"],
-                locally_advertised,
-                new_routes,
-            )
+    desired_routes = compute_desired_routes(
+        list(zip(peer_state, fetched_routes)),
+        local_inner_route,
+        locally_advertised,
+    )
+
+    reconcile_all_routes(peer_state, desired_routes)
 
 
 def deploy_worker():
