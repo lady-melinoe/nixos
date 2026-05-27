@@ -28,30 +28,36 @@ in {
             type = types.str;
             description = "Primary IP address for this uplink (use /32 notation).";
           };
+
           pub_ip = mkOption {
             type = types.nullOr types.str;
             default = null;
             description = "Optional public IP address associated with this uplink.";
           };
+
           iface = mkOption {
             type = types.listOf types.str;
             description = "Interface names that carry the internet uplink; if multiple interfaces are specified, they will be LACP bonded.";
           };
+
           bondMode = mkOption {
             type = types.nullOr types.str;
             default = null;
             description = "Bonding mode for a multi-interface uplink (currently only \"lacp\" is supported).";
           };
+
           lacpRate = mkOption {
             type = types.nullOr types.str;
             default = null;
             description = "LACP rate for a bonded uplink (e.g., \"fast\" or \"slow\").";
           };
+
           subnet = mkOption {
             type = types.nullOr types.str;
             default = null;
             description = "Subnet for the uplink if applicable.";
           };
+
           gateway = mkOption {
             type = types.nullOr types.str;
             default = null;
@@ -59,6 +65,7 @@ in {
           };
         };
       });
+
       default = [ ];
       description = "Internet uplink definitions; each entry describes an IP, interface, and optional subnet/gateway.";
     };
@@ -82,15 +89,21 @@ in {
             type = types.int;
             description = "Peer node ID (matches wg-keys mapping).";
           };
+
           endpoint = mkOption {
             type = types.str;
             description = "Endpoint hostname/IP for this peer; port is derived automatically.";
           };
+
           allowedIPs = mkOption {
             type = types.listOf types.str;
-            default = [ "198.19.3.0/24" "198.51.100.0/24" ];
+            default = [
+              "198.19.3.0/24"
+              "198.51.100.0/24"
+            ];
             description = "Allowed IPs to route via this peer.";
           };
+
           persistentKeepalive = mkOption {
             type = types.int;
             default = 25;
@@ -98,6 +111,7 @@ in {
           };
         };
       });
+
       default = [ ];
       description = "WireGuard peers; used to render interfaces and derive BGP neighbors.";
     };
@@ -111,8 +125,15 @@ in {
           };
         };
       });
+
       default = { };
       description = "Per-node public artifacts published by nodes/*/public.nix.";
+    };
+
+    regions = mkOption {
+      type = types.attrsOf (types.listOf types.str);
+      default = { };
+      description = "Per-node region tags published by nodes/*/public.nix.";
     };
   };
 
@@ -128,20 +149,21 @@ in {
         isBonded = builtins.length entry.iface > 1;
         hasBondMode = entry.bondMode != null;
         hasLacpRate = entry.lacpRate != null;
-      in
-      [
+      in [
         {
           assertion = !(isBonded && !hasBondMode);
           message = "melinoe.internet: bondMode must be set when multiple interfaces are specified.";
         }
+
         {
           assertion = !(hasBondMode && entry.bondMode != "lacp");
           message = "melinoe.internet: only bondMode = \"lacp\" is supported.";
         }
+
         {
           assertion = !(hasLacpRate && !isBonded);
           message = "melinoe.internet: lacpRate is only valid when multiple interfaces are specified.";
         }
-      ]
-    ) config.melinoe.internet;
+      ])
+    config.melinoe.internet;
 }

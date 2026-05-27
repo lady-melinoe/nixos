@@ -48,6 +48,8 @@ ADVERTISED_ROUTES = [
 ${pyList cfg.advertisedRoutes}
 ]
 
+REGIONS = ${builtins.toJSON cfg.regions}
+
 
 def run(cmd, *, check=True, input=None, timeout=300):
     return subprocess.run(
@@ -171,6 +173,25 @@ def get_current_routes_for_tunnel(tun):
     return sorted(routes)
 
 
+def region_priority(remote_id):
+    local_regions = REGIONS.get(str(LOCAL_NODE_ID), [])
+    remote_regions = REGIONS.get(str(remote_id), [])
+
+    def same(index):
+        return (
+            len(local_regions) > index
+            and len(remote_regions) > index
+            and local_regions[index] == remote_regions[index]
+        )
+
+    return (
+        not same(2),
+        not same(1),
+        not same(0),
+        int(remote_id),
+    )
+
+
 def get_bgp_route_table_peer_ids():
     result = ip("route", "show", "proto", "bgp", check=False)
     remote_ids = set()
@@ -191,7 +212,7 @@ def get_bgp_route_table_peer_ids():
         if remote_id != str(LOCAL_NODE_ID):
             remote_ids.add(remote_id)
 
-    return sorted(remote_ids, key=int)
+    return sorted(remote_ids, key=region_priority)
 
 
 def existing_melinoe_tunnels():
