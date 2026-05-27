@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -318,6 +319,8 @@ def deploy_once():
         if remote_id not in remote_node_ids:
             flush_tunnel(tun)
 
+    peer_state = []
+
     for remote_id in remote_node_ids:
         if not node_id_valid(remote_id):
             continue
@@ -330,16 +333,29 @@ def deploy_once():
         if not ensure_tunnel(remote_id, local_vip, local_inner, remote_vip, remote_inner, tun, table):
             continue
 
-        new_routes = fetch_remote_route_list(remote_inner)
-        tunnel_peer_route = f"{remote_inner}/32"
+        peer_state.append({
+            "remote_inner": remote_inner,
+            "tun": tun,
+            "tunnel_peer_route": f"{remote_inner}/32",
+        })
 
-        reconcile_routes(
-            tun,
-            local_inner_route,
-            tunnel_peer_route,
-            locally_advertised,
-            new_routes,
+    if not peer_state:
+        return
+
+    with ThreadPoolExecutor(max_workers=min(32, len(peer_state))) as executor:
+        fetched_routes = executor.map(
+            lambda state: fetch_remote_route_list(state["remote_inner"]),
+            peer_state,
         )
+
+        for state, new_routes in zip(peer_state, fetched_routes):
+            reconcile_routes(
+                state["tun"],
+                local_inner_route,
+                state["tunnel_peer_route"],
+                locally_advertised,
+                new_routes,
+            )
 
 
 def deploy_worker():
