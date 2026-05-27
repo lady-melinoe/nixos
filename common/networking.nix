@@ -12,7 +12,6 @@ let
     text = ''
 #!/usr/bin/env python3
 
-import json
 import multiprocessing
 import re
 import subprocess
@@ -159,20 +158,38 @@ def get_current_routes_for_tunnel(tun):
     return sorted(set(routes))
 
 
+def get_bgp_route_table_peer_ids():
+    result = ip("route", "show", "proto", "bgp", check=False).stdout
+
+    remote_ids = []
+
+    for line in result.splitlines():
+        parts = line.split()
+
+        if not parts:
+            continue
+
+        match = re.match(r"^198\.51\.100\.([0-9]+)(?:/32)?$", parts[0])
+
+        if not match:
+            continue
+
+        remote_id = match.group(1)
+
+        if remote_id == str(LOCAL_NODE_ID):
+            continue
+
+        remote_ids.append(remote_id)
+
+    return sorted(set(remote_ids), key=lambda value: int(value))
+
+
 def deploy_once():
     local_node_id = str(LOCAL_NODE_ID)
 
     if not re.match(r"^[0-9]+$", local_node_id):
         print(f"invalid local node id: {local_node_id}", file=sys.stderr)
         return
-
-    bgp_json_text = run(["vtysh", "-c", "show bgp ipv4 json"]).stdout
-
-    if not bgp_json_text:
-        print("failed to fetch BGP JSON", file=sys.stderr)
-        return
-
-    bgp = json.loads(bgp_json_text)
 
     local_vip = f"{BASE_PREFIX}{local_node_id}"
     local_inner = f"{INNER_PREFIX}{local_node_id}"
@@ -185,28 +202,7 @@ def deploy_once():
     if local_vip_route not in ip("a", "show", "dev", "lo").stdout:
         ip("a", "add", local_vip_route, "dev", "lo")
 
-    peer_hops = {}
-
-    for prefix, paths in bgp.get("routes", {}).items():
-        match = re.match(r"^198\.51\.100\.([0-9]+)/32$", prefix)
-
-        if not match:
-            continue
-
-        if not paths:
-            continue
-
-        path = paths[0].get("path", "")
-
-        if path == "":
-            continue
-
-        remote_id = match.group(1)
-        hops = len([part for part in path.strip().split(" ") if part])
-
-        peer_hops[remote_id] = hops
-
-    remote_node_ids = sorted(peer_hops.keys(), key=lambda value: int(value))
+    remote_node_ids = get_bgp_route_table_peer_ids()
 
     existing_tunnels = []
 
@@ -239,11 +235,6 @@ def deploy_once():
 
     for remote_id in remote_node_ids:
         if not re.match(r"^[0-9]+$", remote_id):
-            continue
-
-        hops = peer_hops.get(remote_id)
-
-        if not isinstance(hops, int) or hops < 1:
             continue
 
         remote_vip = f"{BASE_PREFIX}{remote_id}"
