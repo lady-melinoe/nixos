@@ -17,6 +17,7 @@
     ./disk-config.nix
   ];
   melinoe.nodeId = 4;
+  melinoe.extraSerial = [ 0 1 2 3 ];
   networking.hostName = "benzaiten";
   melinoe.internet = [
     {
@@ -65,18 +66,4 @@
       endpoint = "phaesyle.infra.melinoe.xyz";
     }
   ];
-
-  systemd.services = builtins.listToAttrs (map (port: {
-    name = "serial-getty@ttyS${toString port}";
-    value = {
-      enable = true;
-      wantedBy = [ "getty.target" ];
-    } // lib.optionalAttrs (port >= 1 && port <= 3) {
-      overrideStrategy = "asDropin";
-      serviceConfig.ExecStart = lib.mkForce [
-        ""
-        "${pkgs.util-linux}/bin/agetty --login-program ${pkgs.shadow}/bin/login --noclear --keep-baud -L ttyS${toString port} 115200 vt220"
-      ];
-    };
-  }) [ 0 1 2 3 4 ]);
 }

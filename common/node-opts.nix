@@ -15,6 +15,12 @@ in {
       description = "Enable serial console support for EFI/GRUB on this node.";
     };
 
+    extraSerial = mkOption {
+      type = types.listOf types.int;
+      default = [ ];
+      description = "Additional ttyS serial gettys to enable for IPMI-accessible serial consoles.";
+    };
+
     legacyBoot = mkOption {
       type = types.bool;
       default = false;
