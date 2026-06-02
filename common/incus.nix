@@ -38,7 +38,6 @@ in
   config = {
     virtualisation.incus.enable = true;
     virtualisation.incus.package = pkgs.incus;
-    virtualisation.incus.bucketSupport = false;
     users.users.melinoe.extraGroups = [ "incus-admin" ];
 
     system.activationScripts.incusConfigureIface = {
