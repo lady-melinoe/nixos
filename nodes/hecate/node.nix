@@ -1,4 +1,11 @@
-{ config, pkgs, lib, inputs, modulesPath, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  inputs,
+  modulesPath,
+  ...
+}:
 
 {
   imports = [
@@ -28,7 +35,10 @@
     }
     {
       ip = "198.19.0.${toString config.melinoe.nodeId}/32";
-      iface = [ "enp5s0f0" "enp5s0f1" ];
+      iface = [
+        "enp5s0f0"
+        "enp5s0f1"
+      ];
       bondMode = "lacp";
       lacpRate = "fast";
       subnet = "198.19.0.0/24";

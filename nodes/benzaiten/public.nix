@@ -3,5 +3,9 @@
   melinoe.publicNodes."4" = {
     wgPubkey = "41zfU8FrcEMtD4MHr2Aq8kj/1oujLpOExeCJe6lyUEE=";
   };
-  melinoe.regions."4" = [ "UCC" "PERTH" "AUSTRALIA" ];
+  melinoe.regions."4" = [
+    "UCC"
+    "PERTH"
+    "AUSTRALIA"
+  ];
 }

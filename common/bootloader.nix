@@ -1,4 +1,9 @@
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   serialGetty = port: {
@@ -6,7 +11,8 @@ let
     value = {
       enable = true;
       wantedBy = [ "getty.target" ];
-    } // lib.optionalAttrs (port >= 1 && port <= 3) {
+    }
+    // lib.optionalAttrs (port >= 1 && port <= 3) {
       overrideStrategy = "asDropin";
       serviceConfig.ExecStart = lib.mkForce [
         ""
@@ -14,7 +20,8 @@ let
       ];
     };
   };
-in {
+in
+{
   assertions = [
     {
       assertion = !(config.melinoe.serialMode && config.melinoe.extraSerial != [ ]);
@@ -43,12 +50,9 @@ in {
     })
   ];
 
-  boot.loader.efi.efiSysMountPoint =
-    lib.mkIf (!config.melinoe.legacyBoot) "/boot/efi";
+  boot.loader.efi.efiSysMountPoint = lib.mkIf (!config.melinoe.legacyBoot) "/boot/efi";
 
-  boot.kernelParams =
-    lib.optional config.melinoe.serialMode "console=ttyS0,115200n8";
+  boot.kernelParams = lib.optional config.melinoe.serialMode "console=ttyS0,115200n8";
 
-  systemd.services =
-    builtins.listToAttrs (map serialGetty config.melinoe.extraSerial);
+  systemd.services = builtins.listToAttrs (map serialGetty config.melinoe.extraSerial);
 }

@@ -1,4 +1,9 @@
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   nodeID = config.melinoe.nodeId;
   configureIface = pkgs.writeShellScriptBin "configure-iface" ''
@@ -28,7 +33,8 @@ let
       btrfs quota disable "$mnt" || true
     done
   '';
-in {
+in
+{
   config = {
     virtualisation.incus.enable = true;
     virtualisation.incus.package = pkgs.incus;
@@ -45,7 +51,10 @@ in {
     systemd.services.disable-btrfs-quotas = {
       description = "Disable btrfs quotas on main mounts";
       after = [ "local-fs.target" ];
-      path = [ pkgs.util-linux pkgs.btrfs-progs ];
+      path = [
+        pkgs.util-linux
+        pkgs.btrfs-progs
+      ];
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${disableBtrfsQuotas}";

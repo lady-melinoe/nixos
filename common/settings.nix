@@ -1,11 +1,29 @@
-{ config, pkgs, inputs, ... }:
+{
+  config,
+  pkgs,
+  inputs,
+  ...
+}:
 
 {
   boot.tmp.cleanOnBoot = true;
   zramSwap.enable = true;
   systemd.oomd.enable = false;
-  boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" "sd_mod" "usbhid" "usb_storage" "mpt3sas" "ehci_pci" ];
-  boot.initrd.kernelModules = [ "nvme" "kvm-intel" ];
+  boot.initrd.availableKernelModules = [
+    "ata_piix"
+    "uhci_hcd"
+    "xen_blkfront"
+    "vmw_pvscsi"
+    "sd_mod"
+    "usbhid"
+    "usb_storage"
+    "mpt3sas"
+    "ehci_pci"
+  ];
+  boot.initrd.kernelModules = [
+    "nvme"
+    "kvm-intel"
+  ];
 
   services.chrony = {
     enable = true;
@@ -25,11 +43,16 @@
   environment.etc."ssh/ssh_known_hosts".text = ''
     @cert-authority *.infra.melinoe.xyz,*.intra.melinoe.xyz,198.18.0.*,198.19.0.*,198.19.1.*,198.19.3.*,198.51.100.* ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T
   '';
-  environment.etc."ssh/ssh-user-ca.pub".text = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINwS8hXHMP2ij1HmUL0N7oFU4+G8atQHtSRq9e8MOqkL SSH User CA";
+  environment.etc."ssh/ssh-user-ca.pub".text =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINwS8hXHMP2ij1HmUL0N7oFU4+G8atQHtSRq9e8MOqkL SSH User CA";
   environment.etc."ssh/ssh-user-ca.pub".mode = "0644";
-  environment.etc."ssh/ssh-host-ca.pub".text = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T SSH Host CA";
+  environment.etc."ssh/ssh-host-ca.pub".text =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T SSH Host CA";
   environment.etc."ssh/ssh-host-ca.pub".mode = "0644";
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  nix.settings.experimental-features = [
+    "nix-command"
+    "flakes"
+  ];
   nix.settings.require-sigs = true;
   programs.nix-ld.enable = true;
   system.stateVersion = "25.05";

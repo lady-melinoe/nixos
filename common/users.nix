@@ -5,8 +5,10 @@
     isNormalUser = true;
     home = "/home/melinoe";
     description = "melinoe_wuz_here";
-    extraGroups = [ "wheel" "networkmanager" ];
+    extraGroups = [
+      "wheel"
+      "networkmanager"
+    ];
     shell = pkgs.bash;
   };
 }
-

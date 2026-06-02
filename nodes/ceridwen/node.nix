@@ -1,4 +1,11 @@
-{ config, pkgs, lib, inputs, modulesPath, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  inputs,
+  modulesPath,
+  ...
+}:
 
 {
 
@@ -17,7 +24,12 @@
     ./disk-config.nix
   ];
   melinoe.nodeId = 3;
-  melinoe.extraSerial = [ 0 1 2 3 ];
+  melinoe.extraSerial = [
+    0
+    1
+    2
+    3
+  ];
   networking.hostName = "ceridwen";
   melinoe.internet = [
     {
@@ -29,7 +41,10 @@
     }
     {
       ip = "198.19.0.${toString config.melinoe.nodeId}/32";
-      iface = [ "eno3" "eno4" ];
+      iface = [
+        "eno3"
+        "eno4"
+      ];
       bondMode = "lacp";
       lacpRate = "fast";
       subnet = "198.19.0.0/24";
