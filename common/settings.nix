@@ -67,6 +67,7 @@
     pkgs.iptables
     pkgs.python3
     pkgs.sl
+    pkgs.compsize
     inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.borg-beta
   ];
   boot.kernelPackages = pkgs.linuxPackages_latest;
