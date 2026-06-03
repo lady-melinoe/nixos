@@ -74,4 +74,22 @@
     "net.ipv6.conf.all.accept_ra" = false;
     "net.ipv4.ip_forward" = true;
   };
+  services.iperf3.enable = true;
+  services.glances.enable = true;
+  services.glances.port = 61208;
+  services.glances.extraArgs = [
+    "--webserver"
+    "-B"
+    "198.18.0.${toString config.melinoe.nodeId}"
+  ];
+  users.users.melinoe = {
+    isNormalUser = true;
+    home = "/home/melinoe";
+    description = "melinoe_wuz_here";
+    extraGroups = [
+      "wheel"
+      "networkmanager"
+    ];
+    shell = pkgs.bash;
+  };
 }
