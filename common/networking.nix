@@ -417,7 +417,6 @@ in
   networking.wg-quick.interfaces = lib.mkIf (cfg.peers != [ ]) interfaces;
   melinoe.wgPorts = lib.mkIf (cfg.peers != [ ]) ports;
 
-
   systemd.services.melinoe-inet-setup = lib.mkIf (cfg.internet != [ ]) {
     description = "Configure inet netns veth pair for host<->inet connectivity";
     after = [ "network-pre.target" ];
