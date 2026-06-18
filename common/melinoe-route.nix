@@ -346,7 +346,6 @@ let
       	}
       }
 
-      // SCALING OPTIMIZATION: Scan kernel link-layer state exactly ONCE per iteration tick block
       func (e *Engine) buildInterfaceCache(ctx context.Context) map[string]bool {
       	cache := make(map[string]bool)
       	out, err := e.ip(ctx, "-j", "link", "show")
@@ -367,7 +366,6 @@ let
       }
 
       func (e *Engine) ensureTunnel(ctx context.Context, linkCache map[string]bool, remoteID, localVIP, localInner, remoteVIP, remoteInner, tun, table string) bool {
-      	// O(1) high-speed structural existence lookups replacing repetitive kernel subprocess executions
       	if !linkCache[tun] {
       		log.Printf("instantiating virtual tunnel link interface: %s", tun)
       		if _, err := e.ip(ctx, "tunnel", "add", tun, "mode", "ipip", "local", localVIP, "remote", remoteVIP, "ttl", "64"); err != nil {
@@ -438,7 +436,6 @@ let
       	sort.Slice(remoteIDs, func(i, j int) bool {
       		notSame2I, notSame1I, notSame0I, idI := e.regionPriority(remoteIDs[i])
       		notSame2J, notSame1J, notSame0J, idJ := e.regionPriority(remoteIDs[j])
-
       		if notSame2I != notSame2J {
       			return notSame2I
       		}
@@ -450,7 +447,6 @@ let
       		}
       		return idI < idJ
       	})
-
       	return remoteIDs
       }
 
@@ -475,7 +471,6 @@ let
       	for _, state := range peerStates {
       		tunnelPeerRoutes[state.TunnelPeerRoute] = true
       	}
-
       	for _, state := range peerStates {
       		for _, prefix := range e.getCurrentRoutesForTunnel(ctx, state.Tun) {
       			if !tunnelPeerRoutes[prefix] {
@@ -483,7 +478,6 @@ let
       			}
       		}
       	}
-
       	for prefix, tun := range desiredRoutes {
       		if currentRoutes[prefix] != tun {
       			log.Printf("mutating routing table: adding network target destination prefix %s via %s", prefix, tun)
@@ -492,7 +486,6 @@ let
       			}
       		}
       	}
-
       	for prefix, tun := range currentRoutes {
       		if desiredRoutes[prefix] != tun {
       			log.Printf("mutating routing table: evicting stale network target prefix %s from device %s", prefix, tun)
@@ -508,16 +501,13 @@ let
       		log.Printf("error: invalid local node id: %s", e.nodeID)
       		return
       	}
-
       	localVIP := BasePrefix + e.nodeID
       	localInner := InnerPrefix + e.nodeID
       	localInnerRoute := localInner + "/32"
       	localVIPRoute := localVIP + "/32"
-
       	if _, err := e.ip(ctx, "addr", "replace", localVIPRoute, "dev", "lo"); err != nil {
       		log.Printf("error: loopback address vip allocation mapping failed: %v", err)
       	}
-
       	linkCache := e.buildInterfaceCache(ctx)
       	locallyAdvertised := e.getLocalRouteSet(ctx)
       	remoteNodeIDs := e.getBGPRouteTablePeerIDs(ctx)
@@ -525,44 +515,36 @@ let
       	for _, id := range remoteNodeIDs {
       		remoteIDsMap[id] = true
       	}
-
       	for _, tun := range e.existingMelinoeTunnels(ctx) {
       		if remoteID := strings.TrimPrefix(tun, TunPrefix); !remoteIDsMap[remoteID] {
       			e.flushTunnel(ctx, tun)
       		}
       	}
-
       	var peerStates []PeerState
       	for _, remoteID := range remoteNodeIDs {
       		if !e.isValidNodeID(remoteID) {
       			continue
       		}
-
       		remoteVIP := BasePrefix + remoteID
       		remoteInner := InnerPrefix + remoteID
       		tun := TunPrefix + remoteID
       		idInt, _ := strconv.Atoi(remoteID)
       		table := strconv.Itoa(1000 + idInt)
-
       		if !e.ensureTunnel(ctx, linkCache, remoteID, localVIP, localInner, remoteVIP, remoteInner, tun, table) {
       			continue
       		}
-
       		peerStates = append(peerStates, PeerState{
-      			RemoteInner:     remoteInner,
-      			Tun:             tun,
+      			RemoteInner: remoteInner,
+      			Tun:         tun,
       			TunnelPeerRoute: remoteInner + "/32",
       		})
       	}
-
       	if len(peerStates) == 0 {
       		return
       	}
-
       	fetchedRoutes := make([][]string, len(peerStates))
       	var wg sync.WaitGroup
       	semaphore := make(chan struct{}, 32)
-
       	for i, state := range peerStates {
       		wg.Add(1)
       		semaphore <- struct{}{}
@@ -573,7 +555,6 @@ let
       		}(i, state)
       	}
       	wg.Wait()
-
       	desiredRoutes := e.computeDesiredRoutes(peerStates, fetchedRoutes, localInnerRoute, locallyAdvertised)
       	e.reconcileAllRoutes(ctx, peerStates, desiredRoutes)
       }
@@ -581,7 +562,6 @@ let
       func (e *Engine) Start(ctx context.Context) {
       	ticker := time.NewTicker(3 * time.Second)
       	defer ticker.Stop()
-
       	for {
       		select {
       		case <-ctx.Done():
@@ -596,32 +576,38 @@ let
       }
 
       func main() {
-      	configPath := flag.String("config", "", "Path to config json")
+      	var configPath string
+      	flag.StringVar(&configPath, "config", "", "Path to configuration json file")
       	flag.Parse()
 
-      	if *configPath == "" {
-      		log.Fatal("critical: missing required --config flag")
+      	if configPath == "" {
+      		log.Fatal("critical: initialization parameter missing: --config required")
       	}
 
-      	file, err := os.Open(*configPath)
+      	b, err := os.ReadFile(configPath)
       	if err != nil {
-      		log.Fatalf("critical: failed to open config: %v", err)
+      		log.Fatalf("critical: failed reading configuration target: %v", err)
       	}
-      	defer file.Close()
 
       	var cfg Config
-      	if err := json.NewDecoder(file).Decode(&cfg); err != nil {
-      		log.Fatalf("critical: failed to parse config json: %v", err)
+      	if err := json.Unmarshal(b, &cfg); err != nil {
+      		log.Fatalf("critical: configuration parse exception: %v", err)
       	}
 
       	engine := NewEngine(cfg)
 
+      	rootCtx, rootCancel := context.WithCancel(context.Background())
+      	defer rootCancel()
+
+      	sigChan := make(chan os.Signal, 1)
+      	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
       	mux := http.NewServeMux()
       	mux.HandleFunc("/list", func(w http.ResponseWriter, r *http.Request) {
-      		w.Header().Set("Content-Type", "text/plain")
-      		w.WriteHeader(http.StatusOK)
       		routes := engine.getLocalRouteSet(r.Context())
-      		w.Write([]byte(engine.serializeRouteList(routes)))
+      		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+      		w.WriteHeader(http.StatusOK)
+      		io.WriteString(w, engine.serializeRouteList(routes))
       	})
 
       	server := &http.Server{
@@ -629,19 +615,13 @@ let
       		Handler: mux,
       	}
 
-      	rootCtx, rootCancel := context.WithCancel(context.Background())
-
       	go func() {
-      		log.Printf("Starting HTTP list listener on %s", server.Addr)
+      		log.Printf("Starting web routing listener server on %s", server.Addr)
       		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-      			log.Fatalf("critical: web server crashed unexpectedly: %v", err)
+      			log.Fatalf("critical: web routing framework listener failed: %v", err)
       		}
       	}()
 
-      	sigChan := make(chan os.Signal, 1)
-      	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-      	// CRITICAL LIFECYCLE FIX: Coordinate graceful exit using channel synchronization to avoid raw os.Exit goroutine drops
       	shutdownDone := make(chan struct{})
 
       	go func() {
@@ -662,7 +642,6 @@ let
       	log.Println("Starting Melinoe Deployment Engine...")
       	engine.Start(rootCtx)
 
-      	// Block main thread until the shutdown channel confirms completion, allowing clean defers and logging flushes
       	<-shutdownDone
       	log.Println("Melinoe Route Engine shutdown procedure completed successfully.")
       }
@@ -682,8 +661,6 @@ in
     serviceConfig = {
       ExecStart = "${melinoeGoBinary}/bin/melinoe-route --config ${routeConfig}";
       Restart = "always";
-      RestartSec = "5s";
-      LogLevelMax = "warning";
     };
   };
 }
