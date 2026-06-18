@@ -407,7 +407,7 @@ let
 
 
       def get_current_routes_for_tunnel(tun):
-          result = ip("-j", "route", "show", "dev", tun, check=False)
+          result = ip("-j", "route", "show", "dev", tun, "proto", "198", check=False)
 
           if result.returncode != 0:
               return []
@@ -579,7 +579,7 @@ let
 
           for prefix, tun in desired_routes.items():
               if current_routes.get(prefix) != tun:
-                  ip("route", "replace", prefix, "dev", tun, "metric", "1", check=False)
+                  ip("route", "replace", prefix, "dev", tun, "metric", "1", "proto", "198", check=False)
 
           for prefix, tun in current_routes.items():
               if desired_routes.get(prefix) != tun:
