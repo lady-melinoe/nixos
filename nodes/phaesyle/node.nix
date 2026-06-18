@@ -32,7 +32,7 @@
       gateway = "103.249.239.1";
     }
   ];
-
+  melinoe.advertisedRoutes = [ "8.8.8.8/32" ];
   melinoe.peers = [
     {
       id = 5;
