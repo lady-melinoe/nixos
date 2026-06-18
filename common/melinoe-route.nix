@@ -42,7 +42,7 @@ let
       PORT = 60198
 
       PUB_IPS = [
-      ${pyList cfg.internet}
+        ${pyList (lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) cfg.internet))}
       ]
 
       ADVERTISED_ROUTES = [
