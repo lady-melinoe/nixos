@@ -445,7 +445,6 @@ in
     path = [
       pkgs.coreutils
       pkgs.iproute2
-      pkgs.frr
     ];
 
     serviceConfig = {
