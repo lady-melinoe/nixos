@@ -21,9 +21,19 @@ let
   melinoeGoBinary = pkgs.buildGoModule {
     pname = "melinoe-route";
     version = "0.0.5";
-    vendorHash = null;
+    vendorHash = null; # No external modules dependencies
 
-    src = pkgs.writeTextDir "main.go" ''
+    # Creates a proper directory layout with both go.mod and main.go
+    src = pkgs.runCommand "melinoe-route-src" {} ''
+      mkdir -p $out
+      
+      cat << 'EOF' > $out/go.mod
+      module melinoe-route
+
+      go 1.21
+      EOF
+
+      cat << 'EOF' > $out/main.go
       package main
 
       import (
@@ -645,6 +655,7 @@ let
       	<-shutdownDone
       	log.Println("Melinoe Route Engine shutdown procedure completed successfully.")
       }
+      EOF
     '';
   };
 in
