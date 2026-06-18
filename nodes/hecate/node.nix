@@ -22,7 +22,11 @@
 
   melinoe.nodeId = 2;
   networking.hostName = "hecate";
-  melinoe.regions = [ "UCC" "PERTH" "AUSTRALIA" ];
+  melinoe.regions = [
+    "UCC"
+    "PERTH"
+    "AUSTRALIA"
+  ];
   melinoe.internet = [
     {
       ip = "130.95.13.224/32";

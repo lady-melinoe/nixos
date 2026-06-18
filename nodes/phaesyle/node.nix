@@ -22,7 +22,11 @@
   ];
 
   melinoe.nodeId = 1;
-  melinoe.regions = [ "BINARYLANE" "PERTH" "AUSTRALIA" ];
+  melinoe.regions = [
+    "BINARYLANE"
+    "PERTH"
+    "AUSTRALIA"
+  ];
   networking.hostName = "phaesyle";
   melinoe.internet = [
     {

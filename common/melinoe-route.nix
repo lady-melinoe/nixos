@@ -18,418 +18,660 @@ let
     }
   );
 
-  routeScript = pkgs.writeTextFile {
-    name = "melinoe-route.py";
-    destination = "/bin/melinoe-route";
-    executable = true;
-    text = ''
-      #!/usr/bin/env python3
-      import ipaddress
-      import json
-      import multiprocessing
-      import re
-      import subprocess
-      import sys
-      import threading
-      import time
-      import urllib.request
-      import argparse
-      from concurrent.futures import ThreadPoolExecutor
-      from http.server import BaseHTTPRequestHandler, HTTPServer
-
-      BASE_PREFIX = "198.51.100."
-      INNER_PREFIX = "198.18.0."
-      TUN_PREFIX = "node-"
-      HOST = None
-      PORT = 60198
-
-      def load_config(path):
-          with open(path) as f:
-              return json.load(f)
-
-      def parse_args():
-          p = argparse.ArgumentParser()
-          p.add_argument("--config", required=True)
-          return p.parse_args()
-
-      LOCAL_NODE_ID = None
-      PUB_IPS = []
-      ADVERTISED_ROUTES = []
-
-      # split local vs learned peer regions
-      LOCAL_REGIONS = []
-      PEER_REGIONS = {}
-
-      HOSTNAME = None
-
-      def run(cmd, *, check=True, input=None, timeout=300):
-          return subprocess.run(
-              cmd,
-              check=check,
-              input=input,
-              text=True,
-              stdout=subprocess.PIPE,
-              stderr=subprocess.PIPE,
-              timeout=timeout,
-          )
-
-      def ip(*args, check=True):
-          return run(["ip", *args], check=check)
-
-      def node_id_valid(value):
-          return re.match(r"^[0-9]+$", value) is not None
-
-      def normalize_prefix(value):
-          try:
-              return str(ipaddress.ip_network(value, strict=False))
-          except ValueError:
-              return None
-
-      def add_route(routes, value):
-          route = normalize_prefix(value)
-          if route is not None:
-              routes.add(route)
-
-      def format_region(node_id):
-          node_id = str(node_id)
-
-          if node_id == str(LOCAL_NODE_ID):
-              return " ".join(LOCAL_REGIONS)
-
-          return " ".join(PEER_REGIONS.get(node_id, []))
-
-      def build_route_list():
-          routes = set()
-          result = ip("-j", "route", check=False)
-          if result.returncode == 0:
-              for route in json.loads(result.stdout):
-                  dev = route.get("dev")
-                  dst = route.get("dst")
-                  if dev is None or dst is None:
-                      continue
-                  if dev.startswith("vm-"):
-                      add_route(routes, dst)
-
-          for pub_ip in PUB_IPS:
-              add_route(routes, pub_ip)
-
-          for route in ADVERTISED_ROUTES:
-              add_route(routes, route)
-
-          body = "\n".join(sorted(routes)) + "\n"
-
-          header_1 = "// melinoe-list 0.0.1"
-          header_2 = f"// {LOCAL_NODE_ID}: {HOSTNAME} - {format_region(LOCAL_NODE_ID)}"
-
-          return header_1 + "\n" + header_2 + "\n" + body
-
-      def local_advertised_routes():
-          return set(build_route_list().splitlines())
-
-      class RequestHandler(BaseHTTPRequestHandler):
-          def log_message(self, format, *args):
-              return
-
-          def do_GET(self):
-              if self.path != "/list":
-                  self.send_response(404)
-                  self.end_headers()
-                  self.wfile.write(b"Not Found\n")
-                  return
-
-              try:
-                  body = build_route_list()
-                  self.send_response(200)
-                  self.send_header("Content-Type", "text/plain")
-                  self.end_headers()
-                  self.wfile.write(body.encode())
-              except Exception as e:
-                  self.send_response(500)
-                  self.end_headers()
-                  self.wfile.write(f"Error: {e}\n".encode())
-
-      def serve_route_list():
-          HTTPServer((HOST, PORT), RequestHandler).serve_forever()
-
-      def fetch_remote_route_list(remote_inner):
-          try:
-              with urllib.request.urlopen(f"http://{remote_inner}:60198/list", timeout=5) as response:
-                  body = response.read().decode()
-          except Exception:
-              return []
-
-          # learn peer region metadata (backward compatible)
-          parse_remote_header(body)
-
-          routes = set()
-          for line in body.splitlines():
-              line = line.split("//", 1)[0].strip()
-              if not line:
-                  continue
-              add_route(routes, line.strip())
-
-          return sorted(routes)
-
-      def parse_remote_header(body):
-          """
-          Backward compatible parser for:
-          // <id>: <hostname> - AAA BBB CCC
-          """
-          for line in body.splitlines():
-              if not line.startswith("//"):
-                  continue
-
-              line = line[2:].strip()
-
-              m = re.match(r"^(\d+):\s*.*?\-\s*(.*)$", line)
-              if not m:
-                  continue
-
-              node_id = m.group(1)
-              regions_str = m.group(2).strip()
-
-              if regions_str:
-                  PEER_REGIONS[node_id] = regions_str.split()
-              else:
-                  PEER_REGIONS[node_id] = []
-
-      def get_current_routes_for_tunnel(tun):
-          result = ip("-j", "route", "show", "dev", tun, "proto", "198", check=False)
-          if result.returncode != 0:
-              return []
-          routes = set()
-          for route in json.loads(result.stdout):
-              dst = route.get("dst")
-              if dst is not None:
-                  add_route(routes, dst)
-          return sorted(routes)
-
-      def existing_melinoe_tunnels():
-          result = ip("-o", "link", "show", "type", "ipip", check=False)
-          tunnels = []
-          for line in result.stdout.splitlines():
-              parts = line.split(": ", 2)
-              if len(parts) < 2:
-                  continue
-              tun = parts[1].split("@", 1)[0].rstrip(":")
-              if tun.startswith(TUN_PREFIX):
-                  tunnels.append(tun)
-          return tunnels
-
-      def flush_tunnel(tun):
-          remote_id = tun.removeprefix(TUN_PREFIX)
-          if not node_id_valid(remote_id):
-              return
-          table = str(1000 + int(remote_id))
-          ip("route", "flush", "table", table, check=False)
-          ip("rule", "del", "fwmark", table, "lookup", table, check=False)
-          ip("link", "set", tun, "down", check=False)
-          ip("tunnel", "del", tun, check=False)
-
-      def ensure_tunnel(remote_id, local_vip, local_inner, remote_vip, remote_inner, tun, table):
-          if ip("link", "show", tun, check=False).returncode != 0:
-              created = ip(
-                  "tunnel",
-                  "add",
-                  tun,
-                  "mode",
-                  "ipip",
-                  "local",
-                  local_vip,
-                  "remote",
-                  remote_vip,
-                  "ttl",
-                  "64",
-                  check=False,
-              )
-              if created.returncode != 0:
-                  print(f"failed to create {tun}: {created.stderr}", file=sys.stderr)
-                  return False
-
-          ip("addr", "replace", f"{local_inner}/32", "peer", f"{remote_inner}/32", "dev", tun, check=False)
-          ip("link", "set", tun, "mtu", "1400", check=False)
-          ip("link", "set", tun, "up", check=False)
-          ip("rule", "del", "fwmark", table, "lookup", table, check=False)
-          ip("rule", "add", "fwmark", table, "lookup", table, check=False)
-          ip("route", "replace", "default", "dev", tun, "table", table)
-          return True
-
-      def region_priority(remote_id):
-          local_regions = LOCAL_REGIONS
-          remote_regions = PEER_REGIONS.get(str(remote_id), [])
-
-          def same(index):
-              return (
-                  len(local_regions) > index
-                  and len(remote_regions) > index
-                  and local_regions[index] == remote_regions[index]
-              )
-
-          return (
-              not same(2),
-              not same(1),
-              not same(0),
-              int(remote_id),
-          )
-
-      def get_bgp_route_table_peer_ids():
-          result = ip("route", "show", "proto", "bgp", check=False)
-          remote_ids = set()
-
-          for line in result.stdout.splitlines():
-              parts = line.split()
-              if not parts:
-                  continue
-
-              match = re.match(r"^198\.51\.100\.([0-9]+)(?:/32)?$", parts[0])
-              if match is None:
-                  continue
-
-              remote_id = match.group(1)
-              if remote_id != str(LOCAL_NODE_ID):
-                  remote_ids.add(remote_id)
-
-          return sorted(remote_ids, key=region_priority)
-
-      def compute_desired_routes(peer_routes, local_inner_route, locally_advertised):
-          desired = {}
-          for state, routes in peer_routes:
-              for prefix in routes:
-                  if prefix == local_inner_route:
-                      continue
-                  if prefix == state["tunnel_peer_route"]:
-                      continue
-                  if prefix in locally_advertised:
-                      continue
-                  if prefix not in desired:
-                      desired[prefix] = state["tun"]
-          return desired
-
-      def reconcile_all_routes(peer_state, desired_routes):
-          current_routes = {}
-          tunnel_peer_routes = {
-              state["tunnel_peer_route"]
-              for state in peer_state
-          }
-          for state in peer_state:
-              tun = state["tun"]
-              for prefix in get_current_routes_for_tunnel(tun):
-                  if prefix in tunnel_peer_routes:
-                      continue
-                  current_routes[prefix] = tun
-
-          for prefix, tun in desired_routes.items():
-              if current_routes.get(prefix) != tun:
-                  ip("route", "replace", prefix, "dev", tun, "metric", "1", "proto", "198", check=False)
-
-          for prefix, tun in current_routes.items():
-              if desired_routes.get(prefix) != tun:
-                  ip("route", "del", prefix, "dev", tun, check=False)
-
-      def deploy_once():
-          local_node_id = str(LOCAL_NODE_ID)
-          if not node_id_valid(local_node_id):
-              print(f"invalid local node id: {local_node_id}", file=sys.stderr)
-              return
-
-          local_vip = f"{BASE_PREFIX}{local_node_id}"
-          local_inner = f"{INNER_PREFIX}{local_node_id}"
-          local_inner_route = f"{local_inner}/32"
-          local_vip_route = f"{local_vip}/32"
-
-          ip("addr", "replace", local_vip_route, "dev", "lo", check=False)
-
-          locally_advertised = local_advertised_routes()
-          remote_node_ids = get_bgp_route_table_peer_ids()
-
-          for tun in existing_melinoe_tunnels():
-              remote_id = tun.removeprefix(TUN_PREFIX)
-              if remote_id not in remote_node_ids:
-                  flush_tunnel(tun)
-
-          peer_state = []
-          for remote_id in remote_node_ids:
-              if not node_id_valid(remote_id):
-                  continue
-
-              remote_vip = f"{BASE_PREFIX}{remote_id}"
-              remote_inner = f"{INNER_PREFIX}{remote_id}"
-              tun = f"{TUN_PREFIX}{remote_id}"
-              table = str(1000 + int(remote_id))
-
-              if not ensure_tunnel(remote_id, local_vip, local_inner, remote_vip, remote_inner, tun, table):
-                  continue
-
-              peer_state.append({
-                  "remote_inner": remote_inner,
-                  "tun": tun,
-                  "tunnel_peer_route": f"{remote_inner}/32",
-              })
-
-          if not peer_state:
-              return
-
-          with ThreadPoolExecutor(max_workers=min(32, len(peer_state))) as executor:
-              fetched_routes = list(executor.map(
-                  lambda state: fetch_remote_route_list(state["remote_inner"]),
-                  peer_state,
-              ))
-
-          desired_routes = compute_desired_routes(
-              list(zip(peer_state, fetched_routes)),
-              local_inner_route,
-              locally_advertised,
-          )
-
-          reconcile_all_routes(peer_state, desired_routes)
-
-      def deploy_worker():
-          try:
-              deploy_once()
-          except Exception as e:
-              print(f"deploy failed: {e}", file=sys.stderr)
-
-      def deploy_loop():
-          while True:
-              process = multiprocessing.Process(target=deploy_worker)
-              process.start()
-              process.join(300)
-
-              if process.is_alive():
-                  print("deploy timed out", file=sys.stderr)
-                  process.terminate()
-                  process.join(5)
-                  if process.is_alive():
-                      process.kill()
-                      process.join()
-
-              time.sleep(3)
-
-      def main():
-          global LOCAL_NODE_ID, PUB_IPS, ADVERTISED_ROUTES, LOCAL_REGIONS, HOST, HOSTNAME
-
-          args = parse_args()
-          cfg = load_config(args.config)
-
-          LOCAL_NODE_ID = cfg["node_id"]
-          PUB_IPS = cfg["pub_ips"]
-          ADVERTISED_ROUTES = cfg["advertised_routes"]
-          LOCAL_REGIONS = cfg["regions"]
-          HOSTNAME = cfg["hostname"]
-
-          HOST = f"{INNER_PREFIX}{LOCAL_NODE_ID}"
-
-          threading.Thread(target=serve_route_list, daemon=True).start()
-          deploy_loop()
-
-      if __name__ == "__main__":
-          main()
+  melinoeGoBinary = pkgs.buildGoModule {
+    pname = "melinoe-route";
+    version = "0.0.5";
+    vendorHash = null;
+
+    src = pkgs.writeTextDir "main.go" ''
+      package main
+
+      import (
+      	"bytes"
+      	"context"
+      	"encoding/json"
+      	"flag"
+      	"fmt"
+      	"io"
+      	"log"
+      	"net"
+      	"net/http"
+      	"os"
+      	"os/exec"
+      	"os/signal"
+      	"regexp"
+      	"sort"
+      	"strconv"
+      	"strings"
+      	"sync"
+      	"syscall"
+      	"time"
+      )
+
+      const (
+      	BasePrefix  = "198.51.100."
+      	InnerPrefix = "198.18.0."
+      	TunPrefix   = "node-"
+      	Port        = "60198"
+      )
+
+      type Config struct {
+      	NodeID           interface{} `json:"node_id"`
+      	Hostname         string      `json:"hostname"`
+      	PubIPs           []string    `json:"pub_ips"`
+      	AdvertisedRoutes []string    `json:"advertised_routes"`
+      	Regions          []string    `json:"regions"`
+      }
+
+      type PeerState struct {
+      	RemoteInner     string
+      	Tun             string
+      	TunnelPeerRoute string
+      }
+
+      type RouteMap map[string]bool
+
+      type Engine struct {
+      	nodeID           string
+      	hostname         string
+      	pubIPs           []string
+      	advertisedRoutes []string
+      	localRegions     []string
+      	hostAddr         string
+
+      	peerMu      sync.RWMutex
+      	peerRegions map[string][]string
+
+      	nodeIDRegex *regexp.Regexp
+      	headerRegex *regexp.Regexp
+      	bgpRegex    *regexp.Regexp
+      }
+
+      func NewEngine(cfg Config) *Engine {
+      	var id string
+      	switch v := cfg.NodeID.(type) {
+      	case string:
+      		id = v
+      	case float64:
+      		id = strconv.Itoa(int(v))
+      	default:
+      		log.Fatal("critical: unexpected or missing json type for node_id")
+      	}
+
+      	return &Engine{
+      		nodeID:           id,
+      		hostname:         cfg.Hostname,
+      		pubIPs:           cfg.PubIPs,
+      		advertisedRoutes: cfg.AdvertisedRoutes,
+      		localRegions:     cfg.Regions,
+      		hostAddr:         InnerPrefix + id,
+      		peerRegions:      make(map[string][]string),
+      		nodeIDRegex:      regexp.MustCompile(`^[0-9]+$`),
+      		headerRegex:      regexp.MustCompile(`^(\d+):\s*.*?\-\s*(.*)$`),
+      		bgpRegex:         regexp.MustCompile(`^198\.51\.100\.([0-9]+)(?:/32)?$`),
+      	}
+      }
+
+      func (e *Engine) runCmd(ctx context.Context, name string, args ...string) (string, error) {
+      	var stdout, stderr bytes.Buffer
+      	cmd := exec.CommandContext(ctx, name, args...)
+      	cmd.Stdout = &stdout
+      	cmd.Stderr = &stderr
+
+      	err := cmd.Run()
+      	if err != nil {
+      		return "", fmt.Errorf("%s %v failed: %w (stderr: %s)", name, args, err, strings.TrimSpace(stderr.String()))
+      	}
+      	return stdout.String(), nil
+      }
+
+      func (e *Engine) ip(ctx context.Context, args ...string) (string, error) {
+      	return e.runCmd(ctx, "ip", args...)
+      }
+
+      func (e *Engine) isValidNodeID(val string) bool {
+      	return e.nodeIDRegex.MatchString(val)
+      }
+
+      func (e *Engine) normalizePrefix(val string) string {
+      	val = strings.TrimSpace(val)
+      	if val == "" {
+      		return ""
+      	}
+
+      	if !strings.Contains(val, "/") {
+      		ip := net.ParseIP(val)
+      		if ip == nil {
+      			log.Printf("warning: drop invalid IP entry during normalization: %s", val)
+      			return ""
+      		}
+      		if ip.To4() != nil {
+      			return val + "/32"
+      		}
+      		return val + "/128"
+      	}
+
+      	_, ipNet, err := net.ParseCIDR(val)
+      	if err != nil {
+      		log.Printf("warning: drop invalid CIDR network mask: %s", val)
+      		return ""
+      	}
+      	return ipNet.String()
+      }
+
+      func (e *Engine) addRoute(routes RouteMap, val string) {
+      	if norm := e.normalizePrefix(val); norm != "" {
+      		routes[norm] = true
+      	}
+      }
+
+      func (e *Engine) formatRegion(nodeID string) string {
+      	if nodeID == e.nodeID {
+      		return strings.Join(e.localRegions, " ")
+      	}
+      	e.peerMu.RLock()
+      	defer e.peerMu.RUnlock()
+      	return strings.Join(e.peerRegions[nodeID], " ")
+      }
+
+      func (e *Engine) getLocalRouteSet(ctx context.Context) RouteMap {
+      	routes := make(RouteMap)
+
+      	if out, err := e.ip(ctx, "-j", "route"); err == nil {
+      		var parsedRoutes []map[string]interface{}
+      		if err := json.Unmarshal([]byte(out), &parsedRoutes); err == nil {
+      			for _, r := range parsedRoutes {
+      				dev, _ := r["dev"].(string)
+      				dst, _ := r["dst"].(string)
+      				if dev != "" && dst != "" && strings.HasPrefix(dev, "vm-") {
+      					e.addRoute(routes, dst)
+      				}
+      			}
+      		}
+      	}
+
+      	for _, ip := range e.pubIPs {
+      		e.addRoute(routes, ip)
+      	}
+      	for _, r := range e.advertisedRoutes {
+      		e.addRoute(routes, r)
+      	}
+      	return routes
+      }
+
+      func (e *Engine) serializeRouteList(routes RouteMap) string {
+      	var sortedRoutes []string
+      	for r := range routes {
+      		sortedRoutes = append(sortedRoutes, r)
+      	}
+      	sort.Strings(sortedRoutes)
+
+      	var sb strings.Builder
+      	sb.WriteString("// melinoe-list 0.0.1\n")
+      	fmt.Fprintf(&sb, "// %s: %s - %s\n", e.nodeID, e.hostname, e.formatRegion(e.nodeID))
+      	for _, r := range sortedRoutes {
+      		sb.WriteString(r + "\n")
+      	}
+      	return sb.String()
+      }
+
+      func (e *Engine) parseRemoteHeader(body string) {
+      	lines := strings.Split(body, "\n")
+      	for _, line := range lines {
+      		if !strings.HasPrefix(line, "//") {
+      			continue
+      		}
+      		content := strings.TrimSpace(line[2:])
+      		matches := e.headerRegex.FindStringSubmatch(content)
+      		if matches == nil {
+      			continue
+      		}
+      		nodeID := matches[1]
+      		regionsStr := strings.TrimSpace(matches[2])
+
+      		e.peerMu.Lock()
+      		if regionsStr == "" {
+      			e.peerRegions[nodeID] = []string{}
+      		} else {
+      			e.peerRegions[nodeID] = strings.Fields(regionsStr)
+      		}
+      		e.peerMu.Unlock()
+      	}
+      }
+
+      func (e *Engine) fetchRemoteRouteList(ctx context.Context, remoteInner string) []string {
+      	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+      	defer cancel()
+
+      	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, fmt.Sprintf("http://%s:%s/list", remoteInner, Port), nil)
+      	if err != nil {
+      		return nil
+      	}
+
+      	resp, err := http.DefaultClient.Do(req)
+      	if err != nil {
+      		return nil
+      	}
+      	defer resp.Body.Close()
+
+      	b, err := io.ReadAll(resp.Body)
+      	if err != nil {
+      		return nil
+      	}
+      	body := string(b)
+
+      	e.parseRemoteHeader(body)
+
+      	routesMap := make(RouteMap)
+      	lines := strings.Split(body, "\n")
+      	for _, line := range lines {
+      		if idx := strings.Index(line, "//"); idx != -1 {
+      			line = line[:idx]
+      		}
+      		line = strings.TrimSpace(line)
+      		if line == "" {
+      			continue
+      		}
+      		e.addRoute(routesMap, line)
+      	}
+
+      	var routes []string
+      	for r := range routesMap {
+      		routes = append(routes, r)
+      	}
+      	sort.Strings(routes)
+      	return routes
+      }
+
+      func (e *Engine) getCurrentRoutesForTunnel(ctx context.Context, tun string) []string {
+      	out, err := e.ip(ctx, "-j", "route", "show", "dev", tun, "proto", "198")
+      	if err != nil {
+      		return nil
+      	}
+      	var parsed []map[string]interface{}
+      	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+      		return nil
+      	}
+
+      	routesMap := make(RouteMap)
+      	for _, r := range parsed {
+      		if dst, ok := r["dst"].(string); ok {
+      			e.addRoute(routesMap, dst)
+      		}
+      	}
+      	var routes []string
+      	for r := range routesMap {
+      		routes = append(routes, r)
+      	}
+      	sort.Strings(routes)
+      	return routes
+      }
+
+      func (e *Engine) existingMelinoeTunnels(ctx context.Context) []string {
+      	out, err := e.ip(ctx, "-o", "link", "show", "type", "ipip")
+      	if err != nil {
+      		return nil
+      	}
+      	var tunnels []string
+      	lines := strings.Split(out, "\n")
+      	for _, line := range lines {
+      		parts := strings.SplitN(line, ": ", 3)
+      		if len(parts) < 2 {
+      			continue
+      		}
+      		tun := strings.SplitN(parts[1], "@", 2)[0]
+      		tun = strings.TrimSuffix(tun, ":")
+      		if strings.HasPrefix(tun, TunPrefix) {
+      			tunnels = append(tunnels, tun)
+      		}
+      	}
+      	return tunnels
+      }
+
+      func (e *Engine) flushTunnel(ctx context.Context, tun string) {
+      	remoteID := strings.TrimPrefix(tun, TunPrefix)
+      	if !e.isValidNodeID(remoteID) {
+      		return
+      	}
+      	idInt, _ := strconv.Atoi(remoteID)
+      	table := strconv.Itoa(1000 + idInt)
+
+      	if _, err := e.ip(ctx, "route", "flush", "table", table); err != nil {
+      		log.Printf("warning: flush table %s for tunnel %s failed: %v", table, tun, err)
+      	}
+      	_, _ = e.ip(ctx, "rule", "del", "fwmark", table, "lookup", table)
+      	_, _ = e.ip(ctx, "link", "set", tun, "down")
+      	if _, err := e.ip(ctx, "tunnel", "del", tun); err != nil {
+      		log.Printf("error: failed to delete tunnel device %s: %v", tun, err)
+      	}
+      }
+
+      // SCALING OPTIMIZATION: Scan kernel link-layer state exactly ONCE per iteration tick block
+      func (e *Engine) buildInterfaceCache(ctx context.Context) map[string]bool {
+      	cache := make(map[string]bool)
+      	out, err := e.ip(ctx, "-j", "link", "show")
+      	if err != nil {
+      		log.Printf("warning: loop baseline kernel link cache building failed: %v", err)
+      		return cache
+      	}
+      	var links []map[string]interface{}
+      	if err := json.Unmarshal([]byte(out), &links); err != nil {
+      		return cache
+      	}
+      	for _, link := range links {
+      		if ifname, ok := link["ifname"].(string); ok {
+      			cache[ifname] = true
+      		}
+      	}
+      	return cache
+      }
+
+      func (e *Engine) ensureTunnel(ctx context.Context, linkCache map[string]bool, remoteID, localVIP, localInner, remoteVIP, remoteInner, tun, table string) bool {
+      	// O(1) high-speed structural existence lookups replacing repetitive kernel subprocess executions
+      	if !linkCache[tun] {
+      		log.Printf("instantiating virtual tunnel link interface: %s", tun)
+      		if _, err := e.ip(ctx, "tunnel", "add", tun, "mode", "ipip", "local", localVIP, "remote", remoteVIP, "ttl", "64"); err != nil {
+      			log.Printf("critical: kernel link layer allocation error for interface %s: %v", tun, err)
+      			return false
+      		}
+      	}
+
+      	var err error
+      	if _, err = e.ip(ctx, "addr", "replace", localInner+"/32", "peer", remoteInner+"/32", "dev", tun); err != nil {
+      		log.Printf("error: local point-to-point IP assignment failed on %s: %v", tun, err)
+      	}
+      	_, _ = e.ip(ctx, "link", "set", tun, "mtu", "1400")
+      	if _, err = e.ip(ctx, "link", "set", tun, "up"); err != nil {
+      		log.Printf("error: link activation failed for device %s: %v", tun, err)
+      	}
+      	
+      	_, _ = e.ip(ctx, "rule", "del", "fwmark", table, "lookup", table)
+      	if _, err = e.ip(ctx, "rule", "add", "fwmark", table, "lookup", table); err != nil {
+      		log.Printf("error: policy routing rule table assignment mapping failed for table %s: %v", table, err)
+      	}
+      	if _, err = e.ip(ctx, "route", "replace", "default", "dev", tun, "table", table); err != nil {
+      		log.Printf("error: dynamic engine baseline rule configuration failed inside table %s: %v", table, err)
+      	}
+      	return true
+      }
+
+      func (e *Engine) regionPriority(remoteID string) (bool, bool, bool, int) {
+      	e.peerMu.RLock()
+      	remoteRegs := e.peerRegions[remoteID]
+      	e.peerMu.RUnlock()
+
+      	same := func(idx int) bool {
+      		return len(e.localRegions) > idx && len(remoteRegs) > idx && e.localRegions[idx] == remoteRegs[idx]
+      	}
+      	idInt, _ := strconv.Atoi(remoteID)
+      	return !same(2), !same(1), !same(0), idInt
+      }
+
+      func (e *Engine) getBGPRouteTablePeerIDs(ctx context.Context) []string {
+      	out, err := e.ip(ctx, "route", "show", "proto", "bgp")
+      	if err != nil {
+      		return nil
+      	}
+      	remoteIDsMap := make(RouteMap)
+      	lines := strings.Split(out, "\n")
+
+      	for _, line := range lines {
+      		fields := strings.Fields(line)
+      		if len(fields) == 0 {
+      			continue
+      		}
+      		matches := e.bgpRegex.FindStringSubmatch(fields[0])
+      		if matches == nil {
+      			continue
+      		}
+      		remoteID := matches[1]
+      		if remoteID != e.nodeID {
+      			remoteIDsMap[remoteID] = true
+      		}
+      	}
+
+      	var remoteIDs []string
+      	for id := range remoteIDsMap {
+      		remoteIDs = append(remoteIDs, id)
+      	}
+
+      	sort.Slice(remoteIDs, func(i, j int) bool {
+      		notSame2I, notSame1I, notSame0I, idI := e.regionPriority(remoteIDs[i])
+      		notSame2J, notSame1J, notSame0J, idJ := e.regionPriority(remoteIDs[j])
+
+      		if notSame2I != notSame2J {
+      			return notSame2I
+      		}
+      		if notSame1I != notSame1J {
+      			return notSame1I
+      		}
+      		if notSame0I != notSame0J {
+      			return notSame0I
+      		}
+      		return idI < idJ
+      	})
+
+      	return remoteIDs
+      }
+
+      func (e *Engine) computeDesiredRoutes(peerStates []PeerState, fetchedRoutes [][]string, localInnerRoute string, locallyAdvertised RouteMap) map[string]string {
+      	desired := make(map[string]string)
+      	for i, state := range peerStates {
+      		for _, prefix := range fetchedRoutes[i] {
+      			if prefix == localInnerRoute || prefix == state.TunnelPeerRoute || locallyAdvertised[prefix] {
+      				continue
+      			}
+      			if _, exists := desired[prefix]; !exists {
+      				desired[prefix] = state.Tun
+      			}
+      		}
+      	}
+      	return desired
+      }
+
+      func (e *Engine) reconcileAllRoutes(ctx context.Context, peerStates []PeerState, desiredRoutes map[string]string) {
+      	currentRoutes := make(map[string]string)
+      	tunnelPeerRoutes := make(RouteMap)
+      	for _, state := range peerStates {
+      		tunnelPeerRoutes[state.TunnelPeerRoute] = true
+      	}
+
+      	for _, state := range peerStates {
+      		for _, prefix := range e.getCurrentRoutesForTunnel(ctx, state.Tun) {
+      			if !tunnelPeerRoutes[prefix] {
+      				currentRoutes[prefix] = state.Tun
+      			}
+      		}
+      	}
+
+      	for prefix, tun := range desiredRoutes {
+      		if currentRoutes[prefix] != tun {
+      			log.Printf("mutating routing table: adding network target destination prefix %s via %s", prefix, tun)
+      			if _, err := e.ip(ctx, "route", "replace", prefix, "dev", tun, "metric", "1", "proto", "198"); err != nil {
+      				log.Printf("error: kernel route injection entry execution failure: prefix %s via %s: %v", prefix, tun, err)
+      			}
+      		}
+      	}
+
+      	for prefix, tun := range currentRoutes {
+      		if desiredRoutes[prefix] != tun {
+      			log.Printf("mutating routing table: evicting stale network target prefix %s from device %s", prefix, tun)
+      			if _, err := e.ip(ctx, "route", "del", prefix, "dev", tun); err != nil {
+      				log.Printf("error: kernel route destruction target drop request execution failure: prefix %s from %s: %v", prefix, tun, err)
+      			}
+      		}
+      	}
+      }
+
+      func (e *Engine) deployOnce(ctx context.Context) {
+      	if !e.isValidNodeID(e.nodeID) {
+      		log.Printf("error: invalid local node id: %s", e.nodeID)
+      		return
+      	}
+
+      	localVIP := BasePrefix + e.nodeID
+      	localInner := InnerPrefix + e.nodeID
+      	localInnerRoute := localInner + "/32"
+      	localVIPRoute := localVIP + "/32"
+
+      	if _, err := e.ip(ctx, "addr", "replace", localVIPRoute, "dev", "lo"); err != nil {
+      		log.Printf("error: loopback address vip allocation mapping failed: %v", err)
+      	}
+
+      	linkCache := e.buildInterfaceCache(ctx)
+      	locallyAdvertised := e.getLocalRouteSet(ctx)
+      	remoteNodeIDs := e.getBGPRouteTablePeerIDs(ctx)
+      	remoteIDsMap := make(RouteMap)
+      	for _, id := range remoteNodeIDs {
+      		remoteIDsMap[id] = true
+      	}
+
+      	for _, tun := range e.existingMelinoeTunnels(ctx) {
+      		if remoteID := strings.TrimPrefix(tun, TunPrefix); !remoteIDsMap[remoteID] {
+      			e.flushTunnel(ctx, tun)
+      		}
+      	}
+
+      	var peerStates []PeerState
+      	for _, remoteID := range remoteNodeIDs {
+      		if !e.isValidNodeID(remoteID) {
+      			continue
+      		}
+
+      		remoteVIP := BasePrefix + remoteID
+      		remoteInner := InnerPrefix + remoteID
+      		tun := TunPrefix + remoteID
+      		idInt, _ := strconv.Atoi(remoteID)
+      		table := strconv.Itoa(1000 + idInt)
+
+      		if !e.ensureTunnel(ctx, linkCache, remoteID, localVIP, localInner, remoteVIP, remoteInner, tun, table) {
+      			continue
+      		}
+
+      		peerStates = append(peerStates, PeerState{
+      			RemoteInner:     remoteInner,
+      			Tun:             tun,
+      			TunnelPeerRoute: remoteInner + "/32",
+      		})
+      	}
+
+      	if len(peerStates) == 0 {
+      		return
+      	}
+
+      	fetchedRoutes := make([][]string, len(peerStates))
+      	var wg sync.WaitGroup
+      	semaphore := make(chan struct{}, 32)
+
+      	for i, state := range peerStates {
+      		wg.Add(1)
+      		semaphore <- struct{}{}
+      		go func(idx int, ps PeerState) {
+      			defer wg.Done()
+      			defer func() { <-semaphore }()
+      			fetchedRoutes[idx] = e.fetchRemoteRouteList(ctx, ps.RemoteInner)
+      		}(i, state)
+      	}
+      	wg.Wait()
+
+      	desiredRoutes := e.computeDesiredRoutes(peerStates, fetchedRoutes, localInnerRoute, locallyAdvertised)
+      	e.reconcileAllRoutes(ctx, peerStates, desiredRoutes)
+      }
+
+      func (e *Engine) Start(ctx context.Context) {
+      	ticker := time.NewTicker(3 * time.Second)
+      	defer ticker.Stop()
+
+      	for {
+      		select {
+      		case <-ctx.Done():
+      			log.Println("Stopping orchestration framework control loop tick sequence gracefully...")
+      			return
+      		case <-ticker.C:
+      			runCtx, cancel := context.WithTimeout(ctx, 300*time.Second)
+      			e.deployOnce(runCtx)
+      			cancel()
+      		}
+      	}
+      }
+
+      func main() {
+      	configPath := flag.String("config", "", "Path to config json")
+      	flag.Parse()
+
+      	if *configPath == "" {
+      		log.Fatal("critical: missing required --config flag")
+      	}
+
+      	file, err := os.Open(*configPath)
+      	if err != nil {
+      		log.Fatalf("critical: failed to open config: %v", err)
+      	}
+      	defer file.Close()
+
+      	var cfg Config
+      	if err := json.NewDecoder(file).Decode(&cfg); err != nil {
+      		log.Fatalf("critical: failed to parse config json: %v", err)
+      	}
+
+      	engine := NewEngine(cfg)
+
+      	mux := http.NewServeMux()
+      	mux.HandleFunc("/list", func(w http.ResponseWriter, r *http.Request) {
+      		w.Header().Set("Content-Type", "text/plain")
+      		w.WriteHeader(http.StatusOK)
+      		routes := engine.getLocalRouteSet(r.Context())
+      		w.Write([]byte(engine.serializeRouteList(routes)))
+      	})
+
+      	server := &http.Server{
+      		Addr:    net.JoinHostPort(engine.hostAddr, Port),
+      		Handler: mux,
+      	}
+
+      	rootCtx, rootCancel := context.WithCancel(context.Background())
+
+      	go func() {
+      		log.Printf("Starting HTTP list listener on %s", server.Addr)
+      		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+      			log.Fatalf("critical: web server crashed unexpectedly: %v", err)
+      		}
+      	}()
+
+      	sigChan := make(chan os.Signal, 1)
+      	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+      	// CRITICAL LIFECYCLE FIX: Coordinate graceful exit using channel synchronization to avoid raw os.Exit goroutine drops
+      	shutdownDone := make(chan struct{})
+
+      	go func() {
+      		sig := <-sigChan
+      		log.Printf("Termination request signal captured (%s). Executing defensive control shutdown...", sig)
+      		
+      		rootCancel() 
+      		
+      		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+      		defer shutdownCancel()
+      		
+      		if err := server.Shutdown(shutdownCtx); err != nil {
+      			log.Printf("warning: web routing stack failed to yield active tasks cleanly during shutdown: %v", err)
+      		}
+      		close(shutdownDone)
+      	}()
+
+      	log.Println("Starting Melinoe Deployment Engine...")
+      	engine.Start(rootCtx)
+
+      	// Block main thread until the shutdown channel confirms completion, allowing clean defers and logging flushes
+      	<-shutdownDone
+      	log.Println("Melinoe Route Engine shutdown procedure completed successfully.")
+      }
     '';
   };
 in
 {
   systemd.services.melinoe-route = {
-    description = "Melinoe route daemon";
+    description = "Melinoe route daemon (Production Optimized)";
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
@@ -438,7 +680,7 @@ in
       pkgs.iproute2
     ];
     serviceConfig = {
-      ExecStart = "${pkgs.python3}/bin/python ${routeScript}/bin/melinoe-route --config ${routeConfig}";
+      ExecStart = "${melinoeGoBinary}/bin/melinoe-route --config ${routeConfig}";
       Restart = "always";
       RestartSec = "5s";
       LogLevelMax = "warning";

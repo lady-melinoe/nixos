@@ -21,7 +21,11 @@
     ./disk-config.nix
   ];
   melinoe.nodeId = 4;
-  melinoe.regions = [ "UCC" "PERTH" "AUSTRALIA" ];
+  melinoe.regions = [
+    "UCC"
+    "PERTH"
+    "AUSTRALIA"
+  ];
   melinoe.extraSerial = [
     0
     1

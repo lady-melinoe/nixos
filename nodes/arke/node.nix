@@ -21,7 +21,11 @@
     ./disk-config.nix
   ];
   melinoe.nodeId = 5;
-  melinoe.regions = [ "UCC" "PERTH" "AUSTRALIA" ];
+  melinoe.regions = [
+    "UCC"
+    "PERTH"
+    "AUSTRALIA"
+  ];
   networking.hostName = "arke";
   melinoe.internet = [
     {
