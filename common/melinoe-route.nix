@@ -1,5 +1,9 @@
-{ config, lib, pkgs, ... }:
-
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   cfg = config.melinoe;
   nodeID = cfg.nodeId;
@@ -8,14 +12,8 @@ let
     builtins.toJSON {
       node_id = nodeID;
       hostname = config.networking.hostName;
-
-      routes =
-        lib.filter (x: x != null)
-          (
-            (map (entry: entry.pub_ip or null) cfg.internet)
-            ++ cfg.advertisedRoutes
-          );
-
+      pub_ips = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) cfg.internet);
+      advertised_routes = cfg.advertisedRoutes;
       regions = cfg.regions;
     }
   );
@@ -24,7 +22,6 @@ let
     name = "melinoe-route.py";
     destination = "/bin/melinoe-route";
     executable = true;
-
     text = ''
       #!/usr/bin/env python3
       import ipaddress
@@ -39,9 +36,6 @@ let
       import argparse
       from concurrent.futures import ThreadPoolExecutor
       from http.server import BaseHTTPRequestHandler, HTTPServer
-      import os
-      import ctypes
-      import ctypes.util
 
       BASE_PREFIX = "198.51.100."
       INNER_PREFIX = "198.18.0."
@@ -49,69 +43,25 @@ let
       HOST = None
       PORT = 60198
 
-      # -----------------------------
-      # CONFIG (hot reload state)
-      # -----------------------------
-      CONFIG_LOCK = threading.Lock()
-      CONFIG = {}
-      CONFIG_PATH = None
-      CONFIG_MTIME = 0
+      def load_config(path):
+          with open(path) as f:
+              return json.load(f)
 
-      def get_config():
-          with CONFIG_LOCK:
-              return CONFIG.copy()
+      def parse_args():
+          p = argparse.ArgumentParser()
+          p.add_argument("--config", required=True)
+          return p.parse_args()
 
-      def load_and_swap_config():
-          global CONFIG, CONFIG_MTIME
-          try:
-              with open(CONFIG_PATH) as f:
-                  new_cfg = json.load(f)
-          except Exception as e:
-              print(f"[config] reload failed: {e}", file=sys.stderr)
-              return
+      LOCAL_NODE_ID = None
+      PUB_IPS = []
+      ADVERTISED_ROUTES = []
 
-          with CONFIG_LOCK:
-              CONFIG = new_cfg
-              CONFIG_MTIME = time.time()
+      # NEW: split local vs learned peer regions
+      LOCAL_REGIONS = []
+      PEER_REGIONS = {}
 
-      # -----------------------------
-      # inotify (no dependencies)
-      # -----------------------------
-      libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+      HOSTNAME = None
 
-      IN_CLOSE_WRITE = 0x00000008
-      IN_MOVED_TO = 0x00000080
-      IN_CREATE = 0x00000100
-
-      def inotify_init():
-          fd = libc.inotify_init1(0)
-          if fd < 0:
-              raise OSError(sys.errno, "inotify_init failed")
-          return fd
-
-      def inotify_add_watch(fd, path, mask):
-          wd = libc.inotify_add_watch(fd, path.encode(), mask)
-          if wd < 0:
-              raise OSError(sys.errno, "inotify_add_watch failed")
-          return wd
-
-      def watch_config():
-          fd = inotify_init()
-
-          mask = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE
-          inotify_add_watch(fd, CONFIG_PATH, mask)
-
-          while True:
-              try:
-                  os.read(fd, 4096)
-                  load_and_swap_config()
-              except Exception as e:
-                  print(f"[watcher] error: {e}", file=sys.stderr)
-                  time.sleep(1)
-
-      # -----------------------------
-      # subprocess helpers
-      # -----------------------------
       def run(cmd, *, check=True, input=None, timeout=300):
           return subprocess.run(
               cmd,
@@ -127,7 +77,7 @@ let
           return run(["ip", *args], check=check)
 
       def node_id_valid(value):
-          return re.match(r"^[0-9]+$", str(value)) is not None
+          return re.match(r"^[0-9]+$", value) is not None
 
       def normalize_prefix(value):
           try:
@@ -140,19 +90,6 @@ let
           if route is not None:
               routes.add(route)
 
-      # -----------------------------
-      # runtime globals
-      # -----------------------------
-      LOCAL_NODE_ID = None
-      ROUTES = []
-      LOCAL_REGIONS = []
-      PEER_REGIONS = {}
-      HOSTNAME = None
-      HOST = None
-
-      # -----------------------------
-      # routing list
-      # -----------------------------
       def format_region(node_id):
           node_id = str(node_id)
 
@@ -163,17 +100,21 @@ let
 
       def build_route_list():
           routes = set()
-
           result = ip("-j", "route", check=False)
           if result.returncode == 0:
               for route in json.loads(result.stdout):
                   dev = route.get("dev")
                   dst = route.get("dst")
-                  if dev and dst and dev.startswith("vm-"):
+                  if dev is None or dst is None:
+                      continue
+                  if dev.startswith("vm-"):
                       add_route(routes, dst)
 
-          for entry in ROUTES:
-              add_route(routes, entry)
+          for pub_ip in PUB_IPS:
+              add_route(routes, pub_ip)
+
+          for route in ADVERTISED_ROUTES:
+              add_route(routes, route)
 
           body = "\n".join(sorted(routes)) + "\n"
 
@@ -182,9 +123,9 @@ let
 
           return header_1 + "\n" + header_2 + "\n" + body
 
-      # -----------------------------
-      # HTTP server
-      # -----------------------------
+      def local_advertised_routes():
+          return set(build_route_list().splitlines())
+
       class RequestHandler(BaseHTTPRequestHandler):
           def log_message(self, format, *args):
               return
@@ -210,9 +151,6 @@ let
       def serve_route_list():
           HTTPServer((HOST, PORT), RequestHandler).serve_forever()
 
-      # -----------------------------
-      # remote fetch
-      # -----------------------------
       def fetch_remote_route_list(remote_inner):
           try:
               with urllib.request.urlopen(f"http://{remote_inner}:60198/list", timeout=5) as response:
@@ -220,39 +158,193 @@ let
           except Exception:
               return []
 
+          # NEW: learn peer region metadata (backward compatible)
+          parse_remote_header(body)
+
           routes = set()
           for line in body.splitlines():
               line = line.split("//", 1)[0].strip()
-              if line:
-                  add_route(routes, line)
+              if not line:
+                  continue
+              add_route(routes, line.strip())
 
           return sorted(routes)
 
-      # -----------------------------
-      # deploy
-      # -----------------------------
+      def parse_remote_header(body):
+          """
+          Backward compatible parser for:
+          // <id>: <hostname> - AAA BBB CCC
+          """
+          for line in body.splitlines():
+              if not line.startswith("//"):
+                  continue
+
+              line = line[2:].strip()
+
+              m = re.match(r"^(\d+):\s*.*?\-\s*(.*)$", line)
+              if not m:
+                  continue
+
+              node_id = m.group(1)
+              regions_str = m.group(2).strip()
+
+              if regions_str:
+                  PEER_REGIONS[node_id] = regions_str.split()
+              else:
+                  PEER_REGIONS[node_id] = []
+
+      def get_current_routes_for_tunnel(tun):
+          result = ip("-j", "route", "show", "dev", tun, "proto", "198", check=False)
+          if result.returncode != 0:
+              return []
+          routes = set()
+          for route in json.loads(result.stdout):
+              dst = route.get("dst")
+              if dst is not None:
+                  add_route(routes, dst)
+          return sorted(routes)
+
+      def existing_melinoe_tunnels():
+          result = ip("-o", "link", "show", "type", "ipip", check=False)
+          tunnels = []
+          for line in result.stdout.splitlines():
+              parts = line.split(": ", 2)
+              if len(parts) < 2:
+                  continue
+              tun = parts[1].split("@", 1)[0].rstrip(":")
+              if tun.startswith(TUN_PREFIX):
+                  tunnels.append(tun)
+          return tunnels
+
+      def flush_tunnel(tun):
+          remote_id = tun.removeprefix(TUN_PREFIX)
+          if not node_id_valid(remote_id):
+              return
+          table = str(1000 + int(remote_id))
+          ip("route", "flush", "table", table, check=False)
+          ip("rule", "del", "fwmark", table, "lookup", table, check=False)
+          ip("link", "set", tun, "down", check=False)
+          ip("tunnel", "del", tun, check=False)
+
+      def ensure_tunnel(remote_id, local_vip, local_inner, remote_vip, remote_inner, tun, table):
+          if ip("link", "show", tun, check=False).returncode != 0:
+              created = ip(
+                  "tunnel",
+                  "add",
+                  tun,
+                  "mode",
+                  "ipip",
+                  "local",
+                  local_vip,
+                  "remote",
+                  remote_vip,
+                  "ttl",
+                  "64",
+                  check=False,
+              )
+              if created.returncode != 0:
+                  print(f"failed to create {tun}: {created.stderr}", file=sys.stderr)
+                  return False
+
+          ip("addr", "replace", f"{local_inner}/32", "peer", f"{remote_inner}/32", "dev", tun, check=False)
+          ip("link", "set", tun, "mtu", "1400", check=False)
+          ip("link", "set", tun, "up", check=False)
+          ip("rule", "del", "fwmark", table, "lookup", table, check=False)
+          ip("rule", "add", "fwmark", table, "lookup", table, check=False)
+          ip("route", "replace", "default", "dev", tun, "table", table)
+          return True
+
+      def compute_desired_routes(peer_routes, local_inner_route, locally_advertised):
+          desired = {}
+          for state, routes in peer_routes:
+              for prefix in routes:
+                  if prefix == local_inner_route:
+                      continue
+                  if prefix == state["tunnel_peer_route"]:
+                      continue
+                  if prefix in locally_advertised:
+                      continue
+                  if prefix not in desired:
+                      desired[prefix] = state["tun"]
+          return desired
+
+      def reconcile_all_routes(peer_state, desired_routes):
+          current_routes = {}
+          tunnel_peer_routes = {
+              state["tunnel_peer_route"]
+              for state in peer_state
+          }
+          for state in peer_state:
+              tun = state["tun"]
+              for prefix in get_current_routes_for_tunnel(tun):
+                  if prefix in tunnel_peer_routes:
+                      continue
+                  current_routes[prefix] = tun
+
+          for prefix, tun in desired_routes.items():
+              if current_routes.get(prefix) != tun:
+                  ip("route", "replace", prefix, "dev", tun, "metric", "1", "proto", "198", check=False)
+
+          for prefix, tun in current_routes.items():
+              if desired_routes.get(prefix) != tun:
+                  ip("route", "del", prefix, "dev", tun, check=False)
+
       def deploy_once():
-          cfg = get_config()
+          local_node_id = str(LOCAL_NODE_ID)
+          if not node_id_valid(local_node_id):
+              print(f"invalid local node id: {local_node_id}", file=sys.stderr)
+              return
 
-          global LOCAL_NODE_ID, ROUTES, LOCAL_REGIONS, HOSTNAME
+          local_vip = f"{BASE_PREFIX}{local_node_id}"
+          local_inner = f"{INNER_PREFIX}{local_node_id}"
+          local_inner_route = f"{local_inner}/32"
+          local_vip_route = f"{local_vip}/32"
 
-          LOCAL_NODE_ID = str(cfg["node_id"])
-          ROUTES = cfg.get("routes", [])
-          LOCAL_REGIONS = cfg.get("regions", [])
-          HOSTNAME = cfg.get("hostname", "")
+          ip("addr", "replace", local_vip_route, "dev", "lo", check=False)
 
-          local_vip = f"{BASE_PREFIX}{LOCAL_NODE_ID}"
-          local_inner = f"{INNER_PREFIX}{LOCAL_NODE_ID}"
+          locally_advertised = local_advertised_routes()
+          remote_node_ids = get_bgp_route_table_peer_ids()
 
-          ip("addr", "replace", f"{local_vip}/32", "dev", "lo", check=False)
-
-          # NOTE: your BGP peer discovery logic stays unchanged placeholder
-          remote_node_ids = []
+          for tun in existing_melinoe_tunnels():
+              remote_id = tun.removeprefix(TUN_PREFIX)
+              if remote_id not in remote_node_ids:
+                  flush_tunnel(tun)
 
           peer_state = []
+          for remote_id in remote_node_ids:
+              if not node_id_valid(remote_id):
+                  continue
+
+              remote_vip = f"{BASE_PREFIX}{remote_id}"
+              remote_inner = f"{INNER_PREFIX}{remote_id}"
+              tun = f"{TUN_PREFIX}{remote_id}"
+              table = str(1000 + int(remote_id))
+
+              if not ensure_tunnel(remote_id, local_vip, local_inner, remote_vip, remote_inner, tun, table):
+                  continue
+
+              peer_state.append({
+                  "remote_inner": remote_inner,
+                  "tun": tun,
+                  "tunnel_peer_route": f"{remote_inner}/32",
+              })
 
           if not peer_state:
               return
+
+          with ThreadPoolExecutor(max_workers=min(32, len(peer_state))) as executor:
+              fetched_routes = list(executor.map(
+                  lambda state: fetch_remote_route_list(state["remote_inner"]),
+                  peer_state,
+              ))
+
+          desired_routes = compute_desired_routes(
+              list(zip(peer_state, fetched_routes)),
+              local_inner_route,
+              locally_advertised,
+          )
+
+          reconcile_all_routes(peer_state, desired_routes)
 
       def deploy_worker():
           try:
@@ -267,6 +359,7 @@ let
               process.join(300)
 
               if process.is_alive():
+                  print("deploy timed out", file=sys.stderr)
                   process.terminate()
                   process.join(5)
                   if process.is_alive():
@@ -275,48 +368,38 @@ let
 
               time.sleep(3)
 
-      # -----------------------------
-      # main
-      # -----------------------------
-      def parse_args():
-          p = argparse.ArgumentParser()
-          p.add_argument("--config", required=True)
-          return p.parse_args()
-
       def main():
-          global CONFIG_PATH, HOST
+          global LOCAL_NODE_ID, PUB_IPS, ADVERTISED_ROUTES, LOCAL_REGIONS, HOST, HOSTNAME
 
           args = parse_args()
-          CONFIG_PATH = args.config
+          cfg = load_config(args.config)
 
-          load_and_swap_config()
+          LOCAL_NODE_ID = cfg["node_id"]
+          PUB_IPS = cfg["pub_ips"]
+          ADVERTISED_ROUTES = cfg["advertised_routes"]
+          LOCAL_REGIONS = cfg["regions"]
+          HOSTNAME = cfg["hostname"]
 
-          cfg = get_config()
-          LOCAL_ID = str(cfg["node_id"])
-          HOST = f"{INNER_PREFIX}{LOCAL_ID}"
+          HOST = f"{INNER_PREFIX}{LOCAL_NODE_ID}"
 
-          threading.Thread(target=watch_config, daemon=True).start()
           threading.Thread(target=serve_route_list, daemon=True).start()
-
           deploy_loop()
 
       if __name__ == "__main__":
           main()
     '';
   };
-
-in {
+in
+{
   systemd.services.melinoe-route = {
     description = "Melinoe route daemon";
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
-
     path = [
       pkgs.coreutils
       pkgs.iproute2
     ];
-
     serviceConfig = {
       ExecStart = "${pkgs.python3}/bin/python ${routeScript}/bin/melinoe-route --config ${routeConfig}";
       Restart = "always";
