@@ -23,6 +23,7 @@
 
   melinoe.serialMode = true;
   melinoe.nodeId = 7;
+  melinoe.regions = [ "ORACLE" "MELBOURNE" "AUSTRALIA" ];
   networking.hostName = "atropos";
   melinoe.internet = [
     {

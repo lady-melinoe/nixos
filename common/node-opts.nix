@@ -144,9 +144,9 @@ in
     };
 
     regions = mkOption {
-      type = types.attrsOf (types.listOf types.str);
-      default = { };
-      description = "Per-node region tags published by nodes/*/public.nix.";
+      type = types.listOf types.str;
+      default = [ ];
+      description = "Region tags for this node.";
     };
   };
 

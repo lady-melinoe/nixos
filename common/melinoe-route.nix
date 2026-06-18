@@ -55,7 +55,11 @@ let
       LOCAL_NODE_ID = None
       PUB_IPS = []
       ADVERTISED_ROUTES = []
-      REGIONS = {}
+
+      # NEW: split local vs learned peer regions
+      LOCAL_REGIONS = []
+      PEER_REGIONS = {}
+
       HOSTNAME = None
 
       def run(cmd, *, check=True, input=None, timeout=300):
@@ -87,8 +91,12 @@ let
               routes.add(route)
 
       def format_region(node_id):
-          region = REGIONS.get(str(node_id), [])
-          return " ".join(region)
+          node_id = str(node_id)
+
+          if node_id == str(LOCAL_NODE_ID):
+              return " ".join(LOCAL_REGIONS)
+
+          return " ".join(PEER_REGIONS.get(node_id, []))
 
       def build_route_list():
           routes = set()
@@ -150,13 +158,40 @@ let
           except Exception:
               return []
 
+          # NEW: learn peer region metadata (backward compatible)
+          parse_remote_header(body)
+
           routes = set()
           for line in body.splitlines():
               line = line.split("//", 1)[0].strip()
               if not line:
                   continue
               add_route(routes, line.strip())
+
           return sorted(routes)
+
+      def parse_remote_header(body):
+          """
+          Backward compatible parser for:
+          // <id>: <hostname> - AAA BBB CCC
+          """
+          for line in body.splitlines():
+              if not line.startswith("//"):
+                  continue
+
+              line = line[2:].strip()
+
+              m = re.match(r"^(\d+):\s*.*?\-\s*(.*)$", line)
+              if not m:
+                  continue
+
+              node_id = m.group(1)
+              regions_str = m.group(2).strip()
+
+              if regions_str:
+                  PEER_REGIONS[node_id] = regions_str.split()
+              else:
+                  PEER_REGIONS[node_id] = []
 
       def get_current_routes_for_tunnel(tun):
           result = ip("-j", "route", "show", "dev", tun, "proto", "198", check=False)
@@ -334,7 +369,7 @@ let
               time.sleep(3)
 
       def main():
-          global LOCAL_NODE_ID, PUB_IPS, ADVERTISED_ROUTES, REGIONS, HOST, HOSTNAME
+          global LOCAL_NODE_ID, PUB_IPS, ADVERTISED_ROUTES, LOCAL_REGIONS, HOST, HOSTNAME
 
           args = parse_args()
           cfg = load_config(args.config)
@@ -342,7 +377,7 @@ let
           LOCAL_NODE_ID = cfg["node_id"]
           PUB_IPS = cfg["pub_ips"]
           ADVERTISED_ROUTES = cfg["advertised_routes"]
-          REGIONS = cfg["regions"]
+          LOCAL_REGIONS = cfg["regions"]
           HOSTNAME = cfg["hostname"]
 
           HOST = f"{INNER_PREFIX}{LOCAL_NODE_ID}"
