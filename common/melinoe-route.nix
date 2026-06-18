@@ -21,9 +21,8 @@ let
   melinoeGoBinary = pkgs.buildGoModule {
     pname = "melinoe-route";
     version = "0.0.5";
-    vendorHash = null; # No external modules dependencies
+    vendorHash = null;
 
-    # Creates a proper directory layout with both go.mod and main.go
     src = pkgs.runCommand "melinoe-route-src" {} ''
       mkdir -p $out
       
