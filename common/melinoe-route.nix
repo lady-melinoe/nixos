@@ -56,7 +56,7 @@ let
       PUB_IPS = []
       ADVERTISED_ROUTES = []
 
-      # NEW: split local vs learned peer regions
+      # split local vs learned peer regions
       LOCAL_REGIONS = []
       PEER_REGIONS = {}
 
@@ -158,7 +158,7 @@ let
           except Exception:
               return []
 
-          # NEW: learn peer region metadata (backward compatible)
+          # learn peer region metadata (backward compatible)
           parse_remote_header(body)
 
           routes = set()
@@ -253,6 +253,43 @@ let
           ip("rule", "add", "fwmark", table, "lookup", table, check=False)
           ip("route", "replace", "default", "dev", tun, "table", table)
           return True
+
+      def region_priority(remote_id):
+          local_regions = LOCAL_REGIONS
+          remote_regions = PEER_REGIONS.get(str(remote_id), [])
+
+          def same(index):
+              return (
+                  len(local_regions) > index
+                  and len(remote_regions) > index
+                  and local_regions[index] == remote_regions[index]
+              )
+
+          return (
+              not same(2),
+              not same(1),
+              not same(0),
+              int(remote_id),
+          )
+
+      def get_bgp_route_table_peer_ids():
+          result = ip("route", "show", "proto", "bgp", check=False)
+          remote_ids = set()
+
+          for line in result.stdout.splitlines():
+              parts = line.split()
+              if not parts:
+                  continue
+
+              match = re.match(r"^198\.51\.100\.([0-9]+)(?:/32)?$", parts[0])
+              if match is None:
+                  continue
+
+              remote_id = match.group(1)
+              if remote_id != str(LOCAL_NODE_ID):
+                  remote_ids.add(remote_id)
+
+          return sorted(remote_ids, key=region_priority)
 
       def compute_desired_routes(peer_routes, local_inner_route, locally_advertised):
           desired = {}
