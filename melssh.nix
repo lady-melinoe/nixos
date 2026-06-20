@@ -1,8 +1,4 @@
-{
-  pkgs,
-  lib,
-  nixosConfigurations,
-}:
+{ pkgs, lib, nixosConfigurations }:
 
 let
   stripCidr = ip: lib.head (lib.splitString "/" ip);
@@ -16,6 +12,7 @@ let
       internetIps = lib.concatMap (
         uplink: [ uplink.ip ] ++ lib.optional (uplink.pub_ip != null) uplink.pub_ip
       ) c.melinoe.internet;
+
     in
     {
       hostname = c.networking.hostName;
@@ -45,200 +42,222 @@ in
   mel-ssh-host-ca = pkgs.writeShellApplication {
     name = "mel-ssh-host-ca";
 
-    runtimeInputs = [
-      pkgs.coreutils
-      pkgs.jq
-      pkgs.openssh
+    runtimeInputs = with pkgs; [
+      coreutils
+      jq
+      openssh
     ];
-
-    checkPhase = "";
 
     text = ''
       set -euo pipefail
 
       hosts_json='${hostMetaJson}'
+
       ca_key="''${MEL_HOST_CA_KEY:-$HOME/ssh-ca-keys/ssh-host-ca}"
       validity="''${MEL_HOST_CERT_VALIDITY:-+30d}"
-      workdir="''${MEL_HOST_CA_WORKDIR:-.ssh-host-ca-work}"
-      host_key_path="''${MEL_HOST_KEY_PATH:-/etc/ssh/ssh_host_ed25519_key}"
-      host_pubkey_path="''${MEL_HOST_PUBKEY_PATH:-/etc/ssh/ssh_host_ed25519_key.pub}"
       host_cert_path="''${MEL_HOST_CERT_PATH:-/etc/ssh/ssh_host_ed25519_key-cert.pub}"
 
-      usage() {
-        cat <<'EOF'
-      Usage:
-        mel-ssh-host-ca list
-        mel-ssh-host-ca principals HOST
-        mel-ssh-host-ca bootstrap HOST
-        mel-ssh-host-ca retrieve HOST
-        mel-ssh-host-ca sign HOST [PUBKEY]
-        mel-ssh-host-ca deploy HOST [CERT]
-        mel-ssh-host-ca rotate [--bootstrap] HOST
-        mel-ssh-host-ca rotate-all [--bootstrap]
-      EOF
-      }
+      # Preserve the user's original SSH agent for outbound host connections
+      USER_SSH_AUTH_SOCK="''${SSH_AUTH_SOCK:-}"
 
-      names() {
-        printf '%s\n' "$hosts_json" | jq -r 'keys[]' | sort
+      # Centralized cleanup. Anything added to CLEANUP_DIRS, and the CA
+      # agent PID (if any), gets torn down on EXIT -- including error exits
+      # caused by `set -e`, which a `trap ... RETURN` would NOT catch.
+      CLEANUP_DIRS=()
+      CA_AGENT_PID=""
+
+      cleanup() {
+        if [ -n "$CA_AGENT_PID" ]; then
+          kill "$CA_AGENT_PID" 2>/dev/null || true
+        fi
+        if [ "''${#CLEANUP_DIRS[@]}" -gt 0 ]; then
+          for d in "''${CLEANUP_DIRS[@]}"; do
+            rm -rf "$d"
+          done
+        fi
+      }
+      trap cleanup EXIT
+
+      usage() {
+        cat <<EOF
+Melinoe SSH Host CA Management Tool
+
+Usage: 
+  mel-ssh-host-ca <command> [arguments]
+
+Commands:
+  list                 List all hostnames configured in the NixOS fleet.
+  show <host>          Show the generated deployment metadata and principals for a host.
+  bootstrap <host>     Fetch/generate host keys, sign them, and deploy them to a new host.
+  rotate <host>        Force regeneration of target host keys, resign, and redeploy them.
+  renew <host>         Resign the current host key and redeploy the new certificate.
+  renew-all            Batch renew all hosts configured in the NixOS metadata.
+                        Continues past per-host failures and reports a summary at the end.
+
+Environment Variables (Optional):
+  MEL_HOST_CA_KEY      Path to private CA key (Default: ~/ssh-ca-keys/ssh-host-ca)
+  MEL_HOST_CERT_PATH   Remote deployment path (Default: /etc/ssh/ssh_host_ed25519_key-cert.pub)
+  MEL_HOST_CERT_VALIDITY Certificate duration lifespans (Default: +30d)
+
+EOF
+        exit 1
       }
 
       require_host() {
-        local host="$1"
-        if ! printf '%s\n' "$hosts_json" | jq -e --arg host "$host" 'has($host)' >/dev/null; then
-          echo "Unknown host: $host" >&2
-          names >&2
+        local host="''${1:-}"
+        if [ -z "$host" ]; then
+          echo "ERROR: Missing required HOST argument." >&2
+          echo "Run 'mel-ssh-host-ca list' to see available hosts." >&2
           exit 1
         fi
+        printf '%s\n' "$hosts_json" | jq -e --arg h "$host" 'has($h)' >/dev/null \
+          || { echo "ERROR: Unknown host '$host'. Run 'mel-ssh-host-ca list' for valid targets." >&2; exit 1; }
       }
 
-      ssh_target() {
-        printf '%s\n' "$hosts_json" | jq -r --arg host "$1" '.[$host].sshTarget'
+      get_field() {
+        # Bracket notation + jq vars, not bash-interpolated dot notation:
+        # hostnames can contain '-', which dot notation can't parse, and
+        # plain "$h" here would be a bash var (unset outside renew-all),
+        # not jq's --arg, under double quotes.
+        printf '%s\n' "$hosts_json" | jq -r --arg h "$1" --arg fld "$2" '.[$h][$fld]'
       }
 
-      principals_csv() {
-        printf '%s\n' "$hosts_json" | jq -r --arg host "$1" '.[$host].principals | join(",")'
+      get_principals() {
+        printf '%s\n' "$hosts_json" | jq -r --arg h "$1" '.[$h].principals | join(",")'
       }
 
-      host_workdir() {
-        printf '%s/%s\n' "$workdir" "$1"
+      setup_ca_agent() {
+        echo "Unlocking CA key into ephemeral agent..." >&2
+
+        local ca_dir
+        ca_dir="$(mktemp -d)"
+        CLEANUP_DIRS+=("$ca_dir")
+        export SSH_AUTH_SOCK="$ca_dir/agent.sock"
+
+        # Start agent and parse PID to ensure clean teardown
+        eval "$(ssh-agent -a "$SSH_AUTH_SOCK")"
+        CA_AGENT_PID="''${SSH_AGENT_PID:-}"
+
+        ssh-add "$ca_key" >/dev/null
       }
 
-      ask_yes_no() {
-        local prompt="$1"
-        local answer
-
-        [ -t 0 ] || return 1
-
-        while true; do
-          printf '%s [y/N] ' "$prompt" >&2
-          read -r answer
-          case "$answer" in
-            y|Y|yes|YES) return 0 ;;
-            n|N|no|NO|"") return 1 ;;
-            *) echo "Please answer y or n." >&2 ;;
-          esac
-        done
-      }
-
-      bootstrap() {
+      process_host() {
         local host="$1"
-        local target
+        local force="$2"
 
         require_host "$host"
-        target="$(ssh_target "$host")"
 
-        ssh "root@$target" "
-          set -euo pipefail
-          if [ ! -s '$host_key_path' ]; then
-            rm -f '$host_key_path' '$host_pubkey_path'
-            ssh-keygen -t ed25519 -N \"\" -f '$host_key_path'
-          fi
-          if [ ! -s '$host_pubkey_path' ]; then
-            ssh-keygen -y -f '$host_key_path' > '$host_pubkey_path'
-          fi
-          chown root:root '$host_key_path' '$host_pubkey_path'
-          chmod 0600 '$host_key_path'
-          chmod 0644 '$host_pubkey_path'
-        "
-      }
-
-      retrieve() {
-        local host="$1"
         local target
-        local dir
-        local out
+        target="$(get_field "$host" sshTarget)"
 
-        require_host "$host"
-        target="$(ssh_target "$host")"
-        dir="$(host_workdir "$host")"
-        out="$dir/ssh_host_ed25519_key.pub"
+        local principals
+        principals="$(get_principals "$host")"
 
-        mkdir -p "$dir"
+        echo "Processing $host ($target)..."
 
-        if ! ssh "root@$target" "test -s '$host_pubkey_path' && cat '$host_pubkey_path'" > "$out"; then
-          rm -f "$out"
-          echo "Could not retrieve key" >&2
-          return 42
+        local tmpdir
+        tmpdir="$(mktemp -d)"
+        CLEANUP_DIRS+=("$tmpdir")
+
+        local pubfile="$tmpdir/host.pub"
+        local certfile="$tmpdir/host-cert.pub"
+
+        # Build custom SSH identity agent argument if original agent existed
+        local ssh_agent_opt=()
+        if [ -n "$USER_SSH_AUTH_SOCK" ]; then
+          ssh_agent_opt=(-o "IdentityAgent=$USER_SSH_AUTH_SOCK")
         fi
 
-        printf '%s\n' "$out"
-      }
+        # --- fetch or generate host key on remote (Uses normal user SSH agent) ---
+# shellcheck disable=SC2029
+        ssh "''${ssh_agent_opt[@]}" "root@$target" "bash -s" -- "$force" <<'EOF' > "$pubfile"
+set -euo pipefail
+force="$1"
 
-      sign_key() {
-        local host="$1"
-        local pubkey="''${2:-$(host_workdir "$host")/ssh_host_ed25519_key.pub}"
-        local principals
+key=/etc/ssh/ssh_host_ed25519_key
+pub=/etc/ssh/ssh_host_ed25519_key.pub
 
-        require_host "$host"
+if [ "$force" = "true" ] || [ ! -s "$pub" ]; then
+  rm -f "$key" "$pub"
+  ssh-keygen -t ed25519 -N "" -f "$key" -q
+fi
 
-        [ -f "$ca_key" ] || { echo "Missing CA key" >&2; exit 1; }
-        [ -f "$pubkey" ] || { echo "Missing pubkey" >&2; exit 1; }
+cat "$pub"
+EOF
 
-        principals="$(principals_csv "$host")"
-
-        rm -f "''${pubkey%.pub}-cert.pub"
-
-        ssh-keygen \
-          -s "$ca_key" \
+        # --- sign with CA (Uses ephemeral CA agent via -U and current SSH_AUTH_SOCK) ---
+        ssh-keygen -q -U -s "''${ca_key}.pub" \
           -I "$host" \
           -h \
           -n "$principals" \
           -V "$validity" \
-          "$pubkey" >&2
+          "$pubfile"
 
-        printf '%s\n' "''${pubkey%.pub}-cert.pub"
-      }
-
-      deploy_cert() {
-        local host="$1"
-        local cert="''${2:-$(host_workdir "$host")/ssh_host_ed25519_key-cert.pub}"
-        local target
-
-        require_host "$host"
-
-        [ -f "$cert" ] || { echo "Missing cert" >&2; exit 1; }
-
-        target="$(ssh_target "$host")"
-
-        ssh "root@$target" "
-          set -euo pipefail
-          cat > '$host_cert_path'
-          systemctl restart sshd
-        " < "$cert"
-      }
-
-      rotate_one() {
-        local host="$1"
-        local mode="$2"
-        local pubkey
-        local cert
-
-        if ! pubkey="$(retrieve "$host")"; then
-          case "$mode" in
-            always) bootstrap "$host"; pubkey="$(retrieve "$host")" ;;
-            *) echo "missing key"; return 1 ;;
-          esac
+        # ssh-keygen outputs cert next to input file (e.g. host.pub -> host-cert.pub)
+        if [ ! -f "$certfile" ]; then
+          echo "ERROR: certificate not generated: $certfile" >&2
+          exit 1
         fi
 
-        cert="$(sign_key "$host" "$pubkey")"
-        deploy_cert "$host" "$cert"
+        # --- deploy cert (Uses normal user SSH agent) ---
+# shellcheck disable=SC2029
+        ssh "''${ssh_agent_opt[@]}" "root@$target" "cat > '$host_cert_path' && systemctl reload sshd" \
+          < "$certfile"
+
+        echo "OK: $host updated successfully."
       }
 
       cmd="''${1:-}"
       shift || true
 
       case "$cmd" in
-        list) names ;;
-        principals) require_host "$1"; jq -r --arg host "$1" '.[$host].principals[]' <<< "$hosts_json" ;;
-        bootstrap) bootstrap "$1" ;;
-        retrieve) retrieve "$1" ;;
-        sign) sign_key "$1" "''${2:-}" ;;
-        deploy) deploy_cert "$1" "''${2:-}" ;;
-        rotate) rotate_one "$1" "ask" ;;
-        rotate-all)
-          for h in $(names); do rotate_one "$h" "ask"; done
+        list)
+          printf '%s\n' "$hosts_json" | jq -r 'keys[]' | sort
           ;;
-        *) usage ;;
+
+        show)
+          target_host="''${1:-}"
+          require_host "$target_host"
+          printf '%s\n' "$hosts_json" | jq -r --arg h "$target_host" '.[$h]'
+          ;;
+
+        bootstrap|rotate|renew)
+          target_host="''${1:-}"
+          require_host "$target_host"
+          
+          # Map operations to force values
+          force_gen=false
+          if [ "$cmd" = "rotate" ]; then
+            force_gen=true
+          fi
+
+          setup_ca_agent
+          process_host "$target_host" "$force_gen"
+          ;;
+
+        renew-all)
+          setup_ca_agent
+          failures=()
+          for h in $(printf '%s\n' "$hosts_json" | jq -r 'keys[]'); do
+            # `if ! process_host` suspends errexit for this call only, so one
+            # bad host doesn't abort the whole batch -- the host's own error
+            # message still prints, we just keep going afterward.
+            if ! process_host "$h" false; then
+              echo "FAILED: $h" >&2
+              failures+=("$h")
+            fi
+          done
+          if [ "''${#failures[@]}" -gt 0 ]; then
+            echo "" >&2
+            echo "Completed with ''${#failures[@]} failure(s): ''${failures[*]}" >&2
+            exit 1
+          fi
+          echo "All hosts renewed successfully."
+          ;;
+
+        *)
+          usage
+          ;;
       esac
     '';
   };
