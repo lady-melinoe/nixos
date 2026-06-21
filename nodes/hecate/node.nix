@@ -80,7 +80,7 @@
     enable = true;
     exports = ''
       /big/store *(ro,no_subtree_check)
-      /big/arxiv 198.18.0.1(rw,no_subtree_check)
+      /arxiv 198.18.0.1(rw,no_subtree_check)
     '';
   };
 }
