@@ -335,6 +335,25 @@ in
         table inet raw {
           chain prerouting {
             type filter hook prerouting priority raw; policy accept;
+	    iifname "vm-1710pack" ip saddr != 198.18.1.8/32 drop
+            iifname "vm-authentik" ip saddr != 198.18.1.4/32 drop
+            iifname "vm-calibre" ip saddr != 198.18.1.12/32 drop
+            iifname "vm-devicebridge" ip saddr != 198.18.3.0/24 drop
+            iifname "vm-drasl" ip saddr != 198.18.1.11/32 drop
+            iifname "vm-gitlab" ip saddr != 198.18.1.13/32 drop
+            iifname "vm-haproxy0" ip saddr != 198.18.1.16/32 drop
+            iifname "vm-haproxy1" ip saddr != 198.18.1.16/32 drop
+            iifname "vm-haproxy2" ip saddr != 198.18.1.16/32 drop
+            iifname "vm-homepage" ip saddr != 198.18.1.5/32 drop
+            iifname "vm-mailserver" ip saddr != 198.18.1.6/32 drop
+            iifname "vm-mmmanager" ip saddr != 198.18.1.10/32 drop
+            iifname "vm-npmalt" ip saddr != 198.18.1.20/32 drop
+            iifname "vm-npm" ip saddr != 198.18.1.1/32 drop
+            iifname "vm-radicale" ip saddr != 198.18.1.7/32 drop
+            iifname "vm-snappymail" ip saddr != 198.18.1.14/32 drop
+            iifname "vm-vaultwarden" ip saddr != 198.18.1.3/32 drop
+            iifname "vm-website" ip saddr != 198.18.1.9/32 drop
+
             iifname $vm_ifs ip saddr 198.18.0.0/24 drop
             iifname $vm_ifs ip saddr != 198.18.0.0/16 drop
           }
