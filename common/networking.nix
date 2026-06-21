@@ -310,6 +310,8 @@ in
             tcp dport 4269 accept
             udp dport 4269 accept
             udp dport 6969 accept
+            tcp dport 6996 accept
+            tcp dport 6955 accept
             ip saddr 198.18.0.0/15 tcp dport 5201 accept # iperf3
             iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept
             iifname $wg_ifs ip saddr 198.19.3.0/24 udp dport { 3784, 3785 } accept
