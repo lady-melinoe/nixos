@@ -23,9 +23,9 @@ let
     version = "0.0.5";
     vendorHash = null;
 
-    src = pkgs.runCommand "melinoe-route-src" {} ''
+    src = pkgs.runCommand "melinoe-route-src" { } ''
       mkdir -p $out
-      
+
       cat << 'EOF' > $out/go.mod
       module melinoe-route
 
