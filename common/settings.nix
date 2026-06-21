@@ -69,6 +69,7 @@
     pkgs.sl
     pkgs.compsize
     pkgs.aria2
+    pkgs.nfs-utils
     inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.borg-beta
   ];
   boot.kernelPackages = pkgs.linuxPackages_latest;
