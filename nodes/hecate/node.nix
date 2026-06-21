@@ -79,7 +79,7 @@
   services.nfs.server = {
     enable = true;
     exports = ''
-      /big/store *(ro,fsid=0,no_subtree_check)
+      /big/store *(ro,no_subtree_check)
       /big/arxiv 198.18.0.1(rw,no_subtree_check)
     '';
   };
