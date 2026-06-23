@@ -283,119 +283,119 @@ in
   networking.firewall.enable = false;
   networking.nftables.enable = true;
   networking.nftables.ruleset = ''
-        flush ruleset
-        define vm_ifs = "vm-*"
-        define node_gre_ifs = "node-*"
-        define wg_ifs = "wg-*"
-        define gre_ctmark = { ${
-          builtins.concatStringsSep ", " (
-            builtins.genList (i: "\"node-${toString (i)}\" : ${toString (1000 + i)}") 255
-          )
-        } }
-    ${lib.optionalString (pubIps != [ ]) ''
-      define pubroutefix = { ${builtins.concatStringsSep ", " pubIps} }
-    ''}
-        table inet filter {
-          chain INPUT {
-            type filter hook input priority filter; policy drop;
-            ct state invalid drop
-            ct state { established, related } accept
-            icmp type { echo-request, echo-reply } accept
-            icmpv6 type { echo-request, nd-neighbor-solicit } accept
-            iif "lo" accept
-            tcp dport 22 accept   # ssh
-            tcp dport 8008 accept # incus
-            tcp dport 2049 accept # nfs tcp
-            udp dport 2049 accept # nfs udp
-            ip saddr 198.18.0.0/15 tcp dport 5201 accept                  # iperf3
-            iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept   # bgp, internal only, over wireguard subnet
-            iifname $wg_ifs ip saddr 198.51.100.0/24 ip protocol 4 accept # ipip, internal only, over bgp routed subnet
-            ip saddr 198.18.0.0/24 tcp dport 60198 accept                 #  melinoe-route protocol
-            ip saddr 198.18.1.5 tcp dport 61208 accept                    # glances for monitoring
-    ${lib.optionalString (cfg.wgPorts != [ ]) ''
-      udp dport { ${builtins.concatStringsSep ", " (map toString cfg.wgPorts)} } accept
-    ''}
-          }
+            flush ruleset
+            define vm_ifs = "vm-*"
+            define node_gre_ifs = "node-*"
+            define wg_ifs = "wg-*"
+            define gre_ctmark = { ${
+              builtins.concatStringsSep ", " (
+                builtins.genList (i: "\"node-${toString (i)}\" : ${toString (1000 + i)}") 255
+              )
+            } }
+        ${lib.optionalString (pubIps != [ ]) ''
+          define pubroutefix = { ${builtins.concatStringsSep ", " pubIps} }
+        ''}
+            table inet filter {
+              chain INPUT {
+                type filter hook input priority filter; policy drop;
+                ct state invalid drop
+                ct state { established, related } accept
+                icmp type { echo-request, echo-reply } accept
+                icmpv6 type { echo-request, nd-neighbor-solicit } accept
+                iif "lo" accept
+                tcp dport 22 accept   # ssh
+                tcp dport 8008 accept # incus
+                tcp dport 2049 accept # nfs tcp
+                udp dport 2049 accept # nfs udp
+                ip saddr 198.18.0.0/15 tcp dport 5201 accept                  # iperf3
+                iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept   # bgp, internal only, over wireguard subnet
+                iifname $wg_ifs ip saddr 198.51.100.0/24 ip protocol 4 accept # ipip, internal only, over bgp routed subnet
+                ip saddr 198.18.0.0/24 tcp dport 60198 accept                 #  melinoe-route protocol
+                ip saddr 198.18.1.5 tcp dport 61208 accept                    # glances for monitoring
+        ${lib.optionalString (cfg.wgPorts != [ ]) ''
+          udp dport { ${builtins.concatStringsSep ", " (map toString cfg.wgPorts)} } accept
+        ''}
+              }
 
-          chain FORWARD {
-            type filter hook forward priority filter; policy accept;
-            ct state invalid drop
-            ip saddr 198.18.1.13 ip daddr 35.190.167.255 drop
-            ct state { established, related } accept
-            icmp type { echo-request, echo-reply } accept
-            icmpv6 type { echo-request, nd-neighbor-solicit } accept
-          }
+              chain FORWARD {
+                type filter hook forward priority filter; policy accept;
+                ct state invalid drop
+                ip saddr 198.18.1.13 ip daddr 35.190.167.255 drop
+                ct state { established, related } accept
+                icmp type { echo-request, echo-reply } accept
+                icmpv6 type { echo-request, nd-neighbor-solicit } accept
+              }
 
-          chain OUTPUT {
-            type filter hook output priority filter; policy accept;
-          }
+              chain OUTPUT {
+                type filter hook output priority filter; policy accept;
+              }
 
-        }
+            }
 
-        table inet raw {
-          chain prerouting {
-            type filter hook prerouting priority raw; policy accept;
-	    iifname "vm-1710pack" ip saddr != 198.18.1.8/32 drop
-            iifname "vm-authentik" ip saddr != 198.18.1.4/32 drop
-            iifname "vm-calibre" ip saddr != 198.18.1.12/32 drop
-            iifname "vm-devicebridge" ip saddr != 198.18.3.0/24 drop
-            iifname "vm-drasl" ip saddr != 198.18.1.11/32 drop
-            iifname "vm-gitlab" ip saddr != 198.18.1.13/32 drop
-            iifname "vm-haproxy0" ip saddr != 198.18.1.16/32 drop
-            iifname "vm-haproxy1" ip saddr != 198.18.1.16/32 drop
-            iifname "vm-haproxy2" ip saddr != 198.18.1.16/32 drop
-            iifname "vm-homepage" ip saddr != 198.18.1.5/32 drop
-            iifname "vm-mailserver" ip saddr != 198.18.1.6/32 drop
-            iifname "vm-mmmanager" ip saddr != 198.18.1.10/32 drop
-            iifname "vm-npmalt" ip saddr != 198.18.1.20/32 drop
-            iifname "vm-npm" ip saddr != 198.18.1.1/32 drop
-            iifname "vm-radicale" ip saddr != 198.18.1.7/32 drop
-            iifname "vm-snappymail" ip saddr != 198.18.1.14/32 drop
-            iifname "vm-vaultwarden" ip saddr != 198.18.1.3/32 drop
-            iifname "vm-website" ip saddr != 198.18.1.9/32 drop
+            table inet raw {
+              chain prerouting {
+                type filter hook prerouting priority raw; policy accept;
+    	    iifname "vm-1710pack" ip saddr != 198.18.1.8/32 drop
+                iifname "vm-authentik" ip saddr != 198.18.1.4/32 drop
+                iifname "vm-calibre" ip saddr != 198.18.1.12/32 drop
+                iifname "vm-devicebridge" ip saddr != 198.18.3.0/24 drop
+                iifname "vm-drasl" ip saddr != 198.18.1.11/32 drop
+                iifname "vm-gitlab" ip saddr != 198.18.1.13/32 drop
+                iifname "vm-haproxy0" ip saddr != 198.18.1.16/32 drop
+                iifname "vm-haproxy1" ip saddr != 198.18.1.16/32 drop
+                iifname "vm-haproxy2" ip saddr != 198.18.1.16/32 drop
+                iifname "vm-homepage" ip saddr != 198.18.1.5/32 drop
+                iifname "vm-mailserver" ip saddr != 198.18.1.6/32 drop
+                iifname "vm-mmmanager" ip saddr != 198.18.1.10/32 drop
+                iifname "vm-npmalt" ip saddr != 198.18.1.20/32 drop
+                iifname "vm-npm" ip saddr != 198.18.1.1/32 drop
+                iifname "vm-radicale" ip saddr != 198.18.1.7/32 drop
+                iifname "vm-snappymail" ip saddr != 198.18.1.14/32 drop
+                iifname "vm-vaultwarden" ip saddr != 198.18.1.3/32 drop
+                iifname "vm-website" ip saddr != 198.18.1.9/32 drop
 
-            iifname $vm_ifs ip saddr 198.18.0.0/24 drop
-            iifname $vm_ifs ip saddr != 198.18.0.0/16 drop
-          }
-        }
+                iifname $vm_ifs ip saddr 198.18.0.0/24 drop
+                iifname $vm_ifs ip saddr != 198.18.0.0/16 drop
+              }
+            }
 
-        table ip nat {
-          chain prerouting {
-            type nat hook prerouting priority dstnat;
-    ${renderIfaceRules "\"inet0\""}
-    ${lib.optionalString (pubIps != [ ]) (renderDestRules "$pubroutefix")}
-    ${lib.optionalString (pubIps != [ ]) ''
-      ip daddr $pubroutefix dnat to ${hostAddr}
-    ''}
-          }
-          chain postrouting {
-            type nat hook postrouting priority srcnat;
-            oifname "inet0" masquerade
-          }
-          chain output {
-            type nat hook output priority dstnat; policy accept;
-    ${lib.optionalString (pubIps != [ ]) (renderDestRules "$pubroutefix")}
-    ${lib.optionalString (pubIps != [ ]) ''
-      ip daddr $pubroutefix dnat to ${hostAddr}
-    ''}
-          }
-        }
+            table ip nat {
+              chain prerouting {
+                type nat hook prerouting priority dstnat;
+        ${renderIfaceRules "\"inet0\""}
+        ${lib.optionalString (pubIps != [ ]) (renderDestRules "$pubroutefix")}
+        ${lib.optionalString (pubIps != [ ]) ''
+          ip daddr $pubroutefix dnat to ${hostAddr}
+        ''}
+              }
+              chain postrouting {
+                type nat hook postrouting priority srcnat;
+                oifname "inet0" masquerade
+              }
+              chain output {
+                type nat hook output priority dstnat; policy accept;
+        ${lib.optionalString (pubIps != [ ]) (renderDestRules "$pubroutefix")}
+        ${lib.optionalString (pubIps != [ ]) ''
+          ip daddr $pubroutefix dnat to ${hostAddr}
+        ''}
+              }
+            }
 
-        table inet mangle {
-          chain prerouting {
-            type filter hook prerouting priority mangle;
-            iifname $vm_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
-            iifname $node_gre_ifs ct direction original ct mark != 1000-1254 ct mark set iifname map $gre_ctmark
+            table inet mangle {
+              chain prerouting {
+                type filter hook prerouting priority mangle;
+                iifname $vm_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
+                iifname $node_gre_ifs ct direction original ct mark != 1000-1254 ct mark set iifname map $gre_ctmark
 
-            iifname != inet0 ct direction reply ct mark 999 meta mark set 51820
-            iifname inet0 ct direction original ct mark != 999 ct mark set 999
-          }
-          chain output {
-            type route hook output priority mangle;
-            ct direction reply ct mark 1000-1254 meta mark set ct mark
-            ct direction reply ct mark 999 meta mark set 51820
-          }
-        }
+                iifname != inet0 ct direction reply ct mark 999 meta mark set 51820
+                iifname inet0 ct direction original ct mark != 999 ct mark set 999
+              }
+              chain output {
+                type route hook output priority mangle;
+                ct direction reply ct mark 1000-1254 meta mark set ct mark
+                ct direction reply ct mark 999 meta mark set 51820
+              }
+            }
   '';
 
   services.frr = {

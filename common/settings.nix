@@ -77,6 +77,8 @@
     "net.ipv6.conf.all.autoconf" = false;
     "net.ipv6.conf.all.accept_ra" = false;
     "net.ipv4.ip_forward" = true;
+    "net.ipv4.conf.all.forwarding" = 1;
+    "net.ipv4.conf.default.forwarding" = 1;
   };
   services.iperf3.enable = true;
   services.glances.enable = true;
