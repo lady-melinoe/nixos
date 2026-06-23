@@ -17,7 +17,6 @@ let
       echo "Usage: $0 <iface>"
       exit 1
     fi
-    echo 1 > /proc/sys/net/ipv4/conf/$IFACE/forwarding
     ip addr replace 198.18.0.${toString nodeID}/32 dev "$IFACE"
   '';
 
