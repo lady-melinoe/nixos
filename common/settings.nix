@@ -121,7 +121,7 @@
           bind *:443
           tcp-request inspect-delay 5s
           tcp-request content accept if { req_ssl_hello_type 1 }
-          use_backend be_mc_files_https if { req.ssl_sni -i mc.files.melinoe.xyz }
+ #         use_backend be_mc_files_https if { req.ssl_sni -i mc.files.melinoe.xyz }
           default_backend be_https
 
       frontend fe_proxy_http
@@ -134,7 +134,7 @@
           tcp-request connection reject if !{ src 192.168.11.2 }
           tcp-request inspect-delay 5s
           tcp-request content accept if { req_ssl_hello_type 1 }
-          use_backend be_mc_files_https if { req.ssl_sni -i mc.files.melinoe.xyz }
+#          use_backend be_mc_files_https if { req.ssl_sni -i mc.files.melinoe.xyz }
           default_backend be_https
 
       backend be_http
