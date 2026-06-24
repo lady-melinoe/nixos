@@ -46,21 +46,6 @@ let
       udp = [ 8080 ];
     }
     {
-      dst = "198.18.1.16";
-      tcp = [
-        80
-        443
-        1080
-        1443
-      ];
-      udp = [
-        80
-        443
-        1080
-        1443
-      ];
-    }
-    {
       dst = "198.18.1.6";
       tcp = [
         993
@@ -307,6 +292,14 @@ in
             tcp dport 8008 accept # incus
             tcp dport 2049 accept # nfs tcp
             udp dport 2049 accept # nfs udp
+            tcp dport 80 accept   # haproxy
+            tcp dport 1080 accept # haproxy
+            tcp dport 443 accept  # haproxy
+            tcp dport 1443 accept # haproxy
+            udp dport 80 accept   # haproxy
+            udp dport 1080 accept # haproxy
+            udp dport 443 accept  # haproxy
+            udp dport 1443 accept # haproxy
             ip saddr 198.18.0.0/15 tcp dport 5201 accept                  # iperf3
             iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept   # bgp, internal only, over wireguard subnet
             iifname $wg_ifs ip saddr 198.51.100.0/24 ip protocol 4 accept # ipip, internal only, over bgp routed subnet
