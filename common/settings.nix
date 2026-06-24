@@ -139,15 +139,15 @@
           balance source
           hash-type consistent
           option tcp-check
-          server nginx1 198.18.1.1:1080 send-proxy check
-          server nginx2 198.18.1.20:1080 send-proxy check
+          server nginx1 198.18.1.1:1080 send-proxy check check-send-proxy
+          server nginx2 198.18.1.20:1080 send-proxy check check-send-proxy
 
       backend be_https
           balance source
           hash-type consistent
           option tcp-check
-          server nginx1 198.18.1.1:1443 send-proxy check
-          server nginx2 198.18.1.20:1443 send-proxy check
+          server nginx1 198.18.1.1:1443 send-proxy check check-send-proxy
+          server nginx2 198.18.1.20:1443 send-proxy check check-send-proxy
     '';
   };
 
