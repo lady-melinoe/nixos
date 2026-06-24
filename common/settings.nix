@@ -84,6 +84,7 @@
   virtualisation.incus.enable = true;
   virtualisation.incus.package = pkgs.incus;
   services.iperf3.enable = true;
+
   services.glances.enable = true;
   services.glances.port = 61208;
   services.glances.extraArgs = [
@@ -91,6 +92,70 @@
     "-B"
     "198.18.0.${toString config.melinoe.nodeId}"
   ];
+
+  # HAProxy Configuration
+  services.haproxy = {
+    enable = true;
+    config = ''
+      global
+          log /dev/log local0
+          log /dev/log local1 notice
+          daemon
+          maxconn 50000
+
+      defaults
+          log     global
+          mode    tcp
+          option  tcplog
+          option  redispatch
+          timeout connect 5s
+          timeout client  1m
+          timeout server  1m
+          default-server inter 3s fall 3 rise 2
+
+      frontend fe_http
+          bind *:80
+          default_backend be_http
+
+      frontend fe_https
+          bind *:443
+          tcp-request inspect-delay 5s
+          tcp-request content accept if { req_ssl_hello_type 1 }
+          use_backend be_mc_files_https if { req.ssl_sni -i mc.files.melinoe.xyz }
+          default_backend be_https
+
+      frontend fe_proxy_http
+          bind *:1080 accept-proxy
+          tcp-request connection reject if !{ src 192.168.11.2 }
+          default_backend be_http
+
+      frontend fe_proxy_https
+          bind *:1443 accept-proxy
+          tcp-request connection reject if !{ src 192.168.11.2 }
+          tcp-request inspect-delay 5s
+          tcp-request content accept if { req_ssl_hello_type 1 }
+          use_backend be_mc_files_https if { req.ssl_sni -i mc.files.melinoe.xyz }
+          default_backend be_https
+
+      backend be_http
+          balance source
+          hash-type consistent
+          option tcp-check
+          server nginx1 198.18.1.1:1080 send-proxy check
+          server nginx2 198.18.1.20:1080 send-proxy check
+
+      backend be_https
+          balance source
+          hash-type consistent
+          option tcp-check
+          server nginx1 198.18.1.1:1443 send-proxy check
+          server nginx2 198.18.1.20:1443 send-proxy check
+
+      backend be_mc_files_https
+          server nginx2 198.18.1.20:1443 send-proxy
+    '';
+  };
+
   users.users.melinoe = {
     isNormalUser = true;
     home = "/home/melinoe";
