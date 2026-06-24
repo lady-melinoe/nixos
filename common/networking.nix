@@ -340,7 +340,7 @@ in
             iifname "vm-homepage" ip saddr != 198.18.1.5/32 drop
             iifname "vm-mailserver" ip saddr != 198.18.1.6/32 drop
             iifname "vm-mmmanager" ip saddr != 198.18.1.10/32 drop
-            iifname "vm-npmalt" ip saddr != 198.18.1.20/32 drop
+            iifname "vm-npmalt" ip saddr != 198.18.1.2/32 drop
             iifname "vm-npm" ip saddr != 198.18.1.1/32 drop
             iifname "vm-radicale" ip saddr != 198.18.1.7/32 drop
             iifname "vm-snappymail" ip saddr != 198.18.1.14/32 drop
