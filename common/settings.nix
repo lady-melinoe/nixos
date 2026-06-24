@@ -81,6 +81,8 @@
     "net.ipv4.conf.all.forwarding" = 1;
     "net.ipv4.conf.default.forwarding" = 1;
   };
+  virtualisation.incus.enable = true;
+  virtualisation.incus.package = pkgs.incus;
   services.iperf3.enable = true;
   services.glances.enable = true;
   services.glances.port = 61208;
@@ -96,6 +98,7 @@
     extraGroups = [
       "wheel"
       "networkmanager"
+      "incus-admin"
     ];
     shell = pkgs.bash;
   };
