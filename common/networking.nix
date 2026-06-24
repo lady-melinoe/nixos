@@ -288,18 +288,12 @@ in
             icmp type { echo-request, echo-reply } accept
             icmpv6 type { echo-request, nd-neighbor-solicit } accept
             iif "lo" accept
-            tcp dport 22 accept   # ssh
-            tcp dport 8008 accept # incus
-            tcp dport 2049 accept # nfs tcp
-            udp dport 2049 accept # nfs udp
-            tcp dport 80 accept   # haproxy
-            tcp dport 1080 accept # haproxy
-            tcp dport 443 accept  # haproxy
-            tcp dport 1443 accept # haproxy
-            udp dport 80 accept   # haproxy
-            udp dport 1080 accept # haproxy
-            udp dport 443 accept  # haproxy
-            udp dport 1443 accept # haproxy
+            tcp dport 22 accept  # ssh
+            tcp dport {80, 443, 1080, 1443} accept  # haproxy
+            udp dport {80, 443, 1080, 1443} accept  # haproxy
+            tcp dport 2049 accept  # nfs
+            udp dport 2049 accept  # nfs
+            tcp dport 8008 accept  # incus
             ip saddr 198.18.0.0/15 tcp dport 5201 accept                  # iperf3
             iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept   # bgp, internal only, over wireguard subnet
             iifname $wg_ifs ip saddr 198.51.100.0/24 ip protocol 4 accept # ipip, internal only, over bgp routed subnet
@@ -328,24 +322,21 @@ in
         table inet raw {
           chain prerouting {
             type filter hook prerouting priority raw; policy accept;
-            iifname "vm-1710pack" ip saddr != 198.18.1.8/32 drop
+            iifname "vm-npm" ip saddr != 198.18.1.1/32 drop
+            iifname "vm-npmalt" ip saddr != 198.18.1.2/32 drop
+            iifname "vm-vaultwarden" ip saddr != 198.18.1.3/32 drop
             iifname "vm-authentik" ip saddr != 198.18.1.4/32 drop
-            iifname "vm-calibre" ip saddr != 198.18.1.12/32 drop
-            iifname "vm-devicebridge" ip saddr != 198.18.3.0/24 drop
-            iifname "vm-drasl" ip saddr != 198.18.1.11/32 drop
-            iifname "vm-gitlab" ip saddr != 198.18.1.13/32 drop
-            iifname "vm-haproxy0" ip saddr != 198.18.1.16/32 drop
-            iifname "vm-haproxy1" ip saddr != 198.18.1.16/32 drop
-            iifname "vm-haproxy2" ip saddr != 198.18.1.16/32 drop
             iifname "vm-homepage" ip saddr != 198.18.1.5/32 drop
             iifname "vm-mailserver" ip saddr != 198.18.1.6/32 drop
-            iifname "vm-mmmanager" ip saddr != 198.18.1.10/32 drop
-            iifname "vm-npmalt" ip saddr != 198.18.1.2/32 drop
-            iifname "vm-npm" ip saddr != 198.18.1.1/32 drop
             iifname "vm-radicale" ip saddr != 198.18.1.7/32 drop
-            iifname "vm-snappymail" ip saddr != 198.18.1.14/32 drop
-            iifname "vm-vaultwarden" ip saddr != 198.18.1.3/32 drop
+            iifname "vm-1710pack" ip saddr != 198.18.1.8/32 drop
             iifname "vm-website" ip saddr != 198.18.1.9/32 drop
+            iifname "vm-mmmanager" ip saddr != 198.18.1.10/32 drop
+            iifname "vm-drasl" ip saddr != 198.18.1.11/32 drop
+            iifname "vm-calibre" ip saddr != 198.18.1.12/32 drop
+            iifname "vm-gitlab" ip saddr != 198.18.1.13/32 drop
+            iifname "vm-snappymail" ip saddr != 198.18.1.14/32 drop
+            iifname "vm-devicebridge" ip saddr != 198.18.3.0/24 drop
 
             iifname $vm_ifs ip saddr 198.18.0.0/24 drop
             iifname $vm_ifs ip saddr != 198.18.0.0/16 drop
