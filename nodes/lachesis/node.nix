@@ -14,7 +14,6 @@
     ../../common/shared.nix
     ../../common/bootloader.nix
     ../../common/node-opts.nix
-    ../../common/incus.nix
     ../../common/networking.nix
     ../../common/settings.nix
     ../../common/helpers.nix
