@@ -39,37 +39,42 @@ let
   # nftables config generation.
   hostAddr = "198.18.0.${toString nodeID}";
 
-  natMappings = [
-    {
-      dst = "198.18.1.5";
-      tcp = [ 8080 ];
-      udp = [ 8080 ];
-    }
-    {
-      dst = "198.18.1.6";
-      tcp = [
-        993
-        25
-        465
-      ];
-      udp = [ ];
-    }
-    {
-      dst = "198.18.1.8";
-      tcp = [ 25565 ];
-      udp = [ 25565 ];
-    }
-    {
-      dst = "198.18.1.11";
-      tcp = [ 57843 ];
-      udp = [ 57843 ];
-    }
-    {
-      dst = "198.18.3.0";
-      tcp = [ ];
-      udp = [ 51820 ];
-    }
+  # Single source of truth for VM interfaces.
+  # ip: bare address for single hosts, CIDR for ranges (e.g. "198.18.3.0/24").
+  # tcp/udp: ports to NAT-forward to this VM (omit or leave empty for none).
+  vms = [
+    { iface = "vm-npm";          ip = "198.18.1.1"; }
+    { iface = "vm-npmalt";       ip = "198.18.1.2"; }
+    { iface = "vm-vaultwarden";  ip = "198.18.1.3"; }
+    { iface = "vm-authentik";    ip = "198.18.1.4"; }
+    { iface = "vm-homepage";     ip = "198.18.1.5";  tcp = [ 8080 ]; udp = [ 8080 ]; }
+    { iface = "vm-mailserver";   ip = "198.18.1.6";  tcp = [ 993 25 465 ]; }
+    { iface = "vm-radicale";     ip = "198.18.1.7"; }
+    { iface = "vm-1710pack";     ip = "198.18.1.8";  tcp = [ 25565 ]; udp = [ 25565 ]; }
+    { iface = "vm-website";      ip = "198.18.1.9"; }
+    { iface = "vm-mmmanager";    ip = "198.18.1.10"; }
+    { iface = "vm-drasl";        ip = "198.18.1.11"; tcp = [ 57843 ]; udp = [ 57843 ]; }
+    { iface = "vm-calibre";      ip = "198.18.1.12"; }
+    { iface = "vm-gitlab";       ip = "198.18.1.13"; }
+    { iface = "vm-snappymail";   ip = "198.18.1.14"; }
+    { iface = "vm-devicebridge"; ip = "198.18.3.0/24"; udp = [ 51820 ]; }
   ];
+
+  # Helpers for working with the vms list.
+  vmIpAddr = vm: builtins.head (lib.splitString "/" vm.ip);
+  vmSaddr  = vm: if lib.hasInfix "/" vm.ip then vm.ip else "${vm.ip}/32";
+  vmTcp    = vm: vm.tcp or [ ];
+  vmUdp    = vm: vm.udp or [ ];
+
+  # Derived natMappings — only VMs that have ports defined.
+  natMappings = lib.filter (m: m.tcp != [ ] || m.udp != [ ]) (
+    map (vm: { dst = vmIpAddr vm; tcp = vmTcp vm; udp = vmUdp vm; }) vms
+  );
+
+  # Derived raw table saddr spoof-prevention rules.
+  renderVmSaddrRules = lib.concatMapStrings (vm: ''
+          iifname "${vm.iface}" ip saddr != ${vmSaddr vm} drop
+  '') vms;
 
   portSet =
     ports:
@@ -322,21 +327,7 @@ in
         table inet raw {
           chain prerouting {
             type filter hook prerouting priority raw; policy accept;
-            iifname "vm-npm" ip saddr != 198.18.1.1/32 drop
-            iifname "vm-npmalt" ip saddr != 198.18.1.2/32 drop
-            iifname "vm-vaultwarden" ip saddr != 198.18.1.3/32 drop
-            iifname "vm-authentik" ip saddr != 198.18.1.4/32 drop
-            iifname "vm-homepage" ip saddr != 198.18.1.5/32 drop
-            iifname "vm-mailserver" ip saddr != 198.18.1.6/32 drop
-            iifname "vm-radicale" ip saddr != 198.18.1.7/32 drop
-            iifname "vm-1710pack" ip saddr != 198.18.1.8/32 drop
-            iifname "vm-website" ip saddr != 198.18.1.9/32 drop
-            iifname "vm-mmmanager" ip saddr != 198.18.1.10/32 drop
-            iifname "vm-drasl" ip saddr != 198.18.1.11/32 drop
-            iifname "vm-calibre" ip saddr != 198.18.1.12/32 drop
-            iifname "vm-gitlab" ip saddr != 198.18.1.13/32 drop
-            iifname "vm-snappymail" ip saddr != 198.18.1.14/32 drop
-            iifname "vm-devicebridge" ip saddr != 198.18.3.0/24 drop
+  ${renderVmSaddrRules}
 
             iifname $vm_ifs ip saddr 198.18.0.0/24 drop
             iifname $vm_ifs ip saddr != 198.18.0.0/16 drop
