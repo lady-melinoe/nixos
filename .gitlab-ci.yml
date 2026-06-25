@@ -24,52 +24,12 @@ deploy:
     - deployments
 
   rules:
-    - if: '$CI_COMMIT_MESSAGE =~ /\[DEPLOY\]/'
+    # Trigger on [DEPLOY] (all nodes) or [DEPLOY <host>] (specific node).
+    # The node list is resolved inside mel-deploy at runtime from the flake —
+    # no need to maintain it here.
+    - if: '$CI_COMMIT_MESSAGE =~ /\[DEPLOY/'
       when: on_success
     - when: never
 
-  variables:
-    HOSTS: |
-      phaesyle.intra.melinoe.xyz
-      ceridwen.intra.melinoe.xyz
-      benzaiten.intra.melinoe.xyz
-      hecate.intra.melinoe.xyz
-      arke.intra.melinoe.xyz
-      atropos.intra.melinoe.xyz
-      lachesis.intra.melinoe.xyz
-
   script:
-    - |
-      set -euo pipefail
-
-      workdir="$(mktemp -d)"
-      trap 'rm -rf "$workdir"' EXIT
-
-      mkdir -p "$workdir/.ssh"
-
-      base64 -d < "$ssh_key" > "$workdir/.ssh/id_ed25519"
-      base64 -d < "$ssh_cert" > "$workdir/.ssh/id_ed25519-cert.pub"
-      base64 -d < "$ssh_host_ca" > "$workdir/.ssh/host_ca.pub"
-
-      chmod 600 "$workdir/.ssh/id_ed25519"
-
-      {
-        printf '@cert-authority * '
-        cat "$workdir/.ssh/host_ca.pub"
-      } > "$workdir/.ssh/known_hosts"
-
-      while read -r host; do
-        [ -z "$host" ] && continue
-
-        echo "Deploying: $host"
-
-        ssh \
-          -n \
-          -i "$workdir/.ssh/id_ed25519" \
-          -o CertificateFile="$workdir/.ssh/id_ed25519-cert.pub" \
-          -o UserKnownHostsFile="$workdir/.ssh/known_hosts" \
-          -o StrictHostKeyChecking=yes \
-          -o BatchMode=yes \
-          root@"$host"
-
-      done <<< "$HOSTS"
+    - nix run .#mel-deploy -- "$CI_COMMIT_MESSAGE"
