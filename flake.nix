@@ -4,7 +4,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     disko.url = "github:nix-community/disko";
-    deploy-rs.url = "github:serokell/deploy-rs";
   };
 
   outputs =
@@ -12,7 +11,6 @@
       self,
       nixpkgs,
       disko,
-      deploy-rs,
       ...
     }@inputs:
     let
@@ -41,14 +39,6 @@
 
       nixosConfigurations = lib.mapAttrs mkNixosConfiguration nodes;
 
-      deployNodes = lib.mapAttrs (name: _: {
-        hostname = "${name}.infra.melinoe.xyz";
-        profiles.system = {
-          user = "root";
-          path = deploy-rs.lib.${system}.activate.nixos self.nixosConfigurations.${name};
-        };
-      }) nodes;
-
       melssh = import ./melssh.nix {
         inherit pkgs lib nixosConfigurations;
       };
@@ -74,16 +64,14 @@
             install -Dm755 "$src" "$out/bin/borg"
           '';
         };
-      }
-      // melssh;
+      };
 
       apps.${system}.mel-ssh-host-ca = {
         type = "app";
         program = "${melssh.mel-ssh-host-ca}/bin/mel-ssh-host-ca";
+        meta.description = "Melinoe SSH host CA management tool";
       };
 
       inherit nixosConfigurations;
-
-      deploy.nodes = deployNodes;
     };
 }
