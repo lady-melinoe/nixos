@@ -69,9 +69,7 @@
               install -Dm755 "$src" "$out/bin/borg"
             '';
           };
-        }
-        // melssh
-        // meldeploy;
+        };
 
       apps.${system} = {
         mel-ssh-host-ca = {
