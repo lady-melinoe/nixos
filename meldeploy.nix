@@ -111,7 +111,9 @@ in
 
       # shellcheck disable=SC2154  # injected as GitLab CI file-type variables
       base64 -d < "$ssh_key"     > "$workdir/.ssh/id_ed25519"
+      # shellcheck disable=SC2154  # injected as GitLab CI file-type variables
       base64 -d < "$ssh_cert"    > "$workdir/.ssh/id_ed25519-cert.pub"
+      # shellcheck disable=SC2154  # injected as GitLab CI file-type variables
       base64 -d < "$ssh_host_ca" > "$workdir/.ssh/host_ca.pub"
 
       chmod 600 "$workdir/.ssh/id_ed25519"
