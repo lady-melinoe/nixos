@@ -41,7 +41,7 @@
       gateway = "130.95.13.129";
     }
     {
-      ip = "198.19.0.${toString config.melinoe.nodeId}/32";
+      ip = "198.19.0.3/32";
       iface = [
         "eno3"
         "eno4"
