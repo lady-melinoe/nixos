@@ -357,8 +357,6 @@ in
               tcp dport 22 accept  # ssh
               tcp dport {80, 443, 1080, 1443} accept  # haproxy
               udp dport {80, 443, 1080, 1443} accept  # haproxy
-              tcp dport 2049 accept  # nfs
-              udp dport 2049 accept  # nfs
               tcp dport 8008 accept  # incus
               ip saddr 198.18.0.0/15 tcp dport 5201 accept                  # iperf3
               iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept   # bgp, internal only, over wireguard subnet
