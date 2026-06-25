@@ -1,5 +1,15 @@
 stages:
+  - validate
   - deploy
+
+validate:
+  stage: validate
+
+  tags:
+    - deployments
+
+  script:
+    - nix flake check --no-build
 
 deploy:
   stage: deploy
