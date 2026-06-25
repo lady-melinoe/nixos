@@ -48,6 +48,7 @@ deploy:
         echo "Deploying: $host"
 
         ssh \
+          -n \
           -i "$workdir/.ssh/id_ed25519" \
           -o CertificateFile="$workdir/.ssh/id_ed25519-cert.pub" \
           -o UserKnownHostsFile="$workdir/.ssh/known_hosts" \
