@@ -38,7 +38,7 @@
         };
 
       nixosConfigurations = lib.mapAttrs mkNixosConfiguration nodes;
-      melTools = import ./mel-tools.nix {
+      meltools = import ./meltools.nix {
         inherit pkgs lib nixosConfigurations;
       };
 
@@ -68,13 +68,13 @@
       apps.${system} = {
         mel-ssh-host-ca = {
           type = "app";
-          program = "${melTools.mel-ssh-host-ca}/bin/mel-ssh-host-ca";
+          program = "${meltools.mel-ssh-host-ca}/bin/mel-ssh-host-ca";
           meta.description = "Melinoe SSH host CA management tool";
         };
 
         mel-deploy = {
           type = "app";
-          program = "${melTools.mel-deploy}/bin/mel-deploy";
+          program = "${meltools.mel-deploy}/bin/mel-deploy";
           meta.description = "Melinoe fleet deployment helper (parses [DEPLOY] commit tags)";
         };
       };
