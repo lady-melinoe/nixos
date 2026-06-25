@@ -109,6 +109,7 @@ in
 
       mkdir -p "$workdir/.ssh"
 
+      # shellcheck disable=SC2154  # injected as GitLab CI file-type variables
       base64 -d < "$ssh_key"     > "$workdir/.ssh/id_ed25519"
       base64 -d < "$ssh_cert"    > "$workdir/.ssh/id_ed25519-cert.pub"
       base64 -d < "$ssh_host_ca" > "$workdir/.ssh/host_ca.pub"
@@ -136,6 +137,7 @@ in
         fqdn="$(printf '%s\n' "$nodes_json" | jq -r --arg h "$host" '.[$h]')"
         echo "Deploying: $host → $fqdn"
 
+        # shellcheck disable=SC2029  # $fqdn intentionally expands on client side
         if ssh "''${SSH_OPTS[@]}" "root@$fqdn"; then
           echo "OK: $host"
         else
