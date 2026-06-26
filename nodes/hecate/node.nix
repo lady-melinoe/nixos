@@ -10,12 +10,7 @@
 {
   imports = [
     inputs.disko.nixosModules.disko
-    ../../common/shared.nix
-    ../../common/bootloader.nix
-    ../../common/node-opts.nix
-    ../../common/networking.nix
-    ../../common/settings.nix
-    ../../common/helpers.nix
+    ../../common
     ./disk-config.nix
   ];
 
