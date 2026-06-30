@@ -83,6 +83,10 @@
   };
   virtualisation.incus.enable = true;
   virtualisation.incus.package = pkgs.incus;
+  systemd.services.incus-startup = {
+    stopIfChanged = false;
+    restartIfChanged = false;
+  };
   services.iperf3.enable = true;
 
   services.glances.enable = true;
