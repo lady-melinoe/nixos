@@ -257,12 +257,14 @@ let
     peer:
     let
       pid = peer.id;
-      allowed = lib.unique (peer.allowedIPs ++ [ "${wgPrefix}.${toString pid}/32" ]);
+      pidStr = toString pid;
+      allowed = lib.unique (peer.allowedIPs ++ [ "${wgPrefix}.${pidStr}/32" ]);
+      resolvedEndpoint = if peer.endpoint != null then peer.endpoint else cfg.publicNodes.${pidStr}.defaultEndpoint;
     in
     {
-      publicKey = keys."${toString pid}";
+      publicKey = keys."${pidStr}";
       allowedIPs = allowed;
-      endpoint = "${peer.endpoint}:${toString (basePort + cfg.nodeId)}";
+      endpoint = "${resolvedEndpoint}:${toString (basePort + cfg.nodeId)}";
       persistentKeepalive = peer.persistentKeepalive;
     };
 
