@@ -86,6 +86,7 @@
   systemd.services.incus-startup = {
     stopIfChanged = false;
     restartIfChanged = false;
+    environment.TRIGGER = "test-1"
   };
   services.iperf3.enable = true;
 
