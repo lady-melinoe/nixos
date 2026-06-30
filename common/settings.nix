@@ -92,8 +92,7 @@
   };
   systemd.services.incus = {
     stopIfChanged = false;
-    restartIfChanged = true;
-    environment.TEST_TRIGGER_FLAG = "v1";
+    restartIfChanged = false;
   };
 
   services.iperf3.enable = true;
