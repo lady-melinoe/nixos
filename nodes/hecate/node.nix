@@ -47,15 +47,12 @@
   melinoe.peers = [
     {
       id = 5;
-      endpoint = "arke.infra.melinoe.xyz";
     }
     {
       id = 6;
-      endpoint = "lachesis.infra.melinoe.xyz";
     }
     {
       id = 7;
-      endpoint = "atropos.infra.melinoe.xyz";
     }
     {
       id = 3;
@@ -67,7 +64,6 @@
     }
     {
       id = 1;
-      endpoint = "phaesyle.infra.melinoe.xyz";
     }
   ];
 }

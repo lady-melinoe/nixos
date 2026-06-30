@@ -35,27 +35,21 @@
   melinoe.peers = [
     {
       id = 5;
-      endpoint = "arke.infra.melinoe.xyz";
     }
     {
       id = 2;
-      endpoint = "hecate.infra.melinoe.xyz";
     }
     {
       id = 6;
-      endpoint = "lachesis.infra.melinoe.xyz";
     }
     {
       id = 7;
-      endpoint = "atropos.infra.melinoe.xyz";
     }
     {
       id = 3;
-      endpoint = "ceridwen.infra.melinoe.xyz";
     }
     {
       id = 4;
-      endpoint = "benzaiten.infra.melinoe.xyz";
     }
   ];
 }
