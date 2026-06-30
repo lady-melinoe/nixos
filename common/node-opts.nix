@@ -10,6 +10,12 @@ in
       description = "Unique node ID used for addressing and routing.";
     };
 
+    isBuildServer = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Whether this node is allowed to act as a build server.";
+    };
+
     serialMode = mkOption {
       type = types.bool;
       default = false;

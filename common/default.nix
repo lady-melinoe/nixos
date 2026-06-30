@@ -13,5 +13,6 @@
     ./networking.nix
     ./settings.nix
     ./helpers.nix
+    ./distributed-build.nix
   ];
 }
