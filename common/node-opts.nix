@@ -101,8 +101,9 @@ in
             };
 
             endpoint = mkOption {
-              type = types.str;
-              description = "Endpoint hostname/IP for this peer; port is derived automatically.";
+              type = types.nullOr types.str;
+              default = null;
+              description = "Override endpoint hostname/IP for this peer; if null, publicNodes.<id>.defaultEndpoint is used.";
             };
 
             allowedIPs = mkOption {
@@ -134,6 +135,12 @@ in
             wgPubkey = mkOption {
               type = types.str;
               description = "Public WireGuard key for the node.";
+            };
+
+            defaultEndpoint = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              description = "Optional default endpoint hostname/IP published by this node.";
             };
           };
         }
@@ -179,5 +186,16 @@ in
         message = "melinoe.internet: lacpRate is only valid when multiple interfaces are specified.";
       }
     ]
-  ) config.melinoe.internet;
+  ) config.melinoe.internet
+  ++ map (peer:
+    let
+      peerIdStr = toString peer.id;
+      hasOverride = peer.endpoint != null;
+      hasDefault = config.melinoe.publicNodes ? ${peerIdStr} && config.melinoe.publicNodes.${peerIdStr}.defaultEndpoint != null;
+    in
+    {
+      assertion = hasOverride || hasDefault;
+      message = "melinoe.peers: Peer ID ${peerIdStr} has no endpoint override configured, and no defaultEndpoint is found in publicNodes for this node.";
+    }
+  ) config.melinoe.peers;
 }
