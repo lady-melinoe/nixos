@@ -187,11 +187,14 @@ in
       }
     ]
   ) config.melinoe.internet
-  ++ map (peer:
+  ++ map (
+    peer:
     let
       peerIdStr = toString peer.id;
       hasOverride = peer.endpoint != null;
-      hasDefault = config.melinoe.publicNodes ? ${peerIdStr} && config.melinoe.publicNodes.${peerIdStr}.defaultEndpoint != null;
+      hasDefault =
+        config.melinoe.publicNodes ? ${peerIdStr}
+        && config.melinoe.publicNodes.${peerIdStr}.defaultEndpoint != null;
     in
     {
       assertion = hasOverride || hasDefault;

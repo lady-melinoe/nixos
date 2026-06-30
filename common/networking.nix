@@ -259,7 +259,8 @@ let
       pid = peer.id;
       pidStr = toString pid;
       allowed = lib.unique (peer.allowedIPs ++ [ "${wgPrefix}.${pidStr}/32" ]);
-      resolvedEndpoint = if peer.endpoint != null then peer.endpoint else cfg.publicNodes.${pidStr}.defaultEndpoint;
+      resolvedEndpoint =
+        if peer.endpoint != null then peer.endpoint else cfg.publicNodes.${pidStr}.defaultEndpoint;
     in
     {
       publicKey = keys."${pidStr}";
