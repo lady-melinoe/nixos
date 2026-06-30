@@ -90,6 +90,10 @@
     stopIfChanged = false;
     restartIfChanged = false;
   };
+  systemd.sockets.incus = {
+    stopIfChanged = false;
+    restartIfChanged = false;
+  };
 
   services.iperf3.enable = true;
 
