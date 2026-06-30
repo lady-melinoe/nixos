@@ -90,7 +90,7 @@
     stopIfChanged = false;
     restartIfChanged = false;
   };
-  systemd.sockets.incus = {
+  systemd.services.incus = {
     stopIfChanged = false;
     restartIfChanged = false;
   };
