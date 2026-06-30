@@ -118,7 +118,6 @@
       defaults
           log     global
           mode    tcp
-          option  tcplog
           option  redispatch
           timeout connect 5s
           timeout client  1m
