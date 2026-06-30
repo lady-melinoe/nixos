@@ -16,7 +16,7 @@ let
       overrideStrategy = "asDropin";
       serviceConfig.ExecStart = lib.mkForce [
         ""
-        "${pkgs.util-linux}/bin/agetty --login-program ${pkgs.shadow}/bin/login --noclear --keep-baud -L ttyS${toString port} 115200 vt220"
+        "${pkgs.util-linux}/bin/agetty --login-program ${pkgs.shadow}/bin/login --noclear -L ttyS${toString port} 115200 vt220"
       ];
     };
   };

@@ -21,10 +21,7 @@
     "AUSTRALIA"
   ];
   melinoe.extraSerial = [
-    0
     1
-    2
-    3
   ];
   networking.hostName = "ceridwen";
   melinoe.internet = [
