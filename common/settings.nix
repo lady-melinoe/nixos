@@ -53,6 +53,8 @@
     "nix-command"
     "flakes"
   ];
+  nix.settings.min-free = 268435456;
+  nix.settings.max-free = 1073741824;
   nix.settings.require-sigs = true;
   programs.nix-ld.enable = true;
   system.stateVersion = "25.05";
