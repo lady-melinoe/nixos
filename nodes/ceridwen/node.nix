@@ -69,4 +69,5 @@
       id = 1;
     }
   ];
+  melinoe.isBuildServer = true;
 }
