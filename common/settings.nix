@@ -83,11 +83,12 @@
   };
   virtualisation.incus.enable = true;
   virtualisation.incus.package = pkgs.incus;
+  # Fix Incus Restarting Containers On Update
   systemd.services.incus-startup = {
     stopIfChanged = false;
     restartIfChanged = false;
-    environment.TRIGGER = "test-1";
   };
+
   services.iperf3.enable = true;
 
   services.glances.enable = true;
