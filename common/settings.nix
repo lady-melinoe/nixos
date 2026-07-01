@@ -138,12 +138,15 @@
       frontend fe_proxy_http
           bind *:1080 accept-proxy
           tcp-request connection reject if !{ src 192.168.11.2 }
+          tcp-request inspect-delay 2s
+          tcp-request content set-log-level silent if { req_len 0 }
           default_backend be_http
 
       frontend fe_proxy_https
           bind *:1443 accept-proxy
           tcp-request connection reject if !{ src 192.168.11.2 }
           tcp-request inspect-delay 5s
+          tcp-request content set-log-level silent if !{ req_ssl_hello_type 1 }
           tcp-request content accept if { req_ssl_hello_type 1 }
           default_backend be_https
 
