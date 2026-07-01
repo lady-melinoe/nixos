@@ -119,6 +119,7 @@
           log     global
           mode    tcp
           option  redispatch
+          option tcplog
           option  dontlognull
           timeout connect 5s
           timeout client  1m
