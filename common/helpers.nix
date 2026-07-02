@@ -100,6 +100,9 @@ let
     #!/usr/bin/env bash
     set -euo pipefail
 
+    # Sever stdin regardless of what sudo/ssh passed through.
+    exec 0</dev/null
+
     unset LD_PRELOAD LD_LIBRARY_PATH PYTHONPATH PERL5LIB \
           SUDO_COMMAND SUDO_USER SUDO_UID SUDO_GID \
           LANG

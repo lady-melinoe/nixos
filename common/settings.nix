@@ -178,4 +178,40 @@
     ];
     shell = pkgs.bash;
   };
+
+  # Locked-down CI deploy user. No groups, no sudo access except the single
+  # exact command below. Shell must be a real shell (not nologin) because
+  # sshd execs "$SHELL -c <command>" to run the cert's force-command —
+  # nologin would swallow the command and print its banner instead of
+  # running it.
+  users.users.gitlab-deploy = {
+    isSystemUser = true;
+    group = "gitlab-deploy";
+    home = "/var/empty";
+    createHome = false;
+    shell = pkgs.bash;
+    hashedPassword = "!";
+  };
+  users.groups.gitlab-deploy = { };
+
+  security.sudo.extraRules = [
+    {
+      users = [ "gitlab-deploy" ];
+      commands = [
+        {
+          command = "/run/current-system/sw/bin/update-safe";
+          options = [ "NOPASSWD" ];
+        }
+      ];
+    }
+  ];
+
+  # No SETENV tag above => -E/--preserve-env is already rejected. This
+  # pins the rest: sudo's own PATH can't be steered by session env, and
+  # leftover SSH session vars are stripped before update-safe-deploy runs.
+  security.sudo.extraConfig = ''
+    Defaults:gitlab-deploy env_reset
+    Defaults:gitlab-deploy env_delete+="SSH_AUTH_SOCK SSH_CLIENT SSH_CONNECTION SSH_ORIGINAL_COMMAND SSH_TTY"
+    Defaults:gitlab-deploy secure_path="/run/current-system/sw/bin"
+  '';
 }
