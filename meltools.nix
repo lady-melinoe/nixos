@@ -108,7 +108,7 @@ in
         local ssh_agent_opt=()
         [ -n "$USER_SSH_AUTH_SOCK" ] && ssh_agent_opt=(-o "IdentityAgent=$USER_SSH_AUTH_SOCK")
         # shellcheck disable=SC2029
-        ssh "''${ssh_agent_opt[@]}" "root@$target" "bash -s" -- "$force" <<'EOF' > "$pubfile"
+        ssh "''${ssh_agent_opt[@]}" "gitlab-deploy@$target" "bash -s" -- "$force" <<'EOF' > "$pubfile"
       set -euo pipefail
       key=/etc/ssh/ssh_host_ed25519_key
       pub=/etc/ssh/ssh_host_ed25519_key.pub
@@ -121,7 +121,7 @@ in
         ssh-keygen -q -U -s "''${ca_key}.pub" -I "$host" -h -n "$principals" -V "$validity" "$pubfile"
         [ ! -f "$certfile" ] && { echo "ERROR: certificate not generated: $certfile" >&2; exit 1; }
         # shellcheck disable=SC2029
-        ssh "''${ssh_agent_opt[@]}" "root@$target" "cat > '$host_cert_path' && systemctl reload sshd" < "$certfile"
+        ssh "''${ssh_agent_opt[@]}" "gitlab-deploy@$target" "cat > '$host_cert_path' && systemctl reload sshd" < "$certfile"
         echo "OK: $host updated successfully."
       }
       cmd="''${1:-}"
@@ -216,7 +216,7 @@ in
         fqdn=$(jq -r --arg h "$host" '.[$h]' <<< "$nodes_json")
         echo "Deploying: $host → $fqdn"
         # shellcheck disable=SC2029
-        if ssh "''${SSH_OPTS[@]}" "root@$fqdn"; then
+        if ssh "''${SSH_OPTS[@]}" "gitlab-deploy@$fqdn"; then
           echo "OK: $host"
         else
           echo "FAILED: $host" >&2
