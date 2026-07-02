@@ -35,6 +35,15 @@
   services.openssh.settings.KbdInteractiveAuthentication = false;
   security.audit.enable = true;
   security.auditd.enable = true;
+  security.auditd.settings = {
+    log_format = "ENRICHED"; # so it's parseable without a lookup pass
+  };
+
+  security.audit.rules = [
+    "-a always,exit -F arch=b64 -S execve -F euid=0 -F key=root_cmd"
+    "-a always,exit -F arch=b32 -S execve -F euid=0 -F key=root_cmd"
+  ];
+
   services.qemuGuest.enable = true;
   systemd.services.qemu-guest-agent.unitConfig.ConditionVirtualization = "vm";
   services.openssh.ports = [ 22 ];
