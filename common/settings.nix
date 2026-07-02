@@ -33,6 +33,8 @@
   services.openssh.enable = true;
   services.openssh.settings.PasswordAuthentication = false;
   services.openssh.settings.KbdInteractiveAuthentication = false;
+  security.audit.enable = true;
+  security.auditd.enable = true;
   services.qemuGuest.enable = true;
   systemd.services.qemu-guest-agent.unitConfig.ConditionVirtualization = "vm";
   services.openssh.ports = [ 22 ];
