@@ -295,10 +295,6 @@ let
 
 in
 {
-  imports = [
-    ./melinoe-route.nix
-  ];
-
   networking.domain = "infra.melinoe.xyz";
   networking.useDHCP = false;
 
