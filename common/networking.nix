@@ -13,7 +13,6 @@ let
 
   pyList = values: lib.concatMapStringsSep "\n" (value: "    \"${value}\",") values;
 
-  # BGP / WireGuard shared node settings.
   bgpAs = 64512 + nodeID;
   basePort = 64512;
   wgPrefix = "198.19.3";
@@ -23,7 +22,6 @@ let
   }) cfg.peers;
   localWgAddr = "${wgPrefix}.${toString nodeID}";
 
-  # BGP config generation.
   mkNeighborStanza = peer: ''
     neighbor ${peer.addr} remote-as ${toString (64512 + peer.id)}
     neighbor ${peer.addr} update-source ${localWgAddr}
@@ -36,12 +34,8 @@ let
     neighbor ${peer.addr} route-map NODE-OUT out
   '';
 
-  # nftables config generation.
   hostAddr = "198.18.0.${toString nodeID}";
 
-  # Single source of truth for VM interfaces.
-  # ip: bare address for single hosts, CIDR for ranges (e.g. "198.18.3.0/24").
-  # tcp/udp: ports to NAT-forward to this VM (omit or leave empty for none).
   vms = [
     {
       iface = "vm-npm";
@@ -299,21 +293,6 @@ let
   interfaces = lib.listToAttrs (map mkInterface cfg.peers);
   ports = map (peer: basePort + peer.id) cfg.peers;
 
-  wgWatchdogScript = pkgs.writeShellScript "melinoe-wg-watchdog" ''
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    for IFACE in ${lib.concatStringsSep " " (map (peer: "wg-${toString peer.id}") cfg.peers)}; do
-      UNIT="wg-quick-''${IFACE}.service"
-
-      if systemctl is-active --quiet "$UNIT" && ip link show "$IFACE" >/dev/null 2>&1; then
-        continue
-      fi
-
-      systemctl restart "$UNIT"
-    done
-  '';
-
 in
 {
   imports = [
@@ -524,30 +503,5 @@ in
       pkgs.nftables
       pkgs.procps
     ];
-  };
-
-  systemd.services.melinoe-wg-watchdog = lib.mkIf (cfg.peers != [ ]) {
-    description = "Restart WireGuard interfaces that are down";
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
-    path = [
-      pkgs.iproute2
-      pkgs.systemd
-      pkgs.gnugrep
-    ];
-    serviceConfig = {
-      Type = "oneshot";
-      ExecStart = wgWatchdogScript;
-    };
-  };
-
-  systemd.timers.melinoe-wg-watchdog = lib.mkIf (cfg.peers != [ ]) {
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnBootSec = "2min";
-      OnUnitActiveSec = "2min";
-      AccuracySec = "30s";
-      Persistent = true;
-    };
   };
 }
