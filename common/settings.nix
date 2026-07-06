@@ -103,9 +103,7 @@
     stopIfChanged = false;
     restartIfChanged = false;
   };
-
   services.iperf3.enable = true;
-
   services.glances.enable = true;
   services.glances.port = 61208;
   services.glances.extraArgs = [
@@ -113,7 +111,6 @@
     "-B"
     "198.18.0.${toString config.melinoe.nodeId}"
   ];
-
   services.haproxy = {
     enable = true;
     config = ''
@@ -186,7 +183,6 @@
     ];
     shell = pkgs.bash;
   };
-
   users.users.gitlab-deploy = {
     isSystemUser = true;
     group = "gitlab-deploy";

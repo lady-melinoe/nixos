@@ -725,7 +725,7 @@ in
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
-    
+
     path = [ ];
     serviceConfig = {
       ExecStart = "${melinoeGoBinary}/bin/melinoe-route --config ${routeConfig}";
