@@ -101,7 +101,7 @@
   };
   systemd.services.incus = {
     stopIfChanged = false;
-    restartIfChanged = false;
+    restartIfChanged = true;
   };
   services.iperf3.enable = true;
   services.glances.enable = true;
