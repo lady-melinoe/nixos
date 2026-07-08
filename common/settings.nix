@@ -40,10 +40,9 @@
     log_format = "ENRICHED";
   };
   security.audit.rules = [
-    "-a always,exit -F arch=b64 -S execve -F euid=0 -F key=root_cmd"
-    "-a always,exit -F arch=b32 -S execve -F euid=0 -F key=root_cmd"
+    "-a always,exit -F arch=b64 -S execve -F euid=0 -F loginuid!=-1 -F key=root_cmd"
+    "-a always,exit -F arch=b32 -S execve -F euid=0 -F loginuid!=-1 -F key=root_cmd"
   ];
-
   systemd.services.qemu-guest-agent.unitConfig.ConditionVirtualization = "vm";
   services.openssh.ports = [ 22 ];
   services.openssh.extraConfig = ''
