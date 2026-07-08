@@ -95,14 +95,7 @@
   };
   virtualisation.incus.enable = true;
   virtualisation.incus.package = pkgs.incus;
-  systemd.services.incus-startup = {
-    stopIfChanged = false;
-    restartIfChanged = false;
-  };
-  systemd.services.incus = {
-    stopIfChanged = false;
-    restartIfChanged = true;
-  };
+  virtualisation.incus.softDaemonRestart = true;
   services.iperf3.enable = true;
   services.glances.enable = true;
   services.glances.port = 61208;
