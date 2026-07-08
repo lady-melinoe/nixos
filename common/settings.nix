@@ -175,6 +175,7 @@
       "incus-admin"
     ];
     shell = pkgs.bash;
+    openssh.authorizedKeys.keys = [''ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4aBJqk5/c2gFqPTcK3II7733F5wGCdt1wEIjI2K9e5 melinoe@morrigan''];
   };
   users.users.gitlab-deploy = {
     isSystemUser = true;
