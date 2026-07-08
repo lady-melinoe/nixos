@@ -257,6 +257,7 @@ let
         if peer.endpoint != null then peer.endpoint else cfg.publicNodes.${pidStr}.defaultEndpoint;
     in
     {
+      name = "wg-${pidStr}-peerconf";
       publicKey = keys."${pidStr}";
       allowedIPs = allowed;
       endpoint = "${resolvedEndpoint}:${toString (basePort + cfg.nodeId)}";
@@ -274,18 +275,17 @@ let
     {
       name = ifName;
       value = {
-        address = [ ];
         listenPort = basePort + peer.id;
         privateKeyFile = "/etc/melinoe/wg.privatekey";
-        extraOptions = {
-          FwMark = 51820;
-        };
+        # Never add routes for peer allowedIPs — BGP/FRR owns all routing here.
+        allowedIPsAsRoutes = false;
+        fwMark = "51820";
+        # Peer endpoints may be DNS-backed (dynamic nodes); re-resolve periodically
+        # and restart the peer service on failure (Restart=always is implied).
+        dynamicEndpointRefreshSeconds = 15;
         peers = [ (peerToCfg peer) ];
-        postUp = ''
-          ${runtimeShell} -c '${ipBin} route del ${wgPrefix}.${toString peer.id}/32 dev ${ifName} || true'
+        postSetup = ''
           ${runtimeShell} -c '${ipBin} address replace ${localWgAddr}/32 peer ${wgPrefix}.${toString peer.id}/32 dev ${ifName}'
-          ${runtimeShell} -c '${ipBin} route del 198.19.3.0/24 dev ${ifName} || true'
-          ${runtimeShell} -c '${ipBin} route del 198.51.100.0/24 dev ${ifName} || true'
         '';
       };
     };
@@ -335,7 +335,7 @@ in
               tcp dport 22 accept  # ssh
               tcp dport {80, 443, 1080, 1443} accept  # haproxy
               udp dport {80, 443, 1080, 1443} accept  # haproxy
-              tcp dport {8008, 8198} accept  # incus
+              tcp dport {8008} accept  # incus
               ip saddr 198.18.0.0/15 tcp dport 5201 accept                  # iperf3
               iifname $wg_ifs ip saddr 198.19.3.0/24 tcp dport 179 accept   # bgp, internal only, over wireguard subnet
               iifname $wg_ifs ip saddr 198.51.100.0/24 ip protocol 4 accept # ipip, internal only, over bgp routed subnet
@@ -440,64 +440,91 @@ in
       '';
   };
 
-  networking.wg-quick.interfaces = lib.mkIf (cfg.peers != [ ]) interfaces;
+  networking.wireguard.interfaces = lib.mkIf (cfg.peers != [ ]) interfaces;
   melinoe.wgPorts = lib.mkIf (cfg.peers != [ ]) ports;
 
-  systemd.services.melinoe-inet-setup = lib.mkIf (cfg.internet != [ ]) {
-    description = "Configure inet netns veth pair for host<->inet connectivity";
-    after = [ "network-pre.target" ];
-    wants = [ "network-pre.target" ];
-    wantedBy = [ "multi-user.target" ];
+  # The interface-setup unit (`wireguard-wg-N.service`) is a plain oneshot with
+  # no restart behaviour by default — if `ip link add`/`wg set` fails at boot
+  # (e.g. transient module load race, private key not yet present), it just
+  # stays failed. Peer-level retries (dynamicEndpointRefreshSeconds) don't help
+  # here since they depend on the interface already existing. Force a retry loop.
+  # Also order after melinoe-inet-setup, since BGP/FRR routing depends on the
+  # netns/nftables plumbing that unit provides.
+  systemd.services = lib.mkMerge [
+    (lib.mkIf (cfg.peers != [ ]) (
+      lib.listToAttrs (
+        map (peer: {
+          name = "wireguard-wg-${toString peer.id}";
+          value = {
+            after = [ "melinoe-inet-setup.service" ];
+            wants = [ "melinoe-inet-setup.service" ];
+            serviceConfig = {
+              Restart = lib.mkForce "on-failure";
+              RestartSec = 5;
+            };
+            startLimitIntervalSec = 0;
+          };
+        }) cfg.peers
+      )
+    ))
+    {
+      melinoe-inet-setup = lib.mkIf (cfg.internet != [ ]) {
+        description = "Configure inet netns veth pair for host<->inet connectivity";
+        after = [ "network-pre.target" ];
+        wants = [ "network-pre.target" ];
+        wantedBy = [ "multi-user.target" ];
 
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
 
-      ExecStart = pkgs.writeShellScript "melinoe-inet-setup" ''
-        ip netns add inet 2>/dev/null || true
-        ${ns} ip link set lo up
+          ExecStart = pkgs.writeShellScript "melinoe-inet-setup" ''
+            ip netns add inet 2>/dev/null || true
+            ${ns} ip link set lo up
 
-        ip link del inet0 2>/dev/null || true
-        ip link add inet0 type veth peer name main
-        ip link set main netns inet
+            ip link del inet0 2>/dev/null || true
+            ip link add inet0 type veth peer name main
+            ip link set main netns inet
 
-        ip addr replace ${hostAddr}/32 dev inet0
-        ip link set inet0 up
+            ip addr replace ${hostAddr}/32 dev inet0
+            ip link set inet0 up
 
-        ${ns} ip link set main up
-        ${ns} ip addr replace 198.18.0.255/32 dev main
-        ${ns} ip route replace ${hostAddr}/32 dev main
+            ${ns} ip link set main up
+            ${ns} ip addr replace 198.18.0.255/32 dev main
+            ${ns} ip route replace ${hostAddr}/32 dev main
 
-        ip route replace 198.18.0.255 dev inet0
-        ip route replace default via 198.18.0.255 dev inet0
+            ip route replace 198.18.0.255 dev inet0
+            ip route replace default via 198.18.0.255 dev inet0
 
-        ip rule del fwmark 51820 lookup 51820 >/dev/null 2>&1 || true
-        ip rule add fwmark 51820 lookup 51820
-        ip route replace default via 198.18.0.255 dev inet0 table 51820
+            ip rule del fwmark 51820 lookup 51820 >/dev/null 2>&1 || true
+            ip rule add fwmark 51820 lookup 51820
+            ip route replace default via 198.18.0.255 dev inet0 table 51820
 
-        ${ns} sysctl -w net.ipv4.conf.default.rp_filter=0
-        ${ns} sysctl -w net.ipv4.conf.all.rp_filter=0
+            ${ns} sysctl -w net.ipv4.conf.default.rp_filter=0
+            ${ns} sysctl -w net.ipv4.conf.all.rp_filter=0
 
-        ${lib.concatStringsSep "\n" (lib.imap0 mkUplinkScript cfg.internet)}
+            ${lib.concatStringsSep "\n" (lib.imap0 mkUplinkScript cfg.internet)}
 
-        ${ns} nft delete table ip nat 2>/dev/null || true
-        ${ns} nft -f ${inetNftRuleset}
+            ${ns} nft delete table ip nat 2>/dev/null || true
+            ${ns} nft -f ${inetNftRuleset}
 
-        ${
-          let
-            firstUplink = lib.head cfg.internet;
-          in
-          lib.optionalString (firstUplink.gateway != null) ''
-            ${ns} ip route replace default via ${firstUplink.gateway} dev ${uplinkIface 0 firstUplink}
-          ''
-        }
-      '';
-    };
+            ${
+              let
+                firstUplink = lib.head cfg.internet;
+              in
+              lib.optionalString (firstUplink.gateway != null) ''
+                ${ns} ip route replace default via ${firstUplink.gateway} dev ${uplinkIface 0 firstUplink}
+              ''
+            }
+          '';
+        };
 
-    path = [
-      pkgs.iproute2
-      pkgs.nftables
-      pkgs.procps
-    ];
-  };
+        path = [
+          pkgs.iproute2
+          pkgs.nftables
+          pkgs.procps
+        ];
+      };
+    }
+  ];
 }
