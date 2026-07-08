@@ -2,7 +2,7 @@
   description = "NixOS configs";
 
   inputs = {
-    nixpkgs.url = "github:lady-melinoe/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable-small";
     disko.url = "github:nix-community/disko";
   };
 
