@@ -62,9 +62,15 @@
     "nix-command"
     "flakes"
   ];
-  nix.settings.min-free = 268435456;
-  nix.settings.max-free = 1073741824;
+  nix.settings.min-free = 2147483648;
+  nix.settings.max-free = 5368709120;
+  nix.gc = {
+    automatic = true;
+    dates = "daily";
+    options = "--delete-generations +5";
+  };
   nix.settings.require-sigs = true;
+
   programs.nix-ld.enable = true;
   system.stateVersion = "25.05";
   environment.systemPackages = [
