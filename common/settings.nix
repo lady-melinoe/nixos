@@ -27,9 +27,6 @@
     enable = true;
     servers = [ "time.uwa.edu.au:123" ];
   };
-  services.openssh.enable = true;
-  services.openssh.settings.PasswordAuthentication = false;
-  services.openssh.settings.KbdInteractiveAuthentication = false;
   security.audit.enable = true;
   security.auditd.enable = true;
   services.qemuGuest.enable = true;
@@ -42,7 +39,11 @@
   ];
   systemd.services.qemu-guest-agent.unitConfig.ConditionVirtualization = "vm";
   services.openssh.ports = [ 22 ];
+  services.openssh.enable = true;
+  services.openssh.settings.PasswordAuthentication = false;
+  services.openssh.settings.KbdInteractiveAuthentication = false;
   services.openssh.extraConfig = ''
+    AcceptEnv PROFILEUSER
     TrustedUserCAKeys /etc/ssh/ssh-user-ca.pub
     HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub
   '';
