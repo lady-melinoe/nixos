@@ -4,15 +4,14 @@
   lib,
   ...
 }:
+let
+  dir = ./.;
+  nixFiles = builtins.attrNames (
+    lib.filterAttrs (
+      name: type: type == "regular" && lib.hasSuffix ".nix" name && name != "default.nix"
+    ) (builtins.readDir dir)
+  );
+in
 {
-  imports = [
-    ./public-fetch.nix
-    ./bootloader.nix
-    ./node-opts.nix
-    ./networking.nix
-    ./melinoe-route.nix
-    ./settings.nix
-    ./helpers.nix
-    ./distributed-build.nix
-  ];
+  imports = map (file: ./${file}) nixFiles;
 }
