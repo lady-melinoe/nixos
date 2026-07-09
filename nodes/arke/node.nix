@@ -6,7 +6,6 @@
   modulesPath,
   ...
 }:
-
 {
   imports = [
     (modulesPath + "/profiles/qemu-guest.nix")
@@ -14,7 +13,6 @@
     ../../common
     ./disk-config.nix
   ];
-
   nix.distributedBuilds = true;
   nix.settings.builders-use-substitutes = true;
   melinoe.buildMachines = [
@@ -55,7 +53,6 @@
       ];
     }
   ];
-
   melinoe.nodeId = 5;
   melinoe.regions = [
     "UCC"
@@ -79,7 +76,6 @@
     }
   ];
   melinoe.advertisedRoutes = [ "130.95.13.0/24" ];
-
   melinoe.peers = [
     {
       id = 4;

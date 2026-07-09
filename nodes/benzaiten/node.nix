@@ -6,9 +6,7 @@
   modulesPath,
   ...
 }:
-
 {
-
   imports = [
     inputs.disko.nixosModules.disko
     ../../common
@@ -44,11 +42,8 @@
       gateway = null;
     }
   ];
-
   melinoe.advertisedRoutes = [ "130.95.13.0/24" ];
-
   melinoe.peers = [
-
     {
       id = 5;
     }

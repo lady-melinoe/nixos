@@ -4,7 +4,6 @@
   inputs,
   ...
 }:
-
 {
   boot.tmp.cleanOnBoot = true;
   zramSwap.enable = true;
@@ -24,12 +23,10 @@
     "nvme"
     "kvm-intel"
   ];
-
   services.chrony = {
     enable = true;
     servers = [ "time.uwa.edu.au:123" ];
   };
-
   services.openssh.enable = true;
   services.openssh.settings.PasswordAuthentication = false;
   services.openssh.settings.KbdInteractiveAuthentication = false;
@@ -70,7 +67,6 @@
     options = "--delete-generations +5";
   };
   nix.settings.require-sigs = true;
-
   programs.nix-ld.enable = true;
   system.stateVersion = "25.05";
   environment.systemPackages = [
@@ -169,7 +165,6 @@
           server nginx2 198.18.1.2:1443 send-proxy check check-send-proxy
     '';
   };
-
   users.users.melinoe = {
     isNormalUser = true;
     home = "/home/melinoe";
@@ -193,7 +188,6 @@
     hashedPassword = "!";
   };
   users.groups.gitlab-deploy = { };
-
   security.sudo.extraRules = [
     {
       users = [ "gitlab-deploy" ];
@@ -205,7 +199,6 @@
       ];
     }
   ];
-
   security.sudo.extraConfig = ''
     Defaults:gitlab-deploy env_reset
     Defaults:gitlab-deploy env_delete+="SSH_AUTH_SOCK SSH_CLIENT SSH_CONNECTION SSH_ORIGINAL_COMMAND SSH_TTY"

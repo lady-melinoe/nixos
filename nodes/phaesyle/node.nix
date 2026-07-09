@@ -6,7 +6,6 @@
   modulesPath,
   ...
 }:
-
 {
   imports = [
     (modulesPath + "/profiles/qemu-guest.nix")
@@ -14,7 +13,6 @@
     ../../common
     ./disk-config.nix
   ];
-
   nix.distributedBuilds = true;
   nix.settings.builders-use-substitutes = true;
   melinoe.buildMachines = [
@@ -55,7 +53,6 @@
       ];
     }
   ];
-
   melinoe.nodeId = 1;
   melinoe.regions = [
     "BINARYLANE"
@@ -72,7 +69,6 @@
       gateway = "103.249.239.1";
     }
   ];
-
   melinoe.peers = [
     {
       id = 5;

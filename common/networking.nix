@@ -4,15 +4,11 @@
   pkgs,
   ...
 }:
-
 let
   cfg = config.melinoe;
   nodeID = cfg.nodeId;
-
   pubIps = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) cfg.internet);
-
   pyList = values: lib.concatMapStringsSep "\n" (value: "    \"${value}\",") values;
-
   bgpAs = 64512 + nodeID;
   basePort = 64512;
   wgPrefix = "198.19.3";
@@ -21,21 +17,17 @@ let
     addr = "${wgPrefix}.${toString p.id}";
   }) cfg.peers;
   localWgAddr = "${wgPrefix}.${toString nodeID}";
-
   mkNeighborStanza = peer: ''
     neighbor ${peer.addr} remote-as ${toString (64512 + peer.id)}
     neighbor ${peer.addr} update-source ${localWgAddr}
     neighbor ${peer.addr} timers 1 3
   '';
-
   mkNeighborAfi = peer: ''
     neighbor ${peer.addr} activate
     neighbor ${peer.addr} route-map NODE-IN in
     neighbor ${peer.addr} route-map NODE-OUT out
   '';
-
   hostAddr = "198.18.0.${toString nodeID}";
-
   vms = [
     {
       iface = "vm-npm";
@@ -110,14 +102,10 @@ let
       udp = [ 51820 ];
     }
   ];
-
-  # Helpers for working with the vms list.
   vmIpAddr = vm: builtins.head (lib.splitString "/" vm.ip);
   vmSaddr = vm: if lib.hasInfix "/" vm.ip then vm.ip else "${vm.ip}/32";
   vmTcp = vm: vm.tcp or [ ];
   vmUdp = vm: vm.udp or [ ];
-
-  # Derived natMappings — only VMs that have ports defined.
   natMappings = lib.filter (m: m.tcp != [ ] || m.udp != [ ]) (
     map (vm: {
       dst = vmIpAddr vm;
@@ -125,12 +113,9 @@ let
       udp = vmUdp vm;
     }) vms
   );
-
-  # Derived raw table saddr spoof-prevention rules.
   renderVmSaddrRules = lib.concatMapStrings (vm: ''
     iifname "${vm.iface}" ip saddr != ${vmSaddr vm} drop
   '') vms;
-
   portSet =
     ports:
     if ports == [ ] then
@@ -139,13 +124,11 @@ let
       toString (builtins.head ports)
     else
       "{ ${builtins.concatStringsSep ", " (map toString ports)} }";
-
   renderProtoRule =
     proto: ports: matchExpr: dst:
     lib.optionalString (ports != [ ]) ''
       ${matchExpr} ${proto} dport ${portSet ports} dnat to ${dst}
     '';
-
   renderIfaceRules =
     ifaceExpr:
     lib.concatMapStrings (
@@ -153,7 +136,6 @@ let
       (renderProtoRule "tcp" mapping.tcp "iifname ${ifaceExpr}" mapping.dst)
       + (renderProtoRule "udp" mapping.udp "iifname ${ifaceExpr}" mapping.dst)
     ) natMappings;
-
   renderDestRules =
     destExpr:
     lib.concatMapStrings (
@@ -161,16 +143,11 @@ let
       (renderProtoRule "tcp" mapping.tcp "ip daddr ${destExpr}" mapping.dst)
       + (renderProtoRule "udp" mapping.udp "ip daddr ${destExpr}" mapping.dst)
     ) natMappings;
-
-  # Uplink / inet namespace config generation.
   ns = "ip netns exec inet";
-
   uplinkIface =
     idx: uplink:
     if builtins.length uplink.iface > 1 then "bond${toString idx}" else builtins.head uplink.iface;
-
   uplinkIpAddr = uplink: builtins.head (lib.splitString "/" uplink.ip);
-
   inetNftRuleset = pkgs.writeText "melinoe-inet.nft" ''
     table ip nat {
       chain prerouting {
@@ -182,7 +159,6 @@ let
           ) cfg.internet
         )}
       }
-
       chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
         ${lib.concatStringsSep "\n" (
@@ -191,26 +167,21 @@ let
       }
     }
   '';
-
   mkUplinkScript =
     idx: uplink:
     let
       ifaces = uplink.iface;
       isBonded = builtins.length ifaces > 1;
       iface = uplinkIface idx uplink;
-
       ipParts = lib.splitString "/" uplink.ip;
       ipAddr = builtins.head ipParts;
       ipPrefixFromIp = if builtins.length ipParts > 1 then builtins.elemAt ipParts 1 else null;
-
       subnetParts = if uplink.subnet != null then lib.splitString "/" uplink.subnet else null;
-
       subnetPrefix =
         if subnetParts != null && builtins.length subnetParts > 1 then
           builtins.elemAt subnetParts 1
         else
           null;
-
       ipWithPrefix =
         if subnetPrefix != null then
           "${ipAddr}/${subnetPrefix}"
@@ -224,7 +195,6 @@ let
         ip link set ${name} down
         ip link set ${name} netns inet
       '') ifaces}
-
       ${lib.optionalString isBonded ''
         ${ns} ip link add ${iface} type bond mode 802.3ad
         ${lib.optionalString (uplink.lacpRate != null) ''
@@ -234,19 +204,14 @@ let
           ${ns} ip link set ${name} master ${iface}
         '') ifaces}
       ''}
-
       ${ns} ip link set ${iface} up
       ${ns} ip addr flush dev ${iface}
       ${ns} ip addr replace ${ipWithPrefix} dev ${iface}
-
       ${lib.optionalString (uplink.subnet != null) ''
         ${ns} ip route replace ${uplink.subnet} dev ${iface}
       ''}
     '';
-
-  # WireGuard config generation.
   keys = lib.filterAttrs (_: v: v != null) (lib.mapAttrs (_: node: node.wgPubkey) cfg.publicNodes);
-
   peerToCfg =
     peer:
     let
@@ -263,10 +228,8 @@ let
       endpoint = "${resolvedEndpoint}:${toString (basePort + cfg.nodeId)}";
       persistentKeepalive = peer.persistentKeepalive;
     };
-
   runtimeShell = "${pkgs.runtimeShell}";
   ipBin = "${pkgs.iproute2}/bin/ip";
-
   mkInterface =
     peer:
     let
@@ -277,11 +240,8 @@ let
       value = {
         listenPort = basePort + peer.id;
         privateKeyFile = "/etc/melinoe/wg.privatekey";
-        # Never add routes for peer allowedIPs — BGP/FRR owns all routing here.
         allowedIPsAsRoutes = false;
         fwMark = "51820";
-        # Peer endpoints may be DNS-backed (dynamic nodes); re-resolve periodically
-        # and restart the peer service on failure (Restart=always is implied).
         dynamicEndpointRefreshSeconds = 15;
         peers = [ (peerToCfg peer) ];
         postSetup = ''
@@ -289,15 +249,12 @@ let
         '';
       };
     };
-
   interfaces = lib.listToAttrs (map mkInterface cfg.peers);
   ports = map (peer: basePort + peer.id) cfg.peers;
-
 in
 {
   networking.domain = "infra.melinoe.xyz";
   networking.useDHCP = false;
-
   networking.interfaces.lo.ipv4.addresses = [
     {
       address = "198.51.100.${toString nodeID}";
@@ -308,7 +265,6 @@ in
       prefixLength = 32;
     }
   ];
-
   networking.firewall.enable = false;
   networking.nftables.enable = true;
   networking.nftables.ruleset = ''
@@ -345,7 +301,6 @@ in
         udp dport { ${builtins.concatStringsSep ", " (map toString cfg.wgPorts)} } accept
       ''}
             }
-
             chain FORWARD {
               type filter hook forward priority filter; policy accept;
               ct state invalid drop
@@ -354,23 +309,18 @@ in
               icmp type { echo-request, echo-reply } accept
               icmpv6 type { echo-request, nd-neighbor-solicit } accept
             }
-
             chain OUTPUT {
               type filter hook output priority filter; policy accept;
             }
-
           }
-
           table inet raw {
             chain prerouting {
               type filter hook prerouting priority raw; policy accept;
     ${renderVmSaddrRules}
-
               iifname $vm_ifs ip saddr 198.18.0.0/24 drop
               iifname $vm_ifs ip saddr != 198.18.0.0/16 drop
             }
           }
-
           table ip nat {
             chain prerouting {
               type nat hook prerouting priority dstnat;
@@ -392,13 +342,11 @@ in
       ''}
             }
           }
-
           table inet mangle {
             chain prerouting {
               type filter hook prerouting priority mangle;
               iifname $vm_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
               iifname $node_gre_ifs ct direction original ct mark != 1000-1254 ct mark set iifname map $gre_ctmark
-
               iifname != inet0 ct direction reply ct mark 999 meta mark set 51820
               iifname inet0 ct direction original ct mark != 999 ct mark set 999
             }
@@ -409,7 +357,6 @@ in
             }
           }
   '';
-
   services.frr = {
     bgpd.enable = true;
     config =
@@ -418,20 +365,15 @@ in
         neighborAfiLines = lib.concatMapStrings mkNeighborAfi peers;
       in
       ''
-
                 ip prefix-list NODE-LOOPS permit 198.51.100.0/24 le 32
-
                 route-map NODE-IN permit 10
                  match ip address prefix-list NODE-LOOPS
-
                 route-map NODE-OUT permit 10
                  match ip address prefix-list NODE-LOOPS
-
                 router bgp ${toString bgpAs}
                   bgp router-id 198.51.100.${toString nodeID}
                   bgp fast-convergence
         ${neighborLines}
-
                   address-family ipv4 unicast
                     network 198.51.100.${toString nodeID}/32
         ${neighborAfiLines}
@@ -439,10 +381,8 @@ in
                 !
       '';
   };
-
   networking.wireguard.interfaces = lib.mkIf (cfg.peers != [ ]) interfaces;
   melinoe.wgPorts = lib.mkIf (cfg.peers != [ ]) ports;
-
   systemd.services = lib.mkMerge [
     (lib.mkIf (cfg.peers != [ ]) (
       lib.listToAttrs (
@@ -466,41 +406,30 @@ in
         after = [ "network-pre.target" ];
         wants = [ "network-pre.target" ];
         wantedBy = [ "multi-user.target" ];
-
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-
           ExecStart = pkgs.writeShellScript "melinoe-inet-setup" ''
             ip netns add inet 2>/dev/null || true
             ${ns} ip link set lo up
-
             ip link del inet0 2>/dev/null || true
             ip link add inet0 type veth peer name main
             ip link set main netns inet
-
             ip addr replace ${hostAddr}/32 dev inet0
             ip link set inet0 up
-
             ${ns} ip link set main up
             ${ns} ip addr replace 198.18.0.255/32 dev main
             ${ns} ip route replace ${hostAddr}/32 dev main
-
             ip route replace 198.18.0.255 dev inet0
             ip route replace default via 198.18.0.255 dev inet0
-
             ip rule del fwmark 51820 lookup 51820 >/dev/null 2>&1 || true
             ip rule add fwmark 51820 lookup 51820
             ip route replace default via 198.18.0.255 dev inet0 table 51820
-
             ${ns} sysctl -w net.ipv4.conf.default.rp_filter=0
             ${ns} sysctl -w net.ipv4.conf.all.rp_filter=0
-
             ${lib.concatStringsSep "\n" (lib.imap0 mkUplinkScript cfg.internet)}
-
             ${ns} nft delete table ip nat 2>/dev/null || true
             ${ns} nft -f ${inetNftRuleset}
-
             ${
               let
                 firstUplink = lib.head cfg.internet;
@@ -511,7 +440,6 @@ in
             }
           '';
         };
-
         path = [
           pkgs.iproute2
           pkgs.nftables

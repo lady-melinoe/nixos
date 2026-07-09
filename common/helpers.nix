@@ -95,7 +95,6 @@ let
 
         exec nixos-rebuild "$rebuild_mode" --flake "/etc/nixos/#''${hostname}"
   '';
-
   update-safe = pkgs.writeShellScriptBin "update-safe" ''
     #!/usr/bin/env bash
     set -euo pipefail

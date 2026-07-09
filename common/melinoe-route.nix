@@ -7,7 +7,6 @@
 let
   cfg = config.melinoe;
   nodeID = cfg.nodeId;
-
   routeConfig = pkgs.writeText "melinoe-route.json" (
     builtins.toJSON {
       node_id = nodeID;
@@ -17,7 +16,6 @@ let
       regions = cfg.regions;
     }
   );
-
   melinoeGoBinary = pkgs.buildGoModule {
     pname = "melinoe-route";
     version = "0.0.6";
@@ -725,7 +723,6 @@ in
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
-
     path = [ ];
     serviceConfig = {
       ExecStart = "${melinoeGoBinary}/bin/melinoe-route --config ${routeConfig}";

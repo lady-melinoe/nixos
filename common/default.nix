@@ -4,7 +4,6 @@
   lib,
   ...
 }:
-
 {
   imports = [
     ./public-fetch.nix
