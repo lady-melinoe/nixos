@@ -443,13 +443,6 @@ in
   networking.wireguard.interfaces = lib.mkIf (cfg.peers != [ ]) interfaces;
   melinoe.wgPorts = lib.mkIf (cfg.peers != [ ]) ports;
 
-  # The interface-setup unit (`wireguard-wg-N.service`) is a plain oneshot with
-  # no restart behaviour by default — if `ip link add`/`wg set` fails at boot
-  # (e.g. transient module load race, private key not yet present), it just
-  # stays failed. Peer-level retries (dynamicEndpointRefreshSeconds) don't help
-  # here since they depend on the interface already existing. Force a retry loop.
-  # Also order after melinoe-inet-setup, since BGP/FRR routing depends on the
-  # netns/nftables plumbing that unit provides.
   systemd.services = lib.mkMerge [
     (lib.mkIf (cfg.peers != [ ]) (
       lib.listToAttrs (

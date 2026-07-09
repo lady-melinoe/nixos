@@ -15,6 +15,47 @@
     ./disk-config.nix
   ];
 
+  nix.distributedBuilds = true;
+  nix.settings.builders-use-substitutes = true;
+  melinoe.buildMachines = [
+    {
+      hostName = "hecate.infra.melinoe.xyz";
+      publicHostCA = "@cert-authority *.infra.melinoe.xyz,198.18.0.*,198.19.0.*,198.19.1.*,198.19.3.*,198.51.100.*, ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T SSH Host CA";
+      sshKey = "/root/.ssh/id_remotebuild";
+      sshUser = "remotebuild";
+      system = "x86_64-linux";
+      supportedFeatures = [
+        "nixos-test"
+        "big-parallel"
+        "kvm"
+      ];
+    }
+    {
+      hostName = "ceridwen.infra.melinoe.xyz";
+      publicHostCA = "@cert-authority *.infra.melinoe.xyz,198.18.0.*,198.19.0.*,198.19.1.*,198.19.3.*,198.51.100.*, ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T SSH Host CA";
+      sshKey = "/root/.ssh/id_remotebuild";
+      sshUser = "remotebuild";
+      system = "x86_64-linux";
+      supportedFeatures = [
+        "nixos-test"
+        "big-parallel"
+        "kvm"
+      ];
+    }
+    {
+      hostName = "benzaiten.infra.melinoe.xyz";
+      publicHostCA = "@cert-authority *.infra.melinoe.xyz,198.18.0.*,198.19.0.*,198.19.1.*,198.19.3.*,198.51.100.*, ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T SSH Host CA";
+      sshKey = "/root/.ssh/id_remotebuild";
+      sshUser = "remotebuild";
+      system = "x86_64-linux";
+      supportedFeatures = [
+        "nixos-test"
+        "big-parallel"
+        "kvm"
+      ];
+    }
+  ];
+
   melinoe.nodeId = 1;
   melinoe.regions = [
     "BINARYLANE"

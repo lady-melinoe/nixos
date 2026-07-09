@@ -1,6 +1,20 @@
-{ lib, config, ... }:
+{
+  lib,
+  config,
+  pkgs,
+  ...
+}:
 let
   inherit (lib) mkOption types;
+  dummyKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCsBCej0Ov40HovFNPphBw2T4aEUjTxxcAqg72oW13ikvyqBLu9OZykbF+5ogVLNRnQuEzpwG1Ur8QiOaYAtak8bDpJY1W8BZJuZkSrAGQHdTs15uRZ0bVpbVLFTQhDG1dazyVubH+F1/pl9jpg2iBKftaBKttV9ua4UqIVfy7bCtxFB5EaJzmiBL1Rj1GatdOYQ8gC3C9O1VLxbwLwFAVeCFCAEqwvuj9nmo/nWZ/vN91/LHFFS6Dh1XaZmAzVAqJz73rRmtc71auUCbwS4a9sCraqUtdU8+ThisIsADummyKey+TransRightsAreHumanRights+BeCrimeDoGay dummy@dummy";
+  shellBase64 =
+    text:
+    let
+      drv = pkgs.runCommand "encode-ca-base64" { } ''
+        printf %s ${lib.escapeShellArg text} | base64 -w0 > $out
+      '';
+    in
+    builtins.readFile drv;
 in
 {
   options.melinoe = {
@@ -14,6 +28,22 @@ in
       type = types.bool;
       default = false;
       description = "Whether this node is allowed to act as a build server.";
+    };
+    buildMachines = mkOption {
+      type = types.listOf (
+        types.submodule {
+          freeformType = types.attrs;
+          options = {
+            publicHostCA = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              description = "The exact @cert-authority line to inject into the machine's publicHostKey.";
+            };
+          };
+        }
+      );
+      default = [ ];
+      description = "Wrapper around nix.buildMachines with SSH CA support.";
     };
 
     serialMode = mkOption {
@@ -163,48 +193,64 @@ in
     };
   };
 
-  config.assertions = [
-    {
-      assertion = config.melinoe.nodeId != null;
-      message = "melinoe.nodeId must be set for this host.";
-    }
-  ]
-  ++ lib.concatMap (
-    entry:
-    let
-      isBonded = builtins.length entry.iface > 1;
-      hasBondMode = entry.bondMode != null;
-      hasLacpRate = entry.lacpRate != null;
-    in
-    [
+  config = {
+    assertions = [
       {
-        assertion = !(isBonded && !hasBondMode);
-        message = "melinoe.internet: bondMode must be set when multiple interfaces are specified.";
-      }
-
-      {
-        assertion = !(hasBondMode && entry.bondMode != "lacp");
-        message = "melinoe.internet: only bondMode = \"lacp\" is supported.";
-      }
-
-      {
-        assertion = !(hasLacpRate && !isBonded);
-        message = "melinoe.internet: lacpRate is only valid when multiple interfaces are specified.";
+        assertion = config.melinoe.nodeId != null;
+        message = "melinoe.nodeId must be set for this host.";
       }
     ]
-  ) config.melinoe.internet
-  ++ map (
-    peer:
-    let
-      peerIdStr = toString peer.id;
-      hasOverride = peer.endpoint != null;
-      hasDefault =
-        config.melinoe.publicNodes ? ${peerIdStr}
-        && config.melinoe.publicNodes.${peerIdStr}.defaultEndpoint != null;
-    in
-    {
-      assertion = hasOverride || hasDefault;
-      message = "melinoe.peers: Peer ID ${peerIdStr} has no endpoint override configured, and no defaultEndpoint is found in publicNodes for this node.";
-    }
-  ) config.melinoe.peers;
+    ++ lib.concatMap (
+      entry:
+      let
+        isBonded = builtins.length entry.iface > 1;
+        hasBondMode = entry.bondMode != null;
+        hasLacpRate = entry.lacpRate != null;
+      in
+      [
+        {
+          assertion = !(isBonded && !hasBondMode);
+          message = "melinoe.internet: bondMode must be set when multiple interfaces are specified.";
+        }
+
+        {
+          assertion = !(hasBondMode && entry.bondMode != "lacp");
+          message = "melinoe.internet: only bondMode = \"lacp\" is supported.";
+        }
+
+        {
+          assertion = !(hasLacpRate && !isBonded);
+          message = "melinoe.internet: lacpRate is only valid when multiple interfaces are specified.";
+        }
+      ]
+    ) config.melinoe.internet
+    ++ map (
+      peer:
+      let
+        peerIdStr = toString peer.id;
+        hasOverride = peer.endpoint != null;
+        hasDefault =
+          config.melinoe.publicNodes ? ${peerIdStr}
+          && config.melinoe.publicNodes.${peerIdStr}.defaultEndpoint != null;
+      in
+      {
+        assertion = hasOverride || hasDefault;
+        message = "melinoe.peers: Peer ID ${peerIdStr} has no endpoint override configured, and no defaultEndpoint is found in publicNodes for this node.";
+      }
+    ) config.melinoe.peers;
+
+    nix.buildMachines = lib.mkIf (config.melinoe.buildMachines != [ ]) (
+      map (
+        machine:
+        if machine.publicHostCA != null then
+          let
+            rawPayload = "${dummyKey}\n${machine.publicHostCA}";
+            encodedKey = shellBase64 rawPayload;
+          in
+          (builtins.removeAttrs machine [ "publicHostCA" ]) // { publicHostKey = encodedKey; }
+        else
+          builtins.removeAttrs machine [ "publicHostCA" ]
+      ) config.melinoe.buildMachines
+    );
+  };
 }
