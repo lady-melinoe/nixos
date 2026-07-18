@@ -55,7 +55,6 @@ let
       iface = "vm-mailserver";
       ip = "198.18.1.6";
       tcp = [
-        993
         25
         465
       ];
@@ -95,6 +94,11 @@ let
     {
       iface = "vm-snappymail";
       ip = "198.18.1.14";
+    }
+    {
+      iface = "vm-dovecot";
+      ip = "198.18.1.15";
+      tcp = [ 993 ];
     }
     {
       iface = "vm-devicebridge";
