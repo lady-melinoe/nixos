@@ -101,6 +101,10 @@ let
       tcp = [ 993 ];
     }
     {
+      iface = "vm-stash";
+      ip = "198.18.1.16";
+    }
+    {
       iface = "vm-devicebridge";
       ip = "198.18.3.0/24";
       udp = [ 51820 ];
