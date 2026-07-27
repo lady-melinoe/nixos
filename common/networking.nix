@@ -103,6 +103,7 @@ let
     {
       iface = "vm-stash";
       ip = "198.18.1.16";
+      outbound-via-node = 1;
     }
     {
       iface = "vm-devicebridge";
@@ -151,6 +152,15 @@ let
       (renderProtoRule "tcp" mapping.tcp "ip daddr ${destExpr}" mapping.dst)
       + (renderProtoRule "udp" mapping.udp "ip daddr ${destExpr}" mapping.dst)
     ) natMappings;
+  vmOutboundRules = lib.filter (v: v != null) (
+    map (vm: if (vm.outbound-via-node or null) != null then {
+      iface = vm.iface;
+      mark = 1000 + vm.outbound-via-node;
+    } else null) vms
+  );
+  renderVmOutboundRules = lib.concatMapStrings (r: ''
+    iifname "${r.iface}" ct direction original meta mark set ${toString r.mark}
+  '') vmOutboundRules;
   ns = "ip netns exec inet";
   uplinkIface =
     idx: uplink:
@@ -353,7 +363,7 @@ in
           table inet mangle {
             chain prerouting {
               type filter hook prerouting priority mangle;
-              iifname "vm-stash" ct direction original meta mark set 1001
+    ${renderVmOutboundRules}
               iifname $vm_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
               iifname $node_gre_ifs ct direction original ct mark != 1000-1254 ct mark set iifname map $gre_ctmark
               iifname != inet0 ct direction reply ct mark 999 meta mark set 51820
