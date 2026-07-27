@@ -353,6 +353,7 @@ in
           table inet mangle {
             chain prerouting {
               type filter hook prerouting priority mangle;
+              iifname "vm-stash" ct direction original meta mark set 1001
               iifname $vm_ifs ct direction reply ct mark 1000-1254 meta mark set ct mark
               iifname $node_gre_ifs ct direction original ct mark != 1000-1254 ct mark set iifname map $gre_ctmark
               iifname != inet0 ct direction reply ct mark 999 meta mark set 51820
