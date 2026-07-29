@@ -101,9 +101,16 @@ let
       tcp = [ 993 ];
     }
     {
-      iface = "vm-stash";
-      ip = "198.18.1.16";
-      outbound-via-node = 1;
+      iface = "vm-ocis";
+      ip = "198.18.1.17";
+    }
+    {
+      iface = "vm-collabora";
+      ip = "198.18.1.18";
+    }
+    {
+      iface = "vm-ociscollab";
+      ip = "198.18.1.19";
     }
     {
       iface = "vm-devicebridge";
