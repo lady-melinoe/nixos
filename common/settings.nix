@@ -65,7 +65,7 @@
   nix.gc = {
     automatic = true;
     dates = "daily";
-    options = "--delete-generations +5";
+    options = "--delete-older-than +5";
   };
   nix.settings.require-sigs = true;
   programs.nix-ld.enable = true;
