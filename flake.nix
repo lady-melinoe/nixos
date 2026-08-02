@@ -38,21 +38,6 @@
     in
     {
       formatter.${system} = pkgs.nixfmt-tree;
-      packages.${system} = {
-        borg-beta = pkgs.stdenvNoCC.mkDerivation {
-          pname = "borg-beta";
-          version = "2.0.0b21";
-          src = pkgs.fetchurl {
-            url = "https://github.com/borgbackup/borg/releases/download/2.0.0b21/borg-linux-glibc235-x86_64-gh";
-            hash = "sha256-HN5TudJIwaYA32+TjuoyB/JxQb4OjXqAVC+o+QHyIcU=";
-          };
-          dontUnpack = true;
-          dontBuild = true;
-          installPhase = ''
-            install -Dm755 "$src" "$out/bin/borg"
-          '';
-        };
-      };
       apps.${system} = {
         mel-ssh-host-ca = {
           type = "app";
