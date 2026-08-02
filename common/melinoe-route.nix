@@ -719,10 +719,11 @@ let
 in
 {
   systemd.services.melinoe-route = {
-    description = "Melinoe route daemon (Production Optimized)";
+    description = "Melinoe route daemon";
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
+    stopIfChanged = false; 
     path = [ ];
     serviceConfig = {
       ExecStart = "${melinoeGoBinary}/bin/melinoe-route --config ${routeConfig}";

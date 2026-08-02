@@ -427,6 +427,8 @@ in
           value = {
             after = [ "melinoe-inet-setup.service" ];
             wants = [ "melinoe-inet-setup.service" ];
+            stopIfChanged = false; 
+            restartIfChanged = false; 
             serviceConfig = {
               Restart = lib.mkForce "on-failure";
               RestartSec = 5;
