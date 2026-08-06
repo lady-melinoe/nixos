@@ -73,7 +73,6 @@
   melinoe.peers = [
     {
       id = 7;
-      endpoint = "198.19.1.5";
     }
     {
       id = 5;
