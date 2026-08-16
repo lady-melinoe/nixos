@@ -9,20 +9,19 @@
 {
   imports = [
     inputs.disko.nixosModules.disko
-    ../../common
     ./disk-config.nix
   ];
-  melinoe.nodeId = 2;
+  melinoe.node.id = 2;
   networking.hostName = "hecate";
-  melinoe.regions = [
+  melinoe.node.regions = [
     "UCC"
     "PERTH"
     "AUSTRALIA"
   ];
-  melinoe.internet = [
+  melinoe.node.networking.uplinks = [
     {
-      ip = "130.95.13.224/32";
-      pub_ip = "130.95.13.224/32";
+      ip = "130.95.13.237/32";
+      pub_ip = "130.95.13.237/32";
       iface = [ "enp4s0" ];
       subnet = "130.95.13.128/25";
       gateway = "130.95.13.129";
@@ -39,8 +38,8 @@
       gateway = null;
     }
   ];
-  melinoe.advertisedRoutes = [ "130.95.13.0/24" ];
-  melinoe.peers = [
+  melinoe.node.networking.melinoe-route.extraRoutes = [ "130.95.13.0/24" ];
+  melinoe.node.networking.peers = [
     {
       id = 5;
     }
@@ -60,5 +59,5 @@
       id = 1;
     }
   ];
-  melinoe.isBuildServer = true;
+  melinoe.node.isBuildServer = true;
 }

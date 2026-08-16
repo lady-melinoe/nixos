@@ -9,10 +9,10 @@ let
     name: cfg:
     let
       c = cfg.config;
-      nodeId = toString c.melinoe.nodeId;
+      nodeId = toString c.melinoe.node.id;
       internetIps = lib.concatMap (
         uplink: [ uplink.ip ] ++ lib.optional (uplink.pub_ip != null) uplink.pub_ip
-      ) c.melinoe.internet;
+      ) c.melinoe.node.networking.uplinks;
     in
     {
       hostname = c.networking.hostName;

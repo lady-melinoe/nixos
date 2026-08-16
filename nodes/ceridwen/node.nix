@@ -9,11 +9,10 @@
 {
   imports = [
     inputs.disko.nixosModules.disko
-    ../../common
     ./disk-config.nix
   ];
-  melinoe.nodeId = 3;
-  melinoe.regions = [
+  melinoe.node.id = 3;
+  melinoe.node.regions = [
     "UCC"
     "PERTH"
     "AUSTRALIA"
@@ -22,10 +21,10 @@
     1
   ];
   networking.hostName = "ceridwen";
-  melinoe.internet = [
+  melinoe.node.networking.uplinks = [
     {
-      ip = "130.95.13.198/32";
-      pub_ip = "130.95.13.198/32";
+      ip = "130.95.13.235/32";
+      pub_ip = "130.95.13.235/32";
       iface = [ "eno1" ];
       subnet = "130.95.13.128/25";
       gateway = "130.95.13.129";
@@ -42,8 +41,8 @@
       gateway = null;
     }
   ];
-  melinoe.advertisedRoutes = [ "130.95.13.0/24" ];
-  melinoe.peers = [
+  melinoe.node.networking.melinoe-route.extraRoutes = [ "130.95.13.0/24" ];
+  melinoe.node.networking.peers = [
     {
       id = 5;
     }
@@ -63,5 +62,5 @@
       id = 1;
     }
   ];
-  melinoe.isBuildServer = true;
+  melinoe.node.isBuildServer = true;
 }

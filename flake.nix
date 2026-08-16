@@ -29,7 +29,11 @@
         lib.nixosSystem {
           inherit system;
           specialArgs = { inherit inputs system; };
-          modules = [ module ];
+          modules = [
+            ./common
+            ./modules
+            module
+          ];
         };
       nixosConfigurations = lib.mapAttrs mkNixosConfiguration nodes;
       meltools = import ./meltools.nix {
