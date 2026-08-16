@@ -17,10 +17,6 @@ let
 
   proxyAllowedSrc = lib.concatStringsSep " " cfg.proxyProtocolAllowedSources;
 
-  silentIfSelfCheck = lib.optionalString (
-    cfg.proxyProtocolAllowedSources != [ ]
-  ) "    tcp-request connection set-log-level silent if { src ${proxyAllowedSrc} }\n";
-
   mkTcpFrontend = name: port: backend: ''
     frontend ${name}
         bind *:${toString port}
@@ -42,15 +38,24 @@ let
       backend,
       tls,
     }:
-    ''
-      frontend ${name}
-          bind *:${toString port} accept-proxy
-          tcp-request connection reject if !{ src ${proxyAllowedSrc} }
-      ${silentIfSelfCheck}${lib.optionalString tls ''
-        tcp-request inspect-delay 5s
-        tcp-request content accept if { req_ssl_hello_type 1 }
-      ''}    default_backend ${backend}
-    '';
+    let
+      lines =
+        [
+          "frontend ${name}"
+          "    bind *:${toString port}"
+          "    tcp-request connection reject if !{ src ${proxyAllowedSrc} }"
+          "    tcp-request connection expect-proxy layer4 if { src ${proxyAllowedSrc} }"
+        ]
+        ++ lib.optional (
+          cfg.proxyProtocolAllowedSources != [ ]
+        ) "    tcp-request content set-log-level silent if { src ${proxyAllowedSrc} }"
+        ++ lib.optionals tls [
+          "    tcp-request inspect-delay 5s"
+          "    tcp-request content accept if { req_ssl_hello_type 1 }"
+        ]
+        ++ [ "    default_backend ${backend}" ];
+    in
+    lib.concatStringsSep "\n" lines + "\n";
 in
 {
   config = lib.mkIf cfg.enable {
