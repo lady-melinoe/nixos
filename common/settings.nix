@@ -124,10 +124,12 @@
     {
       iface = "vm-npm";
       ip = "198.18.1.1";
+      specialHostAccess.tcp = [ 8002 ]; # eilidh drive on Benzaiten
     }
     {
       iface = "vm-npmalt";
       ip = "198.18.1.2";
+      specialHostAccess.tcp = [ 8002 ]; # eilidh drive on Benzaiten
     }
     {
       iface = "vm-vaultwarden";
