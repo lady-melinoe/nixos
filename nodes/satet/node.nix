@@ -18,7 +18,7 @@
     "PERTH"
     "AUSTRALIA"
   ];
-  melinoe.node.legacyboot = true;
+  melinoe.node.legacyBoot = true;
   melinoe.node.networking.uplinks = [
     {
       ip = "130.95.13.233/32";
