@@ -10,8 +10,7 @@ let
   netCfg = config.melinoe.node.networking;
   addr = config.melinoe.cluster.networking;
   nodeID = cfg.node.id;
-  # Start of the 16-bit private ASN range (RFC 6996). Node N's AS is this + N.
-  bgpAsBase = 64512;
+  bgpAsBase = 64512; # start of private ASN range (RFC 6996)
   bgpAs = bgpAsBase + nodeID;
   localWgAddr = melinoeNodeWgIP nodeID;
   localLoopbackAddr = melinoeNodeLoopbackIP nodeID;

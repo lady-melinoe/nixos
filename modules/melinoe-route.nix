@@ -9,19 +9,21 @@ let
   routeCfg = config.melinoe.node.networking.melinoe-route;
   netCfg = config.melinoe.node.networking;
   nodeID = cfg.node.id;
-  # /24-only dotted prefix, e.g. "198.51.100.0/24" -> "198.51.100."
-  # This is the addressing scheme the daemon's ipip-tunnel/mesh-address
-  # arithmetic is built around (string concatenation of prefix + node id),
-  # so it inherently only supports /24 blocks; that part isn't something a
-  # flag/config value can generalize away without a bigger rewrite of the
-  # addressing logic itself.
-  dottedPrefix24 =
+
+  mod = a: b: a - (a / b) * b;
+
+  ip4ToInt = ip: lib.foldl' (acc: octet: acc * 256 + lib.toInt octet) 0 (lib.splitString "." ip);
+
+  network24 =
     cidr:
     let
-      ipPart = lib.head (lib.splitString "/" cidr);
-      octets = lib.splitString "." ipPart;
+      parts = lib.splitString "/" cidr;
+      ipInt = ip4ToInt (lib.elemAt parts 0);
+      prefixLength = lib.toInt (lib.elemAt parts 1);
+      networkInt = ipInt - (mod ipInt 256);
     in
-    lib.concatStringsSep "." (lib.take 3 octets) + ".";
+    assert prefixLength == 24;
+    "${toString (networkInt / 16777216)}.${toString (mod (networkInt / 65536) 256)}.${toString (mod (networkInt / 256) 256)}.0";
 
   routeConfig = pkgs.writeText "melinoe-route.json" (
     builtins.toJSON {
@@ -30,13 +32,8 @@ let
       pub_ips = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) netCfg.uplinks);
       advertised_routes = routeCfg.extraRoutes;
       regions = cfg.node.regions;
-
-      # These four used to be hardcoded inside the Go source and were kept
-      # in sync only via nix-level assertions. They're now plain config,
-      # computed here from the values that are already the source of truth
-      # elsewhere in the module tree, so there's nothing left to assert.
-      base_prefix = dottedPrefix24 cfg.cluster.networking.bgpCidr;
-      inner_prefix = dottedPrefix24 cfg.cluster.networking.hostCidr;
+      base_network = network24 cfg.cluster.networking.bgpCidr;
+      inner_network = network24 cfg.cluster.networking.hostCidr;
       table_base = netCfg.vmOutboundMarkBase;
       vm_ifaces = map (vm: vm.iface) cfg.cluster.virtualMachines;
     }
@@ -62,7 +59,7 @@ in
       }
     ];
 
-    melinoe.node.networking.specialHostAccess.tcp = lib.mkIf routeCfg.enabled [ 60198 ];
+    melinoe.node.networking.specialHostAccess.tcp = lib.mkIf routeCfg.enabled [ 60198 ]; # melinoe-route daemon port
     melinoe.node.networking.specialLoopbackAccess.ipProtocols = lib.mkIf routeCfg.enabled [ 4 ];
 
     systemd.services.melinoe-route = lib.mkIf routeCfg.enabled {

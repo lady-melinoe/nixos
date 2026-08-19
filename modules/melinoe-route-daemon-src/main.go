@@ -22,39 +22,53 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// TunPrefix, Port and ProtoMelinoe are internal wire-format/self-consistency
-// constants: nothing outside this binary needs to agree with them, so they
-// stay as plain constants rather than config.
 const (
 	TunPrefix    = "node-"
-	Port         = "60198"
+	Port         = "60198" // melinoe-route daemon port
 	ProtoMelinoe = 198
 )
 
 type Config struct {
-	NodeID           interface{} `json:"node_id"`
-	Hostname         string      `json:"hostname"`
-	PubIPs           []string    `json:"pub_ips"`
-	AdvertisedRoutes []string    `json:"advertised_routes"`
-	Regions          []string    `json:"regions"`
+	NodeID           int      `json:"node_id"`
+	Hostname         string   `json:"hostname"`
+	PubIPs           []string `json:"pub_ips"`
+	AdvertisedRoutes []string `json:"advertised_routes"`
+	Regions          []string `json:"regions"`
+	BaseNetwork      string   `json:"base_network"`
+	InnerNetwork     string   `json:"inner_network"`
+	TableBase        int      `json:"table_base"`
+	VMIfaces         []string `json:"vm_ifaces"`
+}
 
-	// BasePrefix is the /24 dotted prefix (e.g. "198.51.100.") used for
-	// ipip tunnel endpoint addresses and for recognizing peer entries in
-	// the kernel BGP route table. Derived from melinoe.cluster.networking.bgpCidr.
-	BasePrefix string `json:"base_prefix"`
-	// InnerPrefix is the /24 dotted prefix (e.g. "198.18.0.") used to build
-	// each node's own mesh address and to reach peers over the mesh.
-	// Derived from melinoe.cluster.networking.hostCidr.
-	InnerPrefix string `json:"inner_prefix"`
-	// TableBase is added to a peer's numeric node ID to compute that
-	// peer's policy-routing table number. Derived from
-	// melinoe.node.networking.vmOutboundMarkBase.
-	TableBase int `json:"table_base"`
-	// VMIfaces lists the exact local interface names that should be
-	// scanned for locally-advertised VM routes. Derived from the iface
-	// field of each entry in melinoe.cluster.virtualMachines, so there is
-	// no naming-convention requirement placed on those interfaces.
-	VMIfaces []string `json:"vm_ifaces"`
+type network24 [4]byte
+
+func parseNetwork24(s string) (network24, bool) {
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return network24{}, false
+	}
+	ip4 := ip.To4()
+	if ip4 == nil || ip4[3] != 0 {
+		return network24{}, false
+	}
+	return network24{ip4[0], ip4[1], ip4[2], ip4[3]}, true
+}
+
+func ones(n *net.IPNet) int {
+	bits, _ := n.Mask.Size()
+	return bits
+}
+
+func (n network24) host(id int) string {
+	return fmt.Sprintf("%d.%d.%d.%d", n[0], n[1], n[2], id)
+}
+
+func (n network24) hostID(ip net.IP) (int, bool) {
+	ip4 := ip.To4()
+	if ip4 == nil || ip4[0] != n[0] || ip4[1] != n[1] || ip4[2] != n[2] {
+		return 0, false
+	}
+	return int(ip4[3]), true
 }
 
 type PeerState struct {
@@ -74,35 +88,28 @@ type Engine struct {
 	hostAddr         string
 	noLocalVMs       bool
 
-	basePrefix  string
-	innerPrefix string
-	tableBase   int
-	vmIfaces    map[string]bool
+	baseNet   network24
+	innerNet  network24
+	tableBase int
+	vmIfaces  map[string]bool
 
 	peerMu      sync.RWMutex
 	peerRegions map[string][]string
 
 	nodeIDRegex *regexp.Regexp
 	headerRegex *regexp.Regexp
-	bgpRegex    *regexp.Regexp
 }
 
 func NewEngine(cfg Config, noLocalVMs bool) *Engine {
-	var id string
-	switch v := cfg.NodeID.(type) {
-	case string:
-		id = v
-	case float64:
-		id = strconv.Itoa(int(v))
-	default:
-		log.Fatal("critical: unexpected or missing json type for node_id")
-	}
+	id := strconv.Itoa(cfg.NodeID)
 
-	if cfg.BasePrefix == "" {
-		log.Fatal("critical: base_prefix missing from configuration (see melinoe.cluster.networking.bgpCidr)")
+	baseNet, ok := parseNetwork24(cfg.BaseNetwork)
+	if !ok {
+		log.Fatal("critical: base_network missing or invalid in configuration (see melinoe.cluster.networking.bgpCidr)")
 	}
-	if cfg.InnerPrefix == "" {
-		log.Fatal("critical: inner_prefix missing from configuration (see melinoe.cluster.networking.hostCidr)")
+	innerNet, ok := parseNetwork24(cfg.InnerNetwork)
+	if !ok {
+		log.Fatal("critical: inner_network missing or invalid in configuration (see melinoe.cluster.networking.hostCidr)")
 	}
 	if cfg.TableBase == 0 {
 		log.Fatal("critical: table_base missing from configuration (see melinoe.node.networking.vmOutboundMarkBase)")
@@ -119,16 +126,15 @@ func NewEngine(cfg Config, noLocalVMs bool) *Engine {
 		pubIPs:           cfg.PubIPs,
 		advertisedRoutes: cfg.AdvertisedRoutes,
 		localRegions:     cfg.Regions,
-		hostAddr:         cfg.InnerPrefix + id,
+		hostAddr:         innerNet.host(cfg.NodeID),
 		noLocalVMs:       noLocalVMs,
-		basePrefix:       cfg.BasePrefix,
-		innerPrefix:      cfg.InnerPrefix,
+		baseNet:          baseNet,
+		innerNet:         innerNet,
 		tableBase:        cfg.TableBase,
 		vmIfaces:         vmIfaces,
 		peerRegions:      make(map[string][]string),
 		nodeIDRegex:      regexp.MustCompile(`^[0-9]+$`),
 		headerRegex:      regexp.MustCompile(`^(\d+):\s*.*?\-\s*(.*)$`),
-		bgpRegex:         regexp.MustCompile(`^` + regexp.QuoteMeta(cfg.BasePrefix) + `([0-9]+)(?:/32)?$`),
 	}
 }
 
@@ -457,10 +463,9 @@ func (e *Engine) getBGPRouteTablePeerIDs(ctx context.Context) []string {
 
 	remoteIDsMap := make(RouteMap)
 	for _, r := range nlRoutes {
-		if r.Protocol == 186 && r.Dst != nil {
-			matches := e.bgpRegex.FindStringSubmatch(r.Dst.String())
-			if matches != nil {
-				remoteID := matches[1]
+		if r.Protocol == 186 && r.Dst != nil && ones(r.Dst) == 32 {
+			if hostID, ok := e.baseNet.hostID(r.Dst.IP); ok {
+				remoteID := strconv.Itoa(hostID)
 				if remoteID != e.nodeID {
 					remoteIDsMap[remoteID] = true
 				}
@@ -545,7 +550,6 @@ func (e *Engine) reconcileAllRoutes(ctx context.Context, peerStates []PeerState,
 			log.Printf("mutating routing table: evicting stale network target prefix %s from device %s", prefix, tun)
 			r := currentRouteObjs[prefix]
 
-			// Strip the route down to strict matching lookup parameters to prevent ESRCH errors
 			rDel := netlink.Route{
 				LinkIndex: r.LinkIndex,
 				Dst:       r.Dst,
@@ -564,8 +568,9 @@ func (e *Engine) deployOnce(ctx context.Context) {
 		log.Printf("error: invalid local node id: %s", e.nodeID)
 		return
 	}
-	localVIP := e.basePrefix + e.nodeID
-	localInner := e.innerPrefix + e.nodeID
+	localIDInt, _ := strconv.Atoi(e.nodeID)
+	localVIP := e.baseNet.host(localIDInt)
+	localInner := e.innerNet.host(localIDInt)
 	localInnerRoute := localInner + "/32"
 	localVIPRoute := localVIP + "/32"
 
@@ -591,10 +596,10 @@ func (e *Engine) deployOnce(ctx context.Context) {
 		if !e.isValidNodeID(remoteID) {
 			continue
 		}
-		remoteVIP := e.basePrefix + remoteID
-		remoteInner := e.innerPrefix + remoteID
-		tun := TunPrefix + remoteID
 		idInt, _ := strconv.Atoi(remoteID)
+		remoteVIP := e.baseNet.host(idInt)
+		remoteInner := e.innerNet.host(idInt)
+		tun := TunPrefix + remoteID
 		table := strconv.Itoa(e.tableBase + idInt)
 		if !e.ensureTunnel(ctx, linkCache, remoteID, localVIP, localInner, remoteVIP, remoteInner, tun, table) {
 			continue

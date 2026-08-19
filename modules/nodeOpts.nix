@@ -2,8 +2,6 @@
 let
   inherit (lib) mkOption types;
 
-  # TCP/UDP ports or IP protocols to accept from some source; shared shape
-  # used across several of the access-control options below.
   accessRuleType = description: {
     type = types.submodule {
       options = {

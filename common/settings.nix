@@ -39,8 +39,6 @@
       8069 # incus
     ];
   };
-  # specialHostAccess/specialWgAccess/specialLoopbackAccess for melinoe-route
-  # and bgp now come from their own modules.
   melinoe.node.networking.hostInternalPortAllNet.tcp = [ 5201 ]; # iperf3
   boot.initrd.availableKernelModules = [
     "ata_piix"

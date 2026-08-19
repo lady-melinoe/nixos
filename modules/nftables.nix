@@ -71,8 +71,6 @@ let
     iifname "${r.iface}" ct direction original meta mark set ${toString r.mark}
   '') vmOutboundRules;
 
-  # saddr/iface are raw nftables expressions (e.g. an address, a CIDR, or a
-  # `$named-set`), left off entirely when null.
   renderAccessRule =
     {
       saddr ? null,
@@ -89,11 +87,8 @@ let
     + lib.optionalString (access.udp != [ ]) (line "udp dport ${portSet access.udp}")
     + lib.optionalString (access.ipProtocols != [ ]) (line "ip protocol ${portSet access.ipProtocols}");
 
-  # host range = every node's own address (<hostCidr base>.<nodeId>)
   hostRangeCidr = addr.hostCidr;
-  # node loopbacks (BGP router-ids / ipip tunnel endpoints)
   loopbackCidr = addr.bgpCidr;
-  # the wireguard mesh subnet
   wgCidr = addr.wireguardCidr;
   internalSubnetsSet = "{ ${addr.containerCidr}, ${wgCidr}, ${loopbackCidr} }";
 
