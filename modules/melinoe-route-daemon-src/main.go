@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +24,7 @@ const (
 	TunPrefix    = "node-"
 	Port         = "60198" // melinoe-route daemon port
 	ProtoMelinoe = 198
+	ListVersion  = "melinoe-list 0.0.2"
 )
 
 type Config struct {
@@ -79,8 +78,18 @@ type PeerState struct {
 
 type RouteMap map[string]bool
 
+// ListResponse is the /list wire format: what a node reports about itself
+// and the routes it wants peers to carry.
+type ListResponse struct {
+	Version  string   `json:"version"`
+	NodeID   int      `json:"node_id"`
+	Hostname string   `json:"hostname"`
+	Regions  []string `json:"regions"`
+	Routes   []string `json:"routes"`
+}
+
 type Engine struct {
-	nodeID           string
+	nodeID           int
 	hostname         string
 	pubIPs           []string
 	advertisedRoutes []string
@@ -94,15 +103,10 @@ type Engine struct {
 	vmIfaces  map[string]bool
 
 	peerMu      sync.RWMutex
-	peerRegions map[string][]string
-
-	nodeIDRegex *regexp.Regexp
-	headerRegex *regexp.Regexp
+	peerRegions map[int][]string
 }
 
 func NewEngine(cfg Config, noLocalVMs bool) *Engine {
-	id := strconv.Itoa(cfg.NodeID)
-
 	baseNet, ok := parseNetwork24(cfg.BaseNetwork)
 	if !ok {
 		log.Fatal("critical: base_network missing or invalid in configuration (see melinoe.cluster.networking.bgpCidr)")
@@ -114,6 +118,9 @@ func NewEngine(cfg Config, noLocalVMs bool) *Engine {
 	if cfg.TableBase == 0 {
 		log.Fatal("critical: table_base missing from configuration (see melinoe.node.networking.vmOutboundMarkBase)")
 	}
+	if cfg.NodeID < 0 || cfg.NodeID > 255 {
+		log.Fatalf("critical: node_id %d out of range for a /24 network (0-255)", cfg.NodeID)
+	}
 
 	vmIfaces := make(map[string]bool, len(cfg.VMIfaces))
 	for _, iface := range cfg.VMIfaces {
@@ -121,7 +128,7 @@ func NewEngine(cfg Config, noLocalVMs bool) *Engine {
 	}
 
 	return &Engine{
-		nodeID:           id,
+		nodeID:           cfg.NodeID,
 		hostname:         cfg.Hostname,
 		pubIPs:           cfg.PubIPs,
 		advertisedRoutes: cfg.AdvertisedRoutes,
@@ -132,14 +139,8 @@ func NewEngine(cfg Config, noLocalVMs bool) *Engine {
 		innerNet:         innerNet,
 		tableBase:        cfg.TableBase,
 		vmIfaces:         vmIfaces,
-		peerRegions:      make(map[string][]string),
-		nodeIDRegex:      regexp.MustCompile(`^[0-9]+$`),
-		headerRegex:      regexp.MustCompile(`^(\d+):\s*.*?\-\s*(.*)$`),
+		peerRegions:      make(map[int][]string),
 	}
-}
-
-func (e *Engine) isValidNodeID(val string) bool {
-	return e.nodeIDRegex.MatchString(val)
 }
 
 func (e *Engine) normalizePrefix(val string) string {
@@ -170,13 +171,13 @@ func (e *Engine) addRoute(routes RouteMap, val string) {
 	}
 }
 
-func (e *Engine) formatRegion(nodeID string) string {
+func (e *Engine) formatRegions(nodeID int) []string {
 	if nodeID == e.nodeID {
-		return strings.Join(e.localRegions, " ")
+		return e.localRegions
 	}
 	e.peerMu.RLock()
 	defer e.peerMu.RUnlock()
-	return strings.Join(e.peerRegions[nodeID], " ")
+	return e.peerRegions[nodeID]
 }
 
 func (e *Engine) getLocalRouteSet(ctx context.Context) RouteMap {
@@ -206,44 +207,25 @@ func (e *Engine) getLocalRouteSet(ctx context.Context) RouteMap {
 	return routes
 }
 
-func (e *Engine) serializeRouteList(routes RouteMap) string {
+func (e *Engine) serializeRouteList(routes RouteMap) []byte {
 	var sortedRoutes []string
 	for r := range routes {
 		sortedRoutes = append(sortedRoutes, r)
 	}
 	sort.Strings(sortedRoutes)
 
-	var sb strings.Builder
-	sb.WriteString("// melinoe-list 0.0.1\n")
-	fmt.Fprintf(&sb, "// %s: %s - %s\n", e.nodeID, e.hostname, e.formatRegion(e.nodeID))
-	for _, r := range sortedRoutes {
-		sb.WriteString(r + "\n")
+	resp := ListResponse{
+		Version:  ListVersion,
+		NodeID:   e.nodeID,
+		Hostname: e.hostname,
+		Regions:  e.formatRegions(e.nodeID),
+		Routes:   sortedRoutes,
 	}
-	return sb.String()
-}
-
-func (e *Engine) parseRemoteHeader(body string) {
-	lines := strings.Split(body, "\n")
-	for _, line := range lines {
-		if !strings.HasPrefix(line, "//") {
-			continue
-		}
-		content := strings.TrimSpace(line[2:])
-		matches := e.headerRegex.FindStringSubmatch(content)
-		if matches == nil {
-			continue
-		}
-		nodeID := matches[1]
-		regionsStr := strings.TrimSpace(matches[2])
-
-		e.peerMu.Lock()
-		if regionsStr == "" {
-			e.peerRegions[nodeID] = []string{}
-		} else {
-			e.peerRegions[nodeID] = strings.Fields(regionsStr)
-		}
-		e.peerMu.Unlock()
+	b, err := json.Marshal(resp)
+	if err != nil {
+		return nil
 	}
+	return b
 }
 
 func (e *Engine) fetchRemoteRouteList(ctx context.Context, remoteInner string) []string {
@@ -261,25 +243,18 @@ func (e *Engine) fetchRemoteRouteList(ctx context.Context, remoteInner string) [
 	}
 	defer remoteResp.Body.Close()
 
-	b, err := io.ReadAll(remoteResp.Body)
-	if err != nil {
+	var resp ListResponse
+	if err := json.NewDecoder(remoteResp.Body).Decode(&resp); err != nil {
 		return nil
 	}
-	body := string(b)
 
-	e.parseRemoteHeader(body)
+	e.peerMu.Lock()
+	e.peerRegions[resp.NodeID] = resp.Regions
+	e.peerMu.Unlock()
 
 	routesMap := make(RouteMap)
-	lines := strings.Split(body, "\n")
-	for _, line := range lines {
-		if idx := strings.Index(line, "//"); idx != -1 {
-			line = line[:idx]
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		e.addRoute(routesMap, line)
+	for _, r := range resp.Routes {
+		e.addRoute(routesMap, r)
 	}
 
 	var routes []string
@@ -327,13 +302,20 @@ func (e *Engine) existingMelinoeTunnels(ctx context.Context) []string {
 	return tunnels
 }
 
+func tunnelNodeID(tun string) (int, bool) {
+	id, err := strconv.Atoi(strings.TrimPrefix(tun, TunPrefix))
+	if err != nil || id < 0 || id > 255 {
+		return 0, false
+	}
+	return id, true
+}
+
 func (e *Engine) flushTunnel(ctx context.Context, tun string) {
-	remoteID := strings.TrimPrefix(tun, TunPrefix)
-	if !e.isValidNodeID(remoteID) {
+	remoteID, ok := tunnelNodeID(tun)
+	if !ok {
 		return
 	}
-	idInt, _ := strconv.Atoi(remoteID)
-	table := e.tableBase + idInt
+	table := e.tableBase + remoteID
 
 	nlRoutes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
 	if err == nil {
@@ -369,8 +351,7 @@ func (e *Engine) buildInterfaceCache(ctx context.Context) map[string]bool {
 	return cache
 }
 
-func (e *Engine) ensureTunnel(ctx context.Context, linkCache map[string]bool, remoteID, localVIP, localInner, remoteVIP, remoteInner, tun, tableStr string) bool {
-	table, _ := strconv.Atoi(tableStr)
+func (e *Engine) ensureTunnel(ctx context.Context, linkCache map[string]bool, localVIP, localInner, remoteVIP, remoteInner, tun string, table int) bool {
 	var link netlink.Link
 	var err error
 
@@ -443,7 +424,7 @@ func (e *Engine) ensureTunnel(ctx context.Context, linkCache map[string]bool, re
 	return true
 }
 
-func (e *Engine) regionPriority(remoteID string) (bool, bool, bool, int) {
+func (e *Engine) regionPriority(remoteID int) (bool, bool, bool, int) {
 	e.peerMu.RLock()
 	remoteRegs := e.peerRegions[remoteID]
 	e.peerMu.RUnlock()
@@ -451,29 +432,25 @@ func (e *Engine) regionPriority(remoteID string) (bool, bool, bool, int) {
 	same := func(idx int) bool {
 		return len(e.localRegions) > idx && len(remoteRegs) > idx && e.localRegions[idx] == remoteRegs[idx]
 	}
-	idInt, _ := strconv.Atoi(remoteID)
-	return !same(2), !same(1), !same(0), idInt
+	return !same(2), !same(1), !same(0), remoteID
 }
 
-func (e *Engine) getBGPRouteTablePeerIDs(ctx context.Context) []string {
+func (e *Engine) getBGPRouteTablePeerIDs(ctx context.Context) []int {
 	nlRoutes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
 	if err != nil {
 		return nil
 	}
 
-	remoteIDsMap := make(RouteMap)
+	remoteIDsMap := make(map[int]bool)
 	for _, r := range nlRoutes {
 		if r.Protocol == 186 && r.Dst != nil && ones(r.Dst) == 32 {
-			if hostID, ok := e.baseNet.hostID(r.Dst.IP); ok {
-				remoteID := strconv.Itoa(hostID)
-				if remoteID != e.nodeID {
-					remoteIDsMap[remoteID] = true
-				}
+			if hostID, ok := e.baseNet.hostID(r.Dst.IP); ok && hostID != e.nodeID {
+				remoteIDsMap[hostID] = true
 			}
 		}
 	}
 
-	var remoteIDs []string
+	var remoteIDs []int
 	for id := range remoteIDsMap {
 		remoteIDs = append(remoteIDs, id)
 	}
@@ -564,13 +541,8 @@ func (e *Engine) reconcileAllRoutes(ctx context.Context, peerStates []PeerState,
 }
 
 func (e *Engine) deployOnce(ctx context.Context) {
-	if !e.isValidNodeID(e.nodeID) {
-		log.Printf("error: invalid local node id: %s", e.nodeID)
-		return
-	}
-	localIDInt, _ := strconv.Atoi(e.nodeID)
-	localVIP := e.baseNet.host(localIDInt)
-	localInner := e.innerNet.host(localIDInt)
+	localVIP := e.baseNet.host(e.nodeID)
+	localInner := e.innerNet.host(e.nodeID)
 	localInnerRoute := localInner + "/32"
 	localVIPRoute := localVIP + "/32"
 
@@ -582,26 +554,22 @@ func (e *Engine) deployOnce(ctx context.Context) {
 	linkCache := e.buildInterfaceCache(ctx)
 	locallyAdvertised := e.getLocalRouteSet(ctx)
 	remoteNodeIDs := e.getBGPRouteTablePeerIDs(ctx)
-	remoteIDsMap := make(RouteMap)
+	remoteIDsMap := make(map[int]bool)
 	for _, id := range remoteNodeIDs {
 		remoteIDsMap[id] = true
 	}
 	for _, tun := range e.existingMelinoeTunnels(ctx) {
-		if remoteID := strings.TrimPrefix(tun, TunPrefix); !remoteIDsMap[remoteID] {
+		if remoteID, ok := tunnelNodeID(tun); !ok || !remoteIDsMap[remoteID] {
 			e.flushTunnel(ctx, tun)
 		}
 	}
 	var peerStates []PeerState
 	for _, remoteID := range remoteNodeIDs {
-		if !e.isValidNodeID(remoteID) {
-			continue
-		}
-		idInt, _ := strconv.Atoi(remoteID)
-		remoteVIP := e.baseNet.host(idInt)
-		remoteInner := e.innerNet.host(idInt)
-		tun := TunPrefix + remoteID
-		table := strconv.Itoa(e.tableBase + idInt)
-		if !e.ensureTunnel(ctx, linkCache, remoteID, localVIP, localInner, remoteVIP, remoteInner, tun, table) {
+		remoteVIP := e.baseNet.host(remoteID)
+		remoteInner := e.innerNet.host(remoteID)
+		tun := TunPrefix + strconv.Itoa(remoteID)
+		table := e.tableBase + remoteID
+		if !e.ensureTunnel(ctx, linkCache, localVIP, localInner, remoteVIP, remoteInner, tun, table) {
 			continue
 		}
 		peerStates = append(peerStates, PeerState{
@@ -678,9 +646,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/list", func(w http.ResponseWriter, r *http.Request) {
 		routes := engine.getLocalRouteSet(r.Context())
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, engine.serializeRouteList(routes))
+		w.Write(engine.serializeRouteList(routes))
 	})
 
 	server := &http.Server{
