@@ -64,7 +64,7 @@
         "kvm-intel"
       ];
     };
-  }
+  };
   zramSwap.enable = true;
   systemd.oomd.enable = false;
   security = {
@@ -131,6 +131,7 @@
     enable = true;
     servers = [ "time.uwa.edu.au:123" ];
   };
+
   services.iperf3.enable = true;
   services.glances.enable = true;
   services.glances.port = 61208;
@@ -149,6 +150,10 @@
   };
 
   networking.domain = "infra.melinoe.xyz";
+  networking.search = [
+    "intra.melinoe.xyz"
+    "ucc.asn.au"
+  ];
   melinoe.node.networking = {
     melinoe-route.enabled = true;
 
@@ -185,7 +190,6 @@
     wireguardBasePort = 64512;
     hostInternalPortAllNet.tcp = [ 5201 ]; # iperf3
   };
-
   melinoe.cluster.virtualMachines = [
     {
       iface = "vm-npm";
