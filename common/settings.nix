@@ -6,70 +6,105 @@
   ...
 }:
 {
-  boot.tmp.cleanOnBoot = true;
-  boot.loader.grub.configurationLimit = 5;
+  system.stateVersion = "25.05";
+
+  programs.nix-ld.enable = true;
+  environment.systemPackages = [
+    pkgs.git
+    pkgs.tcpdump
+    pkgs.nftables
+    pkgs.jq
+    pkgs.screen
+    pkgs.btop
+    pkgs.iperf3
+    pkgs.iptables
+    pkgs.python3
+    pkgs.sl
+    pkgs.compsize
+    pkgs.aria2
+    pkgs.nfs-utils
+    pkgs.sshfs
+  ];
+
+  nix = {
+    settings = {
+      experimental-features = [
+        "nix-command"
+        "flakes"
+      ];
+      min-free = 2147483648;
+      max-free = 5368709120;
+      require-sigs = true;
+    };
+    gc = {
+      automatic = true;
+      dates = "daily";
+      options = "--delete-older-than +5";
+    };
+  };
+
+  boot = {
+    kernelPackages = pkgs.linuxPackages_latest;
+    tmp.cleanOnBoot = true;
+    loader.grub.configurationLimit = 5;
+    initrd = {
+      availableKernelModules = [
+      "ata_piix"
+      "uhci_hcd"
+      "xen_blkfront"
+      "vmw_pvscsi"
+      "sd_mod"
+      "usbhid"
+      "usb_storage"
+      "mpt3sas"
+      "ehci_pci"
+        ];
+      kernelModules = [
+        "nvme"
+        "kvm-intel"
+      ];
+    };
+  }
   zramSwap.enable = true;
   systemd.oomd.enable = false;
-  networking.domain = "infra.melinoe.xyz";
-  melinoe.node.networking.melinoe-route.enabled = true;
-  melinoe.node.networking.ingressPoint.haproxy.backendNodes = [
-    {
-      name = "nginx1";
-      address = "198.18.1.1";
+  security = {
+    audit = {
+      enable = true;
+      rules = [
+        "-a always,exit -F arch=b64 -S execve -F euid=0 -F loginuid!=-1 -F key=root_cmd"
+        "-a always,exit -F arch=b32 -S execve -F euid=0 -F loginuid!=-1 -F key=root_cmd"
+      ];
+    };
+    auditd = {
+      enable = true;
+      settings = {
+        log_format = "ENRICHED";
+      };
     }
-    {
-      name = "nginx2";
-      address = "198.18.1.2";
-    }
-  ];
-  melinoe.node.networking.ingressPoint.haproxy.proxyProtocolAllowedSources = [ "192.168.11.2" ];
-  melinoe.node.networking.ingressPoint.haproxy.frontendPorts = {
-    fe_http = 80;
-    fe_https = 443;
-    fe_http_prxbp = 6080;
-    fe_https_prxbp = 6443;
-    fe_proxy_http = 1080;
-    fe_proxy_https = 1443;
   };
-  melinoe.node.networking.wireguardBasePort = 64512;
-  melinoe.node.networking.openPorts = {
-    tcp = [
-      22 # ssh
-      8008 # incus
-      8069 # incus
+
+  users.users.melinoe = {
+    isNormalUser = true;
+    home = "/home/melinoe";
+    description = "melinoe_wuz_here";
+    extraGroups = [
+      "wheel"
+      "networkmanager"
+      "incus-admin"
+    ];
+    shell = pkgs.bash;
+    openssh.authorizedKeys.keys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4aBJqk5/c2gFqPTcK3II7733F5wGCdt1wEIjI2K9e5 melinoe@lilith"
     ];
   };
-  melinoe.node.networking.hostInternalPortAllNet.tcp = [ 5201 ]; # iperf3
-  boot.initrd.availableKernelModules = [
-    "ata_piix"
-    "uhci_hcd"
-    "xen_blkfront"
-    "vmw_pvscsi"
-    "sd_mod"
-    "usbhid"
-    "usb_storage"
-    "mpt3sas"
-    "ehci_pci"
-  ];
-  boot.initrd.kernelModules = [
-    "nvme"
-    "kvm-intel"
-  ];
-  services.chrony = {
-    enable = true;
-    servers = [ "time.uwa.edu.au:123" ];
+  programs.bash = {
+    shellAliases = {
+      icl = "incus cluster list -c nursm";
+      ie = "incus exec";
+      il = "incus list '-cdevices:uplink.ipv4.address:v4ADDR,nstL,devices:uplink.ipv4.routes:ADDITIONAL\ ROUTES'";
+    };
   };
-  security.audit.enable = true;
-  security.auditd.enable = true;
-  services.qemuGuest.enable = true;
-  security.auditd.settings = {
-    log_format = "ENRICHED";
-  };
-  security.audit.rules = [
-    "-a always,exit -F arch=b64 -S execve -F euid=0 -F loginuid!=-1 -F key=root_cmd"
-    "-a always,exit -F arch=b32 -S execve -F euid=0 -F loginuid!=-1 -F key=root_cmd"
-  ];
-  systemd.services.qemu-guest-agent.unitConfig.ConditionVirtualization = "vm";
+
   services.openssh.ports = [ 22 ];
   services.openssh.enable = true;
   services.openssh.settings.PasswordAuthentication = false;
@@ -88,36 +123,69 @@
   environment.etc."ssh/ssh-host-ca.pub".text =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T SSH Host CA";
   environment.etc."ssh/ssh-host-ca.pub".mode = "0644";
-  nix.settings.experimental-features = [
-    "nix-command"
-    "flakes"
-  ];
-  nix.settings.min-free = 2147483648;
-  nix.settings.max-free = 5368709120;
-  nix.gc = {
-    automatic = true;
-    dates = "daily";
-    options = "--delete-older-than +5";
+
+  services.qemuGuest.enable = true;
+  systemd.services.qemu-guest-agent.unitConfig.ConditionVirtualization = "vm";
+
+  services.chrony = {
+    enable = true;
+    servers = [ "time.uwa.edu.au:123" ];
   };
-  nix.settings.require-sigs = true;
-  programs.nix-ld.enable = true;
-  system.stateVersion = "25.05";
-  environment.systemPackages = [
-    pkgs.git
-    pkgs.tcpdump
-    pkgs.nftables
-    pkgs.jq
-    pkgs.screen
-    pkgs.btop
-    pkgs.iperf3
-    pkgs.iptables
-    pkgs.python3
-    pkgs.sl
-    pkgs.compsize
-    pkgs.aria2
-    pkgs.nfs-utils
-    pkgs.sshfs
+  services.iperf3.enable = true;
+  services.glances.enable = true;
+  services.glances.port = 61208;
+  services.glances.extraArgs = [
+    "--webserver"
+    "-B"
+    (melinoeNodeIntraIP config.melinoe.node.id)
   ];
+
+  boot.kernel.sysctl = {
+    "net.ipv6.conf.all.autoconf" = false;
+    "net.ipv6.conf.all.accept_ra" = false;
+    "net.ipv4.ip_forward" = true;
+    "net.ipv4.conf.all.forwarding" = 1;
+    "net.ipv4.conf.default.forwarding" = 1;
+  };
+
+  networking.domain = "infra.melinoe.xyz";
+  melinoe.node.networking = {
+    melinoe-route.enabled = true;
+
+    ingressPoint.haproxy = {
+      backendNodes = [
+        {
+          name = "nginx1";
+          address = "198.18.1.1";
+        }
+        {
+          name = "nginx2";
+          address = "198.18.1.2";
+        }
+      ];
+      proxyProtocolAllowedSources = [
+        "192.168.11.2"
+      ];
+      frontendPorts = {
+        fe_http = 80;
+        fe_https = 443;
+        fe_http_prxbp = 6080;
+        fe_https_prxbp = 6443;
+        fe_proxy_http = 1080;
+        fe_proxy_https = 1443;
+      };
+    };
+    openPorts = {
+      tcp = [
+        22 # ssh
+        8008 # incus
+        8069 # incus
+      ];
+    };
+    wireguardBasePort = 64512;
+    hostInternalPortAllNet.tcp = [ 5201 ]; # iperf3
+  };
+
   melinoe.cluster.virtualMachines = [
     {
       iface = "vm-npm";
@@ -221,44 +289,5 @@
       ip = "198.18.3.0/24";
       udp = [ 51820 ];
     }
-  ];
-
-  boot.kernelPackages = pkgs.linuxPackages_latest;
-  boot.kernel.sysctl = {
-    "net.ipv6.conf.all.autoconf" = false;
-    "net.ipv6.conf.all.accept_ra" = false;
-    "net.ipv4.ip_forward" = true;
-    "net.ipv4.conf.all.forwarding" = 1;
-    "net.ipv4.conf.default.forwarding" = 1;
-  };
-  services.iperf3.enable = true;
-  services.glances.enable = true;
-  services.glances.port = 61208;
-  services.glances.extraArgs = [
-    "--webserver"
-    "-B"
-    (melinoeNodeIntraIP config.melinoe.node.id)
-  ];
-
-  users.users.melinoe = {
-    isNormalUser = true;
-    home = "/home/melinoe";
-    description = "melinoe_wuz_here";
-    extraGroups = [
-      "wheel"
-      "networkmanager"
-      "incus-admin"
-    ];
-    shell = pkgs.bash;
-    openssh.authorizedKeys.keys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4aBJqk5/c2gFqPTcK3II7733F5wGCdt1wEIjI2K9e5 melinoe@lilith"
-    ];
-  };
-  programs.bash = {
-    shellAliases = {
-      icl = "incus cluster list -c nursm";
-      ie = "incus exec";
-      il = "incus list '-cdevices:uplink.ipv4.address:v4ADDR,nstL,devices:uplink.ipv4.routes:ADDITIONAL\ ROUTES'";
-    };
-  };
+  ];`
 }
