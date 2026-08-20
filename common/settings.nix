@@ -80,7 +80,7 @@
       settings = {
         log_format = "ENRICHED";
       };
-    }
+    };
   };
 
   users.users.melinoe = {
