@@ -172,8 +172,6 @@ in
               chain prerouting {
                 type filter hook prerouting priority raw; policy accept;
       ${renderVmSaddrRules}
-                iifname $vm_ifs ip saddr ${hostRangeCidr} drop
-                iifname $vm_ifs ip saddr != ${addr.containerCidr} drop
               }
             }
             table ip nat {
