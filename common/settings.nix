@@ -105,17 +105,12 @@
     };
   };
 
-  services.openssh.ports = [ 22 ];
-  services.openssh.enable = true;
-  services.openssh.settings.PasswordAuthentication = false;
-  services.openssh.settings.KbdInteractiveAuthentication = false;
-  services.openssh.extraConfig = ''
-    AcceptEnv PROFILEUSER
-  '';
-
   melinoe.services.ssh = {
+    enabled = true;
+    acceptEnv = [ "PROFILEUSER" ];
     userCA = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINwS8hXHMP2ij1HmUL0N7oFU4+G8atQHtSRq9e8MOqkL SSH User CA";
     hostCert = "/etc/ssh/ssh_host_ed25519_key-cert.pub";
+    hostCA = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T SSH Host CA";
     knownHosts = [
       {
         hosts = [
@@ -132,10 +127,6 @@
       }
     ];
   };
-
-  environment.etc."ssh/ssh-host-ca.pub".text =
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T SSH Host CA";
-  environment.etc."ssh/ssh-host-ca.pub".mode = "0644";
 
   services.qemuGuest.enable = true;
   systemd.services.qemu-guest-agent.unitConfig.ConditionVirtualization = "vm";
