@@ -532,6 +532,8 @@ func (e *Engine) reconcileAllRoutes(ctx context.Context, peerStates []PeerState,
 				Dst:       r.Dst,
 				Protocol:  r.Protocol,
 				Table:     r.Table,
+				Scope:     r.Scope,
+				Priority:  r.Priority,
 			}
 			if err := netlink.RouteDel(&rDel); err != nil {
 				log.Printf("error: kernel netlink route destruction failure: prefix %s from %s: %v", prefix, tun, err)

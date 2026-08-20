@@ -53,6 +53,13 @@ let
       (renderProtoRule "tcp" mapping.tcp "ip daddr ${destExpr}" mapping.dst)
       + (renderProtoRule "udp" mapping.udp "ip daddr ${destExpr}" mapping.dst)
     ) natMappings;
+  nftIfaceSet =
+    names: if names == [ ] then "{ }" else "{ ${lib.concatStringsSep ", " (map (n: "\"${n}\"") names)} }";
+  vmIfaceNames = map (vm: vm.iface) vms;
+  nodeIfaceNames = map (id: "node-${toString id}") (
+    lib.filter (id: id != nodeID) (lib.range addr.nodeIdRange.min addr.nodeIdRange.max)
+  );
+  wgIfaceNames = map (peer: "wg-${toString peer.id}") netCfg.peers;
   vmOutboundMarkBase = netCfg.vmOutboundMarkBase;
   nodeOutboundMarkRange = "${toString vmOutboundMarkBase}-${toString (vmOutboundMarkBase + addr.nodeIdRange.max)}";
   vmOutboundRules = lib.filter (v: v != null) (
@@ -120,9 +127,9 @@ in
     networking.nftables.enable = true;
     networking.nftables.ruleset = ''
             flush ruleset
-            define vm_ifs = "vm-*"
-            define node_gre_ifs = "node-*"
-            define wg_ifs = "wg-*"
+            define vm_ifs = ${nftIfaceSet vmIfaceNames}
+            define node_gre_ifs = ${nftIfaceSet nodeIfaceNames}
+            define wg_ifs = ${nftIfaceSet wgIfaceNames}
             define gre_ctmark = { ${
               builtins.concatStringsSep ", " (
                 builtins.genList (
