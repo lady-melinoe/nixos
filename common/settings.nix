@@ -107,6 +107,7 @@
 
   melinoe.services.ssh = {
     enabled = true;
+    fwOpenPorts = true;
     acceptEnv = [ "PROFILEUSER" ];
     userCA = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINwS8hXHMP2ij1HmUL0N7oFU4+G8atQHtSRq9e8MOqkL SSH User CA";
     hostCert = "/etc/ssh/ssh_host_ed25519_key-cert.pub";
@@ -187,7 +188,6 @@
   melinoe.node.networking = {
     openPorts = {
       tcp = [
-        22 # ssh
         8008 # incus
         8069 # incus
       ];

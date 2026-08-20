@@ -45,6 +45,17 @@ in
       description = "Client environment variable names to accept (sshd's AcceptEnv).";
     };
 
+    fwOpenPorts = mkOption {
+      type = types.either types.bool (types.listOf types.port);
+      default = false;
+      description = ''
+        Whether (and which) sshd ports to add to
+        melinoe.node.networking.openPorts.tcp. `true` adds all of `ports`;
+        a list adds just those ports instead, for e.g. firewalling off an
+        internal-only listener while still exposing 22.
+      '';
+    };
+
     userCA = mkOption {
       type = types.nullOr types.str;
       default = null;
@@ -125,6 +136,14 @@ in
     services.openssh.extraConfig = mkIf (cfg.acceptEnv != [ ]) (
       "AcceptEnv ${lib.concatStringsSep " " cfg.acceptEnv}"
     );
+
+    melinoe.node.networking.openPorts.tcp =
+      if cfg.fwOpenPorts == true then
+        cfg.ports
+      else if cfg.fwOpenPorts == false then
+        [ ]
+      else
+        cfg.fwOpenPorts;
 
     services.openssh.settings.TrustedUserCAKeys = mkIf (cfg.userCA != null) "/etc/ssh/ssh-user-ca.pub";
     environment.etc."ssh/ssh-user-ca.pub" = mkIf (cfg.userCA != null) {
