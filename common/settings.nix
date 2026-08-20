@@ -90,19 +90,11 @@
     extraGroups = [
       "wheel"
       "networkmanager"
-      "incus-admin"
     ];
     shell = pkgs.bash;
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4aBJqk5/c2gFqPTcK3II7733F5wGCdt1wEIjI2K9e5 melinoe@lilith"
     ];
-  };
-  programs.bash = {
-    shellAliases = {
-      icl = "incus cluster list -c nursm";
-      ie = "incus exec";
-      il = "incus list '-cdevices:uplink.ipv4.address:v4ADDR,nstL,devices:uplink.ipv4.routes:ADDITIONAL\ ROUTES'";
-    };
   };
 
   melinoe.services.ssh = {
@@ -186,12 +178,6 @@
   };
 
   melinoe.node.networking = {
-    openPorts = {
-      tcp = [
-        8008 # incus
-        8069 # incus
-      ];
-    };
     wireguardBasePort = 64512;
     hostInternalPortAllNet.tcp = [ 5201 ]; # iperf3
   };
