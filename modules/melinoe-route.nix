@@ -5,8 +5,9 @@
   ...
 }:
 let
+  inherit (lib) mkOption types;
   cfg = config.melinoe;
-  routeCfg = config.melinoe.node.networking.melinoe-route;
+  routeCfg = config.melinoe.services.melinoe-route;
   netCfg = config.melinoe.node.networking;
   nodeID = cfg.node.id;
 
@@ -47,15 +48,29 @@ let
   };
 in
 {
+  options.melinoe.services.melinoe-route = {
+    enabled = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Enable the Melinoe route daemon.";
+    };
+
+    extraRoutes = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      description = "Additional IPv4 prefixes or host routes to advertise via melinoe-route.";
+    };
+  };
+
   config = {
     assertions = [
       {
         assertion = routeCfg.enabled || routeCfg.extraRoutes == [ ];
-        message = "melinoe.node.networking.melinoe-route.extraRoutes requires melinoe.node.networking.melinoe-route.enabled to be true.";
+        message = "melinoe.services.melinoe-route.extraRoutes requires melinoe.services.melinoe-route.enabled to be true.";
       }
       {
         assertion = !routeCfg.enabled || netCfg.enabled;
-        message = "melinoe.node.networking.enabled must be true when melinoe.node.networking.melinoe-route.enabled is true (melinoe.node.networking.uplinks is an uplink property and pub_ips are derived from it).";
+        message = "melinoe.node.networking.enabled must be true when melinoe.services.melinoe-route.enabled is true (melinoe.node.networking.uplinks is an uplink property and pub_ips are derived from it).";
       }
     ];
 

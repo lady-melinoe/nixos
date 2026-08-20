@@ -111,15 +111,28 @@
   services.openssh.settings.KbdInteractiveAuthentication = false;
   services.openssh.extraConfig = ''
     AcceptEnv PROFILEUSER
-    TrustedUserCAKeys /etc/ssh/ssh-user-ca.pub
-    HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub
   '';
-  environment.etc."ssh/ssh_known_hosts".text = ''
-    @cert-authority *.infra.melinoe.xyz,*.intra.melinoe.xyz,198.18.0.*,198.19.0.*,198.19.1.*,198.19.3.*,198.51.100.* ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T
-  '';
-  environment.etc."ssh/ssh-user-ca.pub".text =
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINwS8hXHMP2ij1HmUL0N7oFU4+G8atQHtSRq9e8MOqkL SSH User CA";
-  environment.etc."ssh/ssh-user-ca.pub".mode = "0644";
+
+  melinoe.services.ssh = {
+    userCA = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINwS8hXHMP2ij1HmUL0N7oFU4+G8atQHtSRq9e8MOqkL SSH User CA";
+    hostCert = "/etc/ssh/ssh_host_ed25519_key-cert.pub";
+    knownHosts = [
+      {
+        hosts = [
+          "*.infra.melinoe.xyz"
+          "*.intra.melinoe.xyz"
+          "198.18.0.*"
+          "198.19.0.*"
+          "198.19.1.*"
+          "198.19.3.*"
+          "198.51.100.*"
+        ];
+        certAuthority = true;
+        publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T";
+      }
+    ];
+  };
+
   environment.etc."ssh/ssh-host-ca.pub".text =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T SSH Host CA";
   environment.etc."ssh/ssh-host-ca.pub".mode = "0644";
@@ -154,32 +167,33 @@
     "intra.melinoe.xyz"
     "ucc.asn.au"
   ];
-  melinoe.node.networking = {
-    melinoe-route.enabled = true;
+  melinoe.services.melinoe-route.enabled = true;
 
-    ingressPoint.haproxy = {
-      backendNodes = [
-        {
-          name = "nginx1";
-          address = "198.18.1.1";
-        }
-        {
-          name = "nginx2";
-          address = "198.18.1.2";
-        }
-      ];
-      proxyProtocolAllowedSources = [
-        "192.168.11.2"
-      ];
-      frontendPorts = {
-        fe_http = 80;
-        fe_https = 443;
-        fe_http_prxbp = 6080;
-        fe_https_prxbp = 6443;
-        fe_proxy_http = 1080;
-        fe_proxy_https = 1443;
-      };
+  melinoe.services.haproxy = {
+    backendNodes = [
+      {
+        name = "nginx1";
+        address = "198.18.1.1";
+      }
+      {
+        name = "nginx2";
+        address = "198.18.1.2";
+      }
+    ];
+    proxyProtocolAllowedSources = [
+      "192.168.11.2"
+    ];
+    frontendPorts = {
+      fe_http = 80;
+      fe_https = 443;
+      fe_http_prxbp = 6080;
+      fe_https_prxbp = 6443;
+      fe_proxy_http = 1080;
+      fe_proxy_https = 1443;
     };
+  };
+
+  melinoe.node.networking = {
     openPorts = {
       tcp = [
         22 # ssh

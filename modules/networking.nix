@@ -5,7 +5,7 @@
 }:
 let
   cfg = config.melinoe;
-  routeCfg = config.melinoe.node.networking.melinoe-route;
+  routeCfg = config.melinoe.services.melinoe-route;
   addr = config.melinoe.cluster.networking;
   nodeID = cfg.node.id;
 
@@ -64,7 +64,7 @@ in
     assertions = [
       {
         assertion = routeCfg.enabled;
-        message = "melinoe.node.networking.melinoe-route.enabled must be true for modules/networking.nix.";
+        message = "melinoe.services.melinoe-route.enabled must be true for modules/networking.nix.";
       }
     ];
 
