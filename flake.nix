@@ -54,11 +54,11 @@
       nixosConfigurations =
         lib.mapAttrs mkNixosConfiguration nodes;
 
-      mel-ssh-provision = import ./mel-ssh-provision.nix {
+      mel-ssh-provision = import ./flake-helpers/mel-ssh-provision.nix {
         inherit pkgs lib nixosConfigurations;
       };
 
-      mel-deploy = import ./mel-deploy.nix {
+      mel-deploy = import ./flake-helpers/mel-deploy.nix {
         inherit pkgs lib nixosConfigurations;
       };
     in
