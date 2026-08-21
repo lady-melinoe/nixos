@@ -51,7 +51,7 @@ in
     melinoe.node.networking.specialWgAccess.tcp =
       lib.mkIf netCfg.enabled [ 179 ];
 
-    # Multihop BFD uses UDP/3784.
+    # Multihop BFD uses UDP/4784.
     melinoe.node.networking.specialWgAccess.udp =
       lib.mkIf netCfg.enabled [ 4784 ];
 
