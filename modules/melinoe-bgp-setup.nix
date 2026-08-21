@@ -40,7 +40,6 @@ let
 
   mkBfdPeer = peer: ''
     peer ${peer.addr} multihop local-address ${localWgAddr}
-      label bgp-${toString peer.id}
       detect-multiplier 3
       receive-interval 300
       transmit-interval 300
@@ -59,15 +58,16 @@ let
 in
 {
   config = {
+    # BGP TCP/179 over WireGuard.
     melinoe.node.networking.specialWgAccess.tcp =
       lib.mkIf netCfg.enabled [ 179 ];
 
-    # Multi-hop BFD uses UDP/4784.
+    # Multihop BFD uses UDP/4784.
     melinoe.node.networking.specialWgAccess.udp =
       lib.mkIf netCfg.enabled [ 4784 ];
 
-    # Work around the FRR/systemd reload issue:
-    # configuration changes should stop/start FRR rather than reload it.
+    # FRR has an upstream reload issue, so force configuration
+    # changes to restart the service rather than reload it.
     systemd.services.frr.reloadIfChanged = lib.mkForce false;
     systemd.services.frr.restartIfChanged = lib.mkForce true;
 
