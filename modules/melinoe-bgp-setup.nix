@@ -97,12 +97,12 @@ in
     };
 
     # FRR currently has an upstream reload problem for us.
-    # Make NixOS stop and start the service when its definition changes,
+    # Force NixOS to stop and start FRR when its definition changes,
     # rather than attempting a systemd reload.
     systemd.services.frr = lib.mkIf netCfg.enabled {
-      reloadIfChanged = false;
-      restartIfChanged = true;
-      stopIfChanged = true;
+      reloadIfChanged = lib.mkForce false;
+      restartIfChanged = lib.mkForce true;
+      stopIfChanged = lib.mkForce true;
     };
   };
 }
