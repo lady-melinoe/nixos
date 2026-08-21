@@ -39,7 +39,7 @@ let
   '';
 
   mkBfdPeer = peer: ''
-    peer ${peer.addr} multihop local-address ${localWgAddr}
+    peer ${peer.addr} local-address ${localWgAddr}
       detect-multiplier 3
       receive-interval 300
       transmit-interval 300
@@ -62,9 +62,9 @@ in
     melinoe.node.networking.specialWgAccess.tcp =
       lib.mkIf netCfg.enabled [ 179 ];
 
-    # Multihop BFD uses UDP/4784.
+    # Singlehop BFD uses UDP/3784.
     melinoe.node.networking.specialWgAccess.udp =
-      lib.mkIf netCfg.enabled [ 4784 ];
+      lib.mkIf netCfg.enabled [ 3784 ];
 
     # FRR has an upstream reload issue, so force configuration
     # changes to restart the service rather than reload it.
