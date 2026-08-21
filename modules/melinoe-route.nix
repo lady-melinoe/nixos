@@ -41,7 +41,7 @@ let
   );
   melinoeGoBinary = pkgs.buildGoModule {
     pname = "melinoe-route";
-    version = "0.0.7";
+    version = "0.0.8";
 
     src = ./melinoe-route-daemon-src;
     vendorHash = "sha256-qJtuKtPR43buQk6aSqhgP9FkMJWIvUSWKoab8kn6+Sg=";

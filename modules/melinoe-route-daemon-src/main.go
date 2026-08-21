@@ -229,7 +229,7 @@ func (e *Engine) serializeRouteList(routes RouteMap) []byte {
 }
 
 func (e *Engine) fetchRemoteRouteList(ctx context.Context, remoteInner string) []string {
-	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, fmt.Sprintf("http://%s:%s/list", remoteInner, Port), nil)
@@ -601,7 +601,7 @@ func (e *Engine) deployOnce(ctx context.Context) {
 }
 
 func (e *Engine) Start(ctx context.Context) {
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
