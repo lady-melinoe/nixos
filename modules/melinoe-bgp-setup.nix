@@ -22,20 +22,7 @@ let
     addr = melinoeNodeWgIP p.id;
   }) netCfg.peers;
 
-  mkNeighborStanza = peer: ''
-    neighbor ${peer.addr} remote-as ${toString (bgpAsBase + peer.id)}
-    neighbor ${peer.addr} update-source ${localWgAddr}
-    neighbor ${peer.addr} timers 1 3
-  '';
-
-  mkNeighborAfi = peer: ''
-    neighbor ${peer.addr} activate
-    neighbor ${peer.addr} route-map NODE-IN in
-    neighbor ${peer.addr} route-map NODE-OUT out
-  '';
-
-  # Temporary BFD test: only enable bfdd and configure a BFD
-  # session on nodes 6 and 7.
+  # Temporary BFD test: only nodes 6 and 7 participate.
   bfdEnabled = nodeID == 6 || nodeID == 7;
 
   bfdPeer =
@@ -59,6 +46,25 @@ let
       exit
     exit
   '';
+
+  mkNeighborStanza = peer: ''
+    neighbor ${peer.addr} remote-as ${toString (bgpAsBase + peer.id)}
+    neighbor ${peer.addr} update-source ${localWgAddr}
+    neighbor ${peer.addr} timers 1 3
+    ${lib.optionalString (
+      bfdEnabled
+      && (
+        (nodeID == 6 && peer.id == 7)
+        || (nodeID == 7 && peer.id == 6)
+      )
+    ) "neighbor ${peer.addr} bfd"}
+  '';
+
+  mkNeighborAfi = peer: ''
+    neighbor ${peer.addr} activate
+    neighbor ${peer.addr} route-map NODE-IN in
+    neighbor ${peer.addr} route-map NODE-OUT out
+  '';
 in
 {
   config = {
@@ -67,6 +73,8 @@ in
 
     services.frr = lib.mkIf netCfg.enabled {
       bgpd.enable = true;
+
+      # Only run bfdd on nodes 6 and 7.
       bfdd.enable = bfdEnabled;
 
       config =
