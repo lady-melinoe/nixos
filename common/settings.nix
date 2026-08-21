@@ -180,6 +180,7 @@
   melinoe.node.networking = {
     wireguardBasePort = 64512;
     hostInternalPortAllNet.tcp = [ 5201 ]; # iperf3
+    specialWgAccess.udp = [ 3784 ]; # bfdd
   };
   melinoe.cluster.virtualMachines = [
     {
