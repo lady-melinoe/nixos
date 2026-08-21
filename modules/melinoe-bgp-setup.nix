@@ -29,17 +29,17 @@ let
     if nodeID == 6 then {
       addr = melinoeNodeWgIP 7;
       localAddr = localWgAddr;
-      interface = "wg-7";
     } else if nodeID == 7 then {
       addr = melinoeNodeWgIP 6;
       localAddr = localWgAddr;
-      interface = "wg-6";
     } else
       null;
 
+  # Multihop BFD deliberately does not specify an interface.
+  # This lets us test whether FRR follows normal routing to the peer.
   bfdConfig = lib.optionalString bfdEnabled ''
     bfd
-      peer ${bfdPeer.addr} local-address ${bfdPeer.localAddr} interface ${bfdPeer.interface}
+      peer ${bfdPeer.addr} multihop local-address ${bfdPeer.localAddr}
         transmit-interval 300
         receive-interval 300
         detect-multiplier 3
@@ -73,8 +73,6 @@ in
 
     services.frr = lib.mkIf netCfg.enabled {
       bgpd.enable = true;
-
-      # Only run bfdd on nodes 6 and 7.
       bfdd.enable = bfdEnabled;
 
       config =
