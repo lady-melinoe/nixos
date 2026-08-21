@@ -29,7 +29,7 @@ let
     neighbor ${peer.addr} update-source ${localWgAddr}
     neighbor ${peer.addr} ebgp-multihop 2
     neighbor ${peer.addr} bfd
-    neighbor ${peer.addr} timers 1 3
+    neighbor ${peer.addr} timers 10 30
   '';
 
   mkNeighborAfi = peer: ''
