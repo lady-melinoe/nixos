@@ -38,22 +38,11 @@ let
     neighbor ${peer.addr} route-map NODE-OUT out
   '';
 
-  mkBfdPeer = peer: ''
-    peer ${peer.addr} local-address ${localWgAddr}
-      detect-multiplier 3
-      receive-interval 300
-      transmit-interval 300
-    exit
-  '';
-
   neighborLines =
     lib.concatMapStrings mkNeighborStanza peers;
 
   neighborAfiLines =
     lib.concatMapStrings mkNeighborAfi peers;
-
-  bfdPeerLines =
-    lib.concatMapStrings mkBfdPeer peers;
 
 in
 {
@@ -62,9 +51,9 @@ in
     melinoe.node.networking.specialWgAccess.tcp =
       lib.mkIf netCfg.enabled [ 179 ];
 
-    # Singlehop BFD uses UDP/3784.
+    # Multihop BFD uses UDP/3784.
     melinoe.node.networking.specialWgAccess.udp =
-      lib.mkIf netCfg.enabled [ 3784 ];
+      lib.mkIf netCfg.enabled [ 4784 ];
 
     # FRR has an upstream reload issue, so force configuration
     # changes to restart the service rather than reload it.
@@ -96,9 +85,6 @@ in
           exit-address-family
         exit
 
-        bfd
-          ${bfdPeerLines}
-        exit
       '';
     };
   };
