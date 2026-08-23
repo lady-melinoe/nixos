@@ -23,6 +23,15 @@ let
       hostname = c.networking.hostName;
       sshTarget = "${name}.infra.melinoe.xyz";
 
+      # Paths (on this host) of any keys it uses to ssh out to build
+      # servers, per `melinoe.node.remoteBuildOn`. These are declared in
+      # nix per-node rather than assumed, since the key name/path isn't
+      # fixed across nodes. `sshKey` is a freeform field on the
+      # remoteBuildOn submodule, so it may be absent.
+      remoteBuildKeys = lib.unique (
+        builtins.filter (k: k != null) (map (m: m.sshKey or null) c.melinoe.node.remoteBuildOn)
+      );
+
       principals = lib.unique (
         [
           c.networking.hostName

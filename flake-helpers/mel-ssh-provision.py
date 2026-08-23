@@ -35,10 +35,19 @@ USER_CA_KEY = os.environ.get(
 )
 USER_VALIDITY = os.environ.get("MEL_USER_CERT_VALIDITY", "+52w")
 
+# Separate (shorter) default for remote-build key certs specifically: these
+# are renewed unattended, typically alongside host certs, rather than by a
+# human renewing their own cert by hand - so they should default to a
+# similar rotation cadence to host certs, not USER_VALIDITY's 1-year human
+# default. Otherwise a cert signed today would outlive many renewal cycles
+# before it mattered, which defeats renewing it on a schedule at all.
+REMOTEBUILD_VALIDITY = os.environ.get("MEL_REMOTEBUILD_CERT_VALIDITY", HOST_VALIDITY)
+
 USER_SSH_AUTH_SOCK = os.environ.get("SSH_AUTH_SOCK", "")
 
 CLEANUP_DIRS: list[str] = []
-CA_AGENT_PID: int | None = None
+CA_AGENT_PIDS: list[int] = []
+CA_AGENT_SOCKS: dict[str, str] = {}
 
 DEFAULT_EXTENSIONS = [
     "permit-X11-forwarding",
@@ -55,14 +64,13 @@ DEFAULT_EXTENSIONS = [
 
 
 def cleanup() -> None:
-    global CA_AGENT_PID
-
-    if CA_AGENT_PID is not None:
+    for pid in CA_AGENT_PIDS:
         try:
-            os.kill(CA_AGENT_PID, signal.SIGTERM)
+            os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
-        CA_AGENT_PID = None
+    CA_AGENT_PIDS.clear()
+    CA_AGENT_SOCKS.clear()
 
     for d in CLEANUP_DIRS:
         shutil.rmtree(d, ignore_errors=True)
@@ -90,7 +98,7 @@ def die(msg: str) -> None:
 
 def usage() -> None:
     print(
-        """Melinoe SSH Provisioning Tool
+        f"""Melinoe SSH Provisioning Tool
 
 Usage:
   mel-ssh-provision host <command> [arguments]
@@ -103,19 +111,36 @@ Host commands:
   show <host>
       Show generated metadata and principals for a host.
 
-  bootstrap <host>
+  bootstrap <host> [--remotebuild]
       Generate host keys if necessary, sign them, and deploy the
       resulting certificate.
 
-  rotate <host>
+  rotate <host> [--remotebuild]
       Force regeneration of the target host keys, sign them, and
       redeploy the certificate.
 
-  renew <host>
+  renew <host> [--remotebuild]
       Resign the existing host key and redeploy the certificate.
 
-  renew-all
+  renew-all [--remotebuild]
       Renew certificates for every configured host.
+
+      With --remotebuild, also runs the equivalent of
+      renew-remotebuild on each host afterwards.
+
+  renew-remotebuild <host>
+      For each key path declared in this host's
+      melinoe.node.remoteBuildOn.*.sshKey (in nix), checks whether
+      "<key>-cert.pub" exists and is signed by our own user CA, and
+      if so re-signs it in place, preserving its key ID, principals,
+      and policy but applying a fresh validity window (default: same
+      as host certs, {HOST_VALIDITY} - overridable via
+      MEL_REMOTEBUILD_CERT_VALIDITY - since these are renewed
+      unattended rather than by a human). Keys with no cert, or a
+      cert signed by something else, are left untouched.
+
+  renew-remotebuild-all
+      Runs renew-remotebuild across every configured host.
 
 User commands:
   sign [options]
@@ -135,10 +160,21 @@ User commands:
 
 
 def setup_ca_agent(ca_key: str) -> None:
-    """Unlock ca_key into a fresh, throw-away ssh-agent."""
-    global CA_AGENT_PID
+    """Unlock ca_key into an ephemeral ssh-agent and point SSH_AUTH_SOCK at
+    it, so that subsequent `ssh-keygen -U` calls sign with it.
 
-    print("Unlocking CA key into ephemeral agent...", file=sys.stderr)
+    Agents are cached per ca_key: calling this again for a key that is
+    already unlocked just switches SSH_AUTH_SOCK back to its existing
+    agent, instead of spawning a new one. This lets a single run hold
+    both the host CA and user CA unlocked simultaneously and hop between
+    them (e.g. renewing a host cert and then a remotebuild user cert on
+    the same host).
+    """
+    if ca_key in CA_AGENT_SOCKS:
+        os.environ["SSH_AUTH_SOCK"] = CA_AGENT_SOCKS[ca_key]
+        return
+
+    print(f"Unlocking CA key ({ca_key}) into ephemeral agent...", file=sys.stderr)
 
     ca_dir = tempfile.mkdtemp()
     CLEANUP_DIRS.append(ca_dir)
@@ -162,7 +198,7 @@ def setup_ca_agent(ca_key: str) -> None:
     if pid is None:
         die("could not determine ssh-agent PID")
 
-    CA_AGENT_PID = pid
+    CA_AGENT_PIDS.append(pid)
     os.environ["SSH_AUTH_SOCK"] = sock_path
 
     subprocess.run(
@@ -170,6 +206,8 @@ def setup_ca_agent(ca_key: str) -> None:
         check=True,
         stdout=subprocess.DEVNULL,
     )
+
+    CA_AGENT_SOCKS[ca_key] = sock_path
 
 
 def read_key_material(identity: str | None) -> bytes:
@@ -403,6 +441,18 @@ def require_host(host: str | None, hosts: dict) -> str:
     return host
 
 
+def ssh_opts() -> list[str]:
+    """SSH options for connecting *to* fleet hosts as root.
+
+    Deliberately independent of whatever CA agent is currently unlocked
+    (see setup_ca_agent) - this always points at the invoking user's own
+    agent, so it keeps working no matter which CA key is active.
+    """
+    if USER_SSH_AUTH_SOCK:
+        return ["-o", f"IdentityAgent={USER_SSH_AUTH_SOCK}"]
+    return []
+
+
 def process_host(host: str, force: bool, hosts: dict) -> None:
     require_host(host, hosts)
 
@@ -416,9 +466,7 @@ def process_host(host: str, force: bool, hosts: dict) -> None:
     pubfile = os.path.join(tmpdir, "host.pub")
     certfile = os.path.join(tmpdir, "host-cert.pub")
 
-    ssh_opts = []
-    if USER_SSH_AUTH_SOCK:
-        ssh_opts = ["-o", f"IdentityAgent={USER_SSH_AUTH_SOCK}"]
+    opts = ssh_opts()
 
     remote_script = """set -euo pipefail
 
@@ -437,7 +485,7 @@ cat "$pub"
         subprocess.run(
             [
                 "ssh",
-                *ssh_opts,
+                *opts,
                 f"root@{target}",
                 "bash",
                 "-s",
@@ -475,7 +523,7 @@ cat "$pub"
         subprocess.run(
             [
                 "ssh",
-                *ssh_opts,
+                *opts,
                 f"root@{target}",
                 f"cat > '{HOST_CERT_PATH}' && systemctl reload sshd",
             ],
@@ -486,33 +534,205 @@ cat "$pub"
     print(f"OK: {host} updated successfully.")
 
 
+# --------------------------------------------------------------------------
+# Remotebuild user-cert renewal
+# --------------------------------------------------------------------------
+
+
+def key_fingerprint(pubkey_path: str) -> str:
+    """SHA256 fingerprint (as printed by `ssh-keygen -l`) of a public key file."""
+    out = subprocess.run(
+        ["ssh-keygen", "-l", "-f", pubkey_path],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    # e.g. "256 SHA256:AbCdEf... comment (ED25519)"
+    return out.split()[1]
+
+
+def cert_signing_ca_fingerprint(ssh_keygen_dash_l_output: str) -> str | None:
+    """Pull the "SHA256:..." fingerprint out of a `ssh-keygen -L` Signing CA line."""
+    for raw in ssh_keygen_dash_l_output.splitlines():
+        line = raw.strip()
+        if line.startswith("Signing CA:"):
+            for token in line.split():
+                if token.startswith("SHA256:"):
+                    return token
+    return None
+
+
+def preserved_extra_opts(fields: dict) -> list[str]:
+    """Rebuild the -O options for a renewal that keeps the existing policy
+    (critical options and extensions) exactly as it was."""
+    extra_opts = ["clear", *fields["other_critical_opts"]]
+
+    if fields["force_command"]:
+        extra_opts.insert(1, f"force-command={fields['force_command']}")
+
+    extra_opts.extend(fields["extensions"])
+    return extra_opts
+
+
+def split_cert_fields(fields: dict) -> dict:
+    """Split parse_cert_fields()'s flat extra_opts into extensions vs. other
+    critical options, the way user_renew_cmd does. Mutates and returns fields."""
+    fields["extensions"] = [
+        o for o in fields["extra_opts"] if o in DEFAULT_EXTENSIONS
+    ]
+    fields["other_critical_opts"] = [
+        o for o in fields["extra_opts"] if o not in DEFAULT_EXTENSIONS
+    ]
+    return fields
+
+
+def sync_remotebuild_certs(host: str, target: str, key_paths: list[str]) -> list[str]:
+    """For each of `host`'s declared remote-build key paths (from
+    melinoe.node.remoteBuildOn.*.sshKey in nix), check whether
+    "<key_path>-cert.pub" exists on `target` and is signed by our own
+    user CA, and if so re-sign it in place, preserving its existing
+    policy.
+
+    Returns one human-readable status line per key path. Assumes the
+    user CA is already unlocked via setup_ca_agent(USER_CA_KEY).
+    """
+    if not key_paths:
+        return ["no remote-build keys declared for this host"]
+
+    statuses = []
+
+    for key_path in key_paths:
+        cert_path = f"{key_path}-cert.pub"
+        statuses.append(sync_one_cert(target, cert_path))
+
+    return statuses
+
+
+def sync_one_cert(target: str, cert_path: str) -> str:
+    tmpdir = tempfile.mkdtemp()
+    CLEANUP_DIRS.append(tmpdir)
+    certfile = os.path.join(tmpdir, "cert.pub")
+
+    remote_check = f"""set -euo pipefail
+if [ -s '{cert_path}' ]; then
+  cat '{cert_path}'
+else
+  exit 3
+fi
+"""
+
+    result = subprocess.run(
+        ["ssh", *ssh_opts(), f"root@{target}", "bash", "-s"],
+        input=remote_check.encode(),
+        capture_output=True,
+    )
+
+    if result.returncode == 3:
+        return f"{cert_path}: not present, skipped"
+
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            f"check {cert_path} on {target}",
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+
+    cert_bytes = result.stdout
+    Path(certfile).write_bytes(cert_bytes)
+
+    keygen_l = subprocess.run(
+        ["ssh-keygen", "-L", "-f", certfile],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    signing_fp = cert_signing_ca_fingerprint(keygen_l)
+    if signing_fp != key_fingerprint(f"{USER_CA_KEY}.pub"):
+        return f"{cert_path}: not signed by our user CA, skipped"
+
+    fields = split_cert_fields(parse_cert_fields(keygen_l))
+
+    if not fields["key_id"]:
+        return f"{cert_path}: could not parse certificate, skipped"
+
+    serial = str(int(fields["old_serial"]) + 1)
+    principals_csv = ",".join(fields["principals"])
+    pubkey_line = extract_pubkey_from_cert(cert_bytes)
+    extra_opts = preserved_extra_opts(fields)
+
+    new_certfile = os.path.join(tmpdir, "cert.pub.new")
+
+    setup_ca_agent(USER_CA_KEY)
+    do_sign_user(
+        fields["key_id"],
+        principals_csv,
+        REMOTEBUILD_VALIDITY,
+        new_certfile,
+        serial,
+        extra_opts,
+        pubkey_line.encode() + b"\n",
+    )
+
+    with open(new_certfile, "rb") as f:
+        subprocess.run(
+            ["ssh", *ssh_opts(), f"root@{target}", f"cat > '{cert_path}'"],
+            stdin=f,
+            check=True,
+        )
+
+    return f"{cert_path}: renewed (serial {serial})"
+
+
+def print_remotebuild_statuses(host: str, hosts: dict) -> None:
+    key_paths = hosts[host].get("remoteBuildKeys", [])
+    for status in sync_remotebuild_certs(host, hosts[host]["sshTarget"], key_paths):
+        print(f"{host}: {status}")
+
+
 def host_cmd(args: list[str], hosts: dict) -> None:
     if not args:
         usage()
 
     cmd, rest = args[0], args[1:]
 
+    flags = [a for a in rest if a.startswith("-")]
+    positional = [a for a in rest if not a.startswith("-")]
+    with_remotebuild = "--remotebuild" in flags
+
     if cmd == "list":
         for h in sorted(hosts):
             print(h)
 
     elif cmd == "show":
-        host = require_host(rest[0] if rest else None, hosts)
+        host = require_host(positional[0] if positional else None, hosts)
         print(json.dumps(hosts[host], indent=2))
 
     elif cmd in ("bootstrap", "rotate", "renew"):
-        target_host = require_host(rest[0] if rest else None, hosts)
+        target_host = require_host(positional[0] if positional else None, hosts)
         setup_ca_agent(HOST_CA_KEY)
         process_host(target_host, force=(cmd == "rotate"), hosts=hosts)
 
+        if with_remotebuild:
+            setup_ca_agent(USER_CA_KEY)
+            print_remotebuild_statuses(target_host, hosts)
+
     elif cmd == "renew-all":
         setup_ca_agent(HOST_CA_KEY)
+        if with_remotebuild:
+            setup_ca_agent(USER_CA_KEY)
 
         failures = []
 
         for h in sorted(hosts):
             try:
+                setup_ca_agent(HOST_CA_KEY)
                 process_host(h, force=False, hosts=hosts)
+
+                if with_remotebuild:
+                    setup_ca_agent(USER_CA_KEY)
+                    print_remotebuild_statuses(h, hosts)
             except subprocess.CalledProcessError:
                 print(f"FAILED: {h}", file=sys.stderr)
                 failures.append(h)
@@ -525,6 +745,32 @@ def host_cmd(args: list[str], hosts: dict) -> None:
             sys.exit(1)
 
         print("All hosts renewed successfully.")
+
+    elif cmd == "renew-remotebuild":
+        target_host = require_host(positional[0] if positional else None, hosts)
+        setup_ca_agent(USER_CA_KEY)
+        print_remotebuild_statuses(target_host, hosts)
+
+    elif cmd == "renew-remotebuild-all":
+        setup_ca_agent(USER_CA_KEY)
+
+        failures = []
+
+        for h in sorted(hosts):
+            try:
+                print_remotebuild_statuses(h, hosts)
+            except subprocess.CalledProcessError:
+                print(f"FAILED: {h}", file=sys.stderr)
+                failures.append(h)
+
+        if failures:
+            print(
+                f"\nCompleted with {len(failures)} failure(s): {' '.join(failures)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        print("Remotebuild key certs synced for all hosts.")
 
     else:
         usage()
@@ -929,20 +1175,7 @@ def user_renew_cmd(args: list[str]) -> None:
         die("could not parse Key ID from certificate.")
 
     # Split the parsed policy into its user-facing pieces.
-    parsed_extensions = [
-        option
-        for option in fields["extra_opts"]
-        if option in DEFAULT_EXTENSIONS
-    ]
-
-    other_critical_opts = [
-        option
-        for option in fields["extra_opts"]
-        if option not in DEFAULT_EXTENSIONS
-    ]
-
-    fields["extensions"] = parsed_extensions
-    fields["other_critical_opts"] = other_critical_opts
+    fields = split_cert_fields(fields)
 
     serial = opts.get("serial") or str(int(fields["old_serial"]) + 1)
     principals_csv = ",".join(fields["principals"])
@@ -972,31 +1205,12 @@ def user_renew_cmd(args: list[str]) -> None:
 
         else:
             # Preserve the existing policy exactly.
-            extra_opts = [
-                "clear",
-                *fields["other_critical_opts"],
-            ]
-
-            if fields["force_command"]:
-                extra_opts.insert(
-                    1,
-                    f"force-command={fields['force_command']}",
-                )
-
-            extra_opts.extend(fields["extensions"])
+            extra_opts = preserved_extra_opts(fields)
 
     else:
         # Non-interactive renewal preserves the existing certificate
         # policy exactly, as it did before.
-        extra_opts = ["clear", *fields["other_critical_opts"]]
-
-        if fields["force_command"]:
-            extra_opts.insert(
-                1,
-                f"force-command={fields['force_command']}",
-            )
-
-        extra_opts.extend(fields["extensions"])
+        extra_opts = preserved_extra_opts(fields)
 
     setup_ca_agent(USER_CA_KEY)
 
