@@ -108,7 +108,7 @@ in
         default = "inet0";
         description = ''
           Name of the host-side veth interface for the inet netns pair set up
-          by melinoe-uplink-setup.nix. Consumed there (where the interface is
+          by uplink.nix. Consumed there (where the interface is
           created) and in nftables.nix (NAT/masquerade rules), so it's an
           option rather than a literal duplicated in both.
         '';
@@ -118,11 +118,11 @@ in
         type = types.ints.u32;
         default = 51820;
         description = ''
-          fwmark value - and, since melinoe-uplink-setup.nix also uses it as
+          fwmark value - and, since uplink.nix also uses it as
           the policy-routing table id, table number - used to route return
           traffic for the internet uplink back out via uplinkVeth instead
-          of over the WireGuard mesh. Consumed by melinoe-wireguard-setup.nix,
-          melinoe-uplink-setup.nix, and nftables.nix; kept as a single option
+          of over the WireGuard mesh. Consumed by wireguard.nix,
+          uplink.nix, and nftables.nix; kept as a single option
           so those three stay in sync.
         '';
       };
@@ -136,12 +136,10 @@ in
           nftables.nix derives its ct-mark matching range from this plus
           cluster.networking.nodeIdRange.max.
 
-          melinoe-route.nix's embedded Go daemon has a hard dependency on this
-          same numbering for its own ipip route-table allocation, but since
-          that value is baked into a compiled binary rather than read from
-          Nix config, changing this option won't propagate there automatically
-          - melinoe-route.nix asserts this option is still 1000 specifically
-          to catch that case instead of silently diverging.
+          melinoe-route.nix's embedded Go daemon uses this same numbering for
+          its own ipip route-table allocation, passed through via table_base
+          in its JSON config, so changing this option propagates there
+          automatically.
         '';
       };
 
