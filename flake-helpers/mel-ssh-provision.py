@@ -19,25 +19,34 @@ import tempfile
 from pathlib import Path
 
 # --------------------------------------------------------------------------
-# Config (env-overridable, same variable names as the old bash tool)
+# Config
 # --------------------------------------------------------------------------
 
-HOST_CA_KEY = os.environ.get("MEL_HOST_CA_KEY", str(Path.home() / "ssh-ca-keys/ssh-host-ca"))
+HOST_CA_KEY = os.environ.get(
+    "MEL_HOST_CA_KEY", str(Path.home() / "ssh-ca-keys/ssh-host-ca")
+)
 HOST_VALIDITY = os.environ.get("MEL_HOST_CERT_VALIDITY", "+30d")
-HOST_CERT_PATH = os.environ.get("MEL_HOST_CERT_PATH", "/etc/ssh/ssh_host_ed25519_key-cert.pub")
+HOST_CERT_PATH = os.environ.get(
+    "MEL_HOST_CERT_PATH", "/etc/ssh/ssh_host_ed25519_key-cert.pub"
+)
 
-USER_CA_KEY = os.environ.get("MEL_USER_CA_KEY", str(Path.home() / "ssh-ca-keys/ssh-user-ca"))
+USER_CA_KEY = os.environ.get(
+    "MEL_USER_CA_KEY", str(Path.home() / "ssh-ca-keys/ssh-user-ca")
+)
 USER_VALIDITY = os.environ.get("MEL_USER_CERT_VALIDITY", "+52w")
 
-# The agent that was already in SSH_AUTH_SOCK when we started -- i.e. the
-# user's own agent (keychain/1Password/yubikey/etc). We always SSH to hosts
-# through this one, via `-o IdentityAgent=...`, so host connections never
-# touch the ephemeral CA agent and never prompt for anything the user
-# hasn't already unlocked in their normal agent.
 USER_SSH_AUTH_SOCK = os.environ.get("SSH_AUTH_SOCK", "")
 
 CLEANUP_DIRS: list[str] = []
 CA_AGENT_PID: int | None = None
+
+DEFAULT_EXTENSIONS = [
+    "permit-X11-forwarding",
+    "permit-agent-forwarding",
+    "permit-port-forwarding",
+    "permit-pty",
+    "permit-user-rc",
+]
 
 
 # --------------------------------------------------------------------------
@@ -47,6 +56,7 @@ CA_AGENT_PID: int | None = None
 
 def cleanup() -> None:
     global CA_AGENT_PID
+
     if CA_AGENT_PID is not None:
         try:
             os.kill(CA_AGENT_PID, signal.SIGTERM)
@@ -114,7 +124,8 @@ User commands:
   renew [options]
       Re-sign an existing user certificate, reusing its key ID,
       principals, critical options and extensions, with a bumped
-      serial and a fresh validity window.
+      serial and a fresh validity window. Interactive renewal can
+      optionally change the certificate policy.
 
   Run 'mel-ssh-provision user sign -h' or 'user renew -h' for
   option details.""",
@@ -124,11 +135,7 @@ User commands:
 
 
 def setup_ca_agent(ca_key: str) -> None:
-    """Unlock ca_key into a fresh, throwaway ssh-agent and point
-    SSH_AUTH_SOCK at it for the rest of this process. Reused for every
-    host/user operation within a single invocation, so you're only
-    prompted for the CA passphrase once per run -- never for regular
-    host logins, and never anywhere near the user's own agent."""
+    """Unlock ca_key into a fresh, throw-away ssh-agent."""
     global CA_AGENT_PID
 
     print("Unlocking CA key into ephemeral agent...", file=sys.stderr)
@@ -147,26 +154,26 @@ def setup_ca_agent(ca_key: str) -> None:
     pid = None
     for line in out.splitlines():
         if line.startswith("SSH_AGENT_PID="):
-            # e.g. 'SSH_AGENT_PID=6360; export SSH_AGENT_PID;'
             value = line.split("=", 1)[1]
             value = value.split(";", 1)[0]
             pid = int(value)
             break
+
     if pid is None:
         die("could not determine ssh-agent PID")
-    CA_AGENT_PID = pid
 
+    CA_AGENT_PID = pid
     os.environ["SSH_AUTH_SOCK"] = sock_path
 
-    # ssh-add prompts for the passphrase over /dev/tty itself, so it works
-    # fine even with stdout suppressed and stdin untouched.
-    subprocess.run(["ssh-add", ca_key], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(
+        ["ssh-add", ca_key],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
 
 
 def read_key_material(identity: str | None) -> bytes:
-    """Reads a public key (or certificate) from either a path argument,
-    "-", or (if neither given) stdin -- prompting first if stdin is a
-    terminal, so pasting works interactively."""
+    """Read a public key or certificate from a path, -, or stdin."""
     if identity and identity != "-":
         p = Path(identity)
         if not p.is_file():
@@ -182,8 +189,205 @@ def read_key_material(identity: str | None) -> bytes:
 def prompt(msg: str) -> str:
     if not sys.stdin.isatty():
         die(f"{msg} is required (not running interactively to prompt for it).")
+
     print(f"{msg}: ", end="", file=sys.stderr, flush=True)
     return input()
+
+
+def prompt_default(msg: str, default: str) -> str:
+    if not sys.stdin.isatty():
+        return default
+
+    print(f"{msg} [{default}]: ", end="", file=sys.stderr, flush=True)
+    value = input()
+    return value if value else default
+
+
+def prompt_yes_no(msg: str, default: bool = False) -> bool:
+    suffix = "Y/n" if default else "y/N"
+
+    while True:
+        print(f"{msg} [{suffix}]: ", end="", file=sys.stderr, flush=True)
+        value = input().strip().lower()
+
+        if not value:
+            return default
+        if value in ("y", "yes"):
+            return True
+        if value in ("n", "no"):
+            return False
+
+        print("Please answer y or n.", file=sys.stderr)
+
+
+# --------------------------------------------------------------------------
+# Extension selection
+# --------------------------------------------------------------------------
+
+
+def format_extensions(extensions: list[str]) -> str:
+    if not extensions:
+        return "none"
+    return ", ".join(extensions)
+
+
+def parse_extension_selection(
+    value: str,
+    extensions: list[str],
+) -> list[str]:
+    """Parse n/y, numbers, comma-separated numbers, and numeric ranges."""
+    value = value.strip().lower()
+
+    if value in ("", "n", "none"):
+        return []
+
+    if value in ("y", "yes", "all"):
+        return list(extensions)
+
+    selected: set[int] = set()
+
+    for part in value.replace(" ", "").split(","):
+        if not part:
+            continue
+
+        if "-" in part:
+            bits = part.split("-", 1)
+            if len(bits) != 2 or not bits[0].isdigit() or not bits[1].isdigit():
+                raise ValueError(f"invalid range: {part}")
+
+            start = int(bits[0])
+            end = int(bits[1])
+
+            if start > end:
+                raise ValueError(f"invalid range: {part}")
+
+            selected.update(range(start, end + 1))
+            continue
+
+        if not part.isdigit():
+            raise ValueError(f"invalid selection: {part}")
+
+        selected.add(int(part))
+
+    for number in selected:
+        if number < 1 or number > len(extensions):
+            raise ValueError(f"selection out of range: {number}")
+
+    return [extensions[i - 1] for i in sorted(selected)]
+
+
+def prompt_extensions(default: list[str]) -> list[str]:
+    print("\nExtensions:", file=sys.stderr)
+
+    for i, extension in enumerate(DEFAULT_EXTENSIONS, 1):
+        print(f"  {i}. {extension}", file=sys.stderr)
+
+    default_text = (
+        "none" if not default else ",".join(
+            str(DEFAULT_EXTENSIONS.index(ext) + 1)
+            for ext in default
+            if ext in DEFAULT_EXTENSIONS
+        )
+    )
+
+    while True:
+        print(
+            f"\nSelection [N=none, Y=all, default={default_text}]: ",
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
+        value = input().strip()
+
+        if not value:
+            return list(default)
+
+        try:
+            return parse_extension_selection(value, DEFAULT_EXTENSIONS)
+        except ValueError as e:
+            print(f"Invalid selection: {e}", file=sys.stderr)
+
+
+# --------------------------------------------------------------------------
+# Certificate policy
+# --------------------------------------------------------------------------
+
+
+def prompt_forced_command(
+    current: str | None = None,
+    *,
+    new_certificate: bool = False,
+) -> str | None:
+    if current is None:
+        label = "Forced command [N/<command>]"
+        default = None
+    else:
+        label = f"Forced command [current: {current}, N/<command>]"
+        default = current
+
+    print(f"{label}: ", end="", file=sys.stderr, flush=True)
+    value = input().strip()
+
+    if not value:
+        return default
+
+    if value.lower() in ("n", "none"):
+        return None
+
+    return value
+
+
+def interactive_sign_policy() -> tuple[str | None, list[str]]:
+    forced_command = prompt_forced_command(new_certificate=True)
+
+    if forced_command:
+        default_extensions: list[str] = []
+    else:
+        default_extensions = list(DEFAULT_EXTENSIONS)
+
+    extensions = prompt_extensions(default_extensions)
+
+    return forced_command, extensions
+
+
+def interactive_renew_policy(
+    current_forced_command: str | None,
+    current_extensions: list[str],
+) -> tuple[str | None, list[str]]:
+    forced_command = prompt_forced_command(current=current_forced_command)
+
+    # For an existing certificate, the current extensions are always
+    # the default. We deliberately do not infer a new default from the
+    # forced-command value here.
+    extensions = prompt_extensions(current_extensions)
+
+    return forced_command, extensions
+
+
+def extension_opts(extensions: list[str]) -> list[str]:
+    return [f"{extension}" for extension in extensions]
+
+
+def build_policy_opts(
+    forced_command: str | None,
+    extensions: list[str],
+) -> list[str]:
+    """Turn policy into ssh-keygen -O arguments.
+
+    'clear' is necessary whenever we are deliberately specifying an
+    extension set, because ssh-keygen otherwise supplies its default
+    extension set.
+
+    This is particularly important for forced-command certificates:
+    forced command + no extensions must really mean no extensions.
+    """
+    opts: list[str] = ["clear"]
+
+    if forced_command:
+        opts.append(f"force-command={forced_command}")
+
+    opts.extend(extension_opts(extensions))
+    return opts
 
 
 # --------------------------------------------------------------------------
@@ -201,6 +405,7 @@ def require_host(host: str | None, hosts: dict) -> str:
 
 def process_host(host: str, force: bool, hosts: dict) -> None:
     require_host(host, hosts)
+
     target = hosts[host]["sshTarget"]
     principals = ",".join(hosts[host]["principals"])
 
@@ -230,7 +435,15 @@ cat "$pub"
 
     with open(pubfile, "wb") as f:
         subprocess.run(
-            ["ssh", *ssh_opts, f"root@{target}", "bash", "-s", "--", "true" if force else "false"],
+            [
+                "ssh",
+                *ssh_opts,
+                f"root@{target}",
+                "bash",
+                "-s",
+                "--",
+                "true" if force else "false",
+            ],
             input=remote_script.encode(),
             stdout=f,
             check=True,
@@ -260,7 +473,12 @@ cat "$pub"
 
     with open(certfile, "rb") as f:
         subprocess.run(
-            ["ssh", *ssh_opts, f"root@{target}", f"cat > '{HOST_CERT_PATH}' && systemctl reload sshd"],
+            [
+                "ssh",
+                *ssh_opts,
+                f"root@{target}",
+                f"cat > '{HOST_CERT_PATH}' && systemctl reload sshd",
+            ],
             stdin=f,
             check=True,
         )
@@ -271,6 +489,7 @@ cat "$pub"
 def host_cmd(args: list[str], hosts: dict) -> None:
     if not args:
         usage()
+
     cmd, rest = args[0], args[1:]
 
     if cmd == "list":
@@ -290,6 +509,7 @@ def host_cmd(args: list[str], hosts: dict) -> None:
         setup_ca_agent(HOST_CA_KEY)
 
         failures = []
+
         for h in sorted(hosts):
             try:
                 process_host(h, force=False, hosts=hosts)
@@ -314,71 +534,92 @@ def host_cmd(args: list[str], hosts: dict) -> None:
 # User commands
 # --------------------------------------------------------------------------
 
+
 USER_SIGN_USAGE = f"""Usage: mel-ssh-provision user sign [options]
 
 Sign a user public key, producing a new user certificate.
 
 Options:
   -i, --identity PATH   Path to the public key to sign. Use "-" or omit
-                         to read from stdin (or paste interactively).
+                        to read from stdin (or paste interactively).
   -I, --key-id ID       Key ID to embed in the certificate. Prompted for
-                         if omitted and running interactively.
+                        if omitted and running interactively.
   -n, --principals LIST Comma-separated list of principals. Prompted for
-                         if omitted and running interactively.
+                        if omitted and running interactively.
+  --force-command CMD   Restrict the certificate to CMD. When supplied,
+                        default extensions are cleared; explicit -O
+                        options are applied afterwards.
   -V, --validity SPEC   ssh-keygen -V validity spec (default: {USER_VALIDITY}).
   -O OPTION             Extra ssh-keygen -O option (critical option or
-                         extension). May be given multiple times. If
-                         omitted, ssh-keygen's default extension set is
-                         used (permit-X11-forwarding, permit-agent-
-                         forwarding, permit-port-forwarding, permit-pty,
-                         permit-user-rc).
+                        extension). May be given multiple times.
   -o, --output PATH     Where to write the resulting certificate.
-                         Defaults to stdout.
-  -h                    Show this help."""
+                        Defaults to stdout.
+  -h                    Show this help.
+
+Interactive signing asks for the forced command first, followed by
+extension selection. A forced command defaults to no extensions;
+otherwise all standard OpenSSH extensions are offered by default.
+"""
+
 
 USER_RENEW_USAGE = f"""Usage: mel-ssh-provision user renew [options]
 
 Re-sign an existing user certificate: reuses its key ID, principals,
-critical options and extensions verbatim, bumps the serial number,
-and applies a fresh validity window.
+critical options and extensions, bumps the serial number, and applies
+a fresh validity window.
+
+When run interactively, the existing certificate policy is displayed
+and can optionally be changed before renewal.
 
 Options:
-  -i, --identity PATH   Path to the existing certificate. Use "-" or
-                         omit to read from stdin (or paste
-                         interactively).
+  -i, --identity PATH   Path to the existing certificate. Use "-" or omit
+                        to read from stdin (or paste interactively).
   -V, --validity SPEC   ssh-keygen -V validity spec (default: {USER_VALIDITY}).
   -z, --serial N        Serial number to embed (default: old serial + 1).
   -o, --output PATH     Where to write the resulting certificate.
-                         Defaults to stdout.
-  -h                    Show this help."""
+                        Defaults to stdout.
+  -h                    Show this help.
+"""
 
 
-def _parse_flags(args: list[str], spec: dict[str, str], usage_text: str) -> dict:
-    """Tiny getopt-alike. `spec` maps every recognised flag (long and
-    short) to a dest name; a dest of "help" ends parsing immediately.
-    "-O" is handled specially below (repeatable, appended to "O")."""
+def _parse_flags(
+    args: list[str],
+    spec: dict[str, str],
+    usage_text: str,
+) -> dict:
+    """Tiny getopt-alike.
+
+    `spec` maps recognised flags to destination names.
+    `-O` is repeatable and appended to "O".
+    """
     out: dict = {"O": []}
     i = 0
+
     while i < len(args):
         a = args[i]
+
         if a in ("-h", "--help"):
             print(usage_text)
             sys.exit(0)
+
         if a == "-O":
             if i + 1 >= len(args):
                 die(f"missing value for {a}")
             out["O"].append(args[i + 1])
             i += 2
             continue
+
         if a in spec:
             if i + 1 >= len(args):
                 die(f"missing value for {a}")
             out[spec[a]] = args[i + 1]
             i += 2
             continue
+
         print(f"ERROR: unknown argument: {a}", file=sys.stderr)
         print(usage_text, file=sys.stderr)
         sys.exit(1)
+
     return out
 
 
@@ -393,6 +634,7 @@ def do_sign_user(
 ) -> None:
     tmpdir = tempfile.mkdtemp()
     CLEANUP_DIRS.append(tmpdir)
+
     pubfile = os.path.join(tmpdir, "user.pub")
     certfile = os.path.join(tmpdir, "user-cert.pub")
 
@@ -411,10 +653,13 @@ def do_sign_user(
         "-V",
         validity,
     ]
+
     if serial:
         cmd += ["-z", str(serial)]
+
     for o in extra_opts:
         cmd += ["-O", o]
+
     cmd.append(pubfile)
 
     subprocess.run(cmd, check=True)
@@ -433,11 +678,17 @@ def user_sign_cmd(args: list[str]) -> None:
     opts = _parse_flags(
         args,
         {
-            "-i": "identity", "--identity": "identity",
-            "-I": "key_id", "--key-id": "key_id",
-            "-n": "principals", "--principals": "principals",
-            "-V": "validity", "--validity": "validity",
-            "-o": "output", "--output": "output",
+            "-i": "identity",
+            "--identity": "identity",
+            "-I": "key_id",
+            "--key-id": "key_id",
+            "-n": "principals",
+            "--principals": "principals",
+            "--force-command": "force_command",
+            "-V": "validity",
+            "--validity": "validity",
+            "-o": "output",
+            "--output": "output",
         },
         USER_SIGN_USAGE,
     )
@@ -446,17 +697,51 @@ def user_sign_cmd(args: list[str]) -> None:
     principals = opts.get("principals") or prompt("Principals (comma-separated)")
     validity = opts.get("validity", USER_VALIDITY)
 
+    # Interactive policy construction.
+    if (
+        "force_command" not in opts
+        and not opts["O"]
+        and sys.stdin.isatty()
+    ):
+        force_command, extensions = interactive_sign_policy()
+        extra_opts = build_policy_opts(force_command, extensions)
+
+    else:
+        force_command = opts.get("force_command")
+
+        if force_command is not None:
+            # A forced command is deliberately restrictive unless the
+            # caller explicitly supplies extension options.
+            extra_opts = ["clear", f"force-command={force_command}"]
+            extra_opts.extend(opts["O"])
+
+        elif opts["O"]:
+            # Preserve raw ssh-keygen semantics for expert/scripted use.
+            extra_opts = list(opts["O"])
+
+        else:
+            # No forced command and no explicit options: let ssh-keygen
+            # provide its normal extension defaults.
+            extra_opts = []
+
     setup_ca_agent(USER_CA_KEY)
 
     pubkey = read_key_material(opts.get("identity"))
-    do_sign_user(key_id, principals, validity, opts.get("output"), None, opts["O"], pubkey)
+
+    do_sign_user(
+        key_id,
+        principals,
+        validity,
+        opts.get("output"),
+        None,
+        extra_opts,
+        pubkey,
+    )
 
 
-# ssh-keygen refuses to sign a certificate directly ("cannot be certified"),
-# so to renew we have to pull the underlying base public key back out of
-# the certificate's key blob and sign that. Supports ed25519, rsa and
-# ecdsa certs (everything ssh-keygen itself can generate certs for, short
-# of the FIDO/security-key variants).
+# --------------------------------------------------------------------------
+# OpenSSH certificate parsing
+# --------------------------------------------------------------------------
 
 
 def _read_wire_string(buf: bytes, off: int) -> tuple[bytes, int]:
@@ -472,12 +757,15 @@ def _wire_string(b: bytes) -> bytes:
 def extract_pubkey_from_cert(cert_bytes: bytes) -> str:
     line = cert_bytes.decode().splitlines()[0].strip()
     parts = line.split(None, 2)
+
     if len(parts) < 2:
         die("could not parse certificate public key line")
+
     wire_type_str, b64 = parts[0], parts[1]
 
     blob = base64.b64decode(b64)
     off = 0
+
     wire_type, off = _read_wire_string(blob, off)
     wire_type = wire_type.decode()
 
@@ -490,21 +778,25 @@ def extract_pubkey_from_cert(cert_bytes: bytes) -> str:
         base_type = "ssh-ed25519"
         pk, off = _read_wire_string(blob, off)
         fields = [pk]
+
     elif wire_type.startswith("ssh-rsa-cert"):
         base_type = "ssh-rsa"
         e, off = _read_wire_string(blob, off)
         n, off = _read_wire_string(blob, off)
         fields = [e, n]
+
     elif wire_type.startswith("ecdsa-sha2-") and "-cert" in wire_type:
         curve_id = wire_type.split("ecdsa-sha2-")[1].split("-cert")[0]
         base_type = f"ecdsa-sha2-{curve_id}"
         curve, off = _read_wire_string(blob, off)
         q, off = _read_wire_string(blob, off)
         fields = [curve, q]
+
     else:
         die(f"unsupported certificate key type: {wire_type}")
 
     out = _wire_string(base_type.encode())
+
     for f in fields:
         out += _wire_string(f)
 
@@ -512,12 +804,12 @@ def extract_pubkey_from_cert(cert_bytes: bytes) -> str:
 
 
 def parse_cert_fields(ssh_keygen_dash_l_output: str) -> dict:
-    """Parses `ssh-keygen -L` output into key id / serial / principals /
-    critical options / extensions."""
+    """Parse ssh-keygen -L output."""
     key_id = ""
     old_serial = "0"
     principals: list[str] = []
     extra_opts: list[str] = []
+    force_command: str | None = None
     section: str | None = None
 
     for raw in ssh_keygen_dash_l_output.splitlines():
@@ -527,30 +819,42 @@ def parse_cert_fields(ssh_keygen_dash_l_output: str) -> dict:
             key_id = line.split('"', 2)[1]
             section = None
             continue
+
         if line.startswith("Serial:"):
             old_serial = line.split(":", 1)[1].strip()
             section = None
             continue
+
         if line.startswith("Principals:"):
             section = "principals"
             continue
+
         if line.startswith("Critical Options:"):
             section = None if "(none)" in line else "critical"
             continue
+
         if line.startswith("Extensions:"):
             section = None if "(none)" in line else "extensions"
             continue
+
         if line.startswith("Valid:"):
             section = None
             continue
+
         if not line:
             continue
 
         if section == "principals":
             principals.append(line)
+
         elif section == "critical":
             name, _, val = line.partition(" ")
-            extra_opts.append(f"{name}={val}" if val else name)
+
+            if name == "force-command":
+                force_command = val
+            else:
+                extra_opts.append(f"{name}={val}" if val else name)
+
         elif section == "extensions":
             extra_opts.append(line)
 
@@ -559,17 +863,45 @@ def parse_cert_fields(ssh_keygen_dash_l_output: str) -> dict:
         "old_serial": old_serial,
         "principals": principals,
         "extra_opts": extra_opts,
+        "force_command": force_command,
     }
+
+
+# --------------------------------------------------------------------------
+# User renewal
+# --------------------------------------------------------------------------
+
+
+def print_cert_summary(fields: dict) -> None:
+    print("\nCurrent certificate:", file=sys.stderr)
+    print(f"  Key ID: {fields['key_id']}", file=sys.stderr)
+    print(f"  Serial: {fields['old_serial']}", file=sys.stderr)
+    print(
+        f"  Principals: {', '.join(fields['principals']) or 'none'}",
+        file=sys.stderr,
+    )
+    print(
+        f"  Forced command: {fields['force_command'] or 'none'}",
+        file=sys.stderr,
+    )
+    print(
+        f"  Extensions: {format_extensions(fields['extensions'])}",
+        file=sys.stderr,
+    )
 
 
 def user_renew_cmd(args: list[str]) -> None:
     opts = _parse_flags(
         args,
         {
-            "-i": "identity", "--identity": "identity",
-            "-V": "validity", "--validity": "validity",
-            "-z": "serial", "--serial": "serial",
-            "-o": "output", "--output": "output",
+            "-i": "identity",
+            "--identity": "identity",
+            "-V": "validity",
+            "--validity": "validity",
+            "-z": "serial",
+            "--serial": "serial",
+            "-o": "output",
+            "--output": "output",
         },
         USER_RENEW_USAGE,
     )
@@ -578,28 +910,93 @@ def user_renew_cmd(args: list[str]) -> None:
 
     tmpdir = tempfile.mkdtemp()
     CLEANUP_DIRS.append(tmpdir)
+
     certfile = os.path.join(tmpdir, "existing-cert.pub")
 
     cert_bytes = read_key_material(opts.get("identity"))
     Path(certfile).write_bytes(cert_bytes)
 
     keygen_l = subprocess.run(
-        ["ssh-keygen", "-L", "-f", certfile], check=True, capture_output=True, text=True
+        ["ssh-keygen", "-L", "-f", certfile],
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout
+
     fields = parse_cert_fields(keygen_l)
 
     if not fields["key_id"]:
         die("could not parse Key ID from certificate.")
 
-    # Reconstruct extensions/critical options exactly rather than relying
-    # on ssh-keygen's default extension set, which may not match what the
-    # original cert had (e.g. a cert with no extensions at all, like a
-    # force-command-only deploy cert).
-    extra_opts = ["clear", *fields["extra_opts"]]
+    # Split the parsed policy into its user-facing pieces.
+    parsed_extensions = [
+        option
+        for option in fields["extra_opts"]
+        if option in DEFAULT_EXTENSIONS
+    ]
+
+    other_critical_opts = [
+        option
+        for option in fields["extra_opts"]
+        if option not in DEFAULT_EXTENSIONS
+    ]
+
+    fields["extensions"] = parsed_extensions
+    fields["other_critical_opts"] = other_critical_opts
 
     serial = opts.get("serial") or str(int(fields["old_serial"]) + 1)
     principals_csv = ",".join(fields["principals"])
     pubkey_line = extract_pubkey_from_cert(cert_bytes)
+
+    if sys.stdin.isatty() and opts.get("serial") is None:
+        print_cert_summary(fields)
+
+        validity = prompt_default("New validity", validity)
+
+        if prompt_yes_no("Change any options?", default=False):
+            (
+                forced_command,
+                extensions,
+            ) = interactive_renew_policy(
+                fields["force_command"],
+                fields["extensions"],
+            )
+
+            extra_opts = ["clear"]
+
+            if forced_command:
+                extra_opts.append(f"force-command={forced_command}")
+
+            extra_opts.extend(fields["other_critical_opts"])
+            extra_opts.extend(extension_opts(extensions))
+
+        else:
+            # Preserve the existing policy exactly.
+            extra_opts = [
+                "clear",
+                *fields["other_critical_opts"],
+            ]
+
+            if fields["force_command"]:
+                extra_opts.insert(
+                    1,
+                    f"force-command={fields['force_command']}",
+                )
+
+            extra_opts.extend(fields["extensions"])
+
+    else:
+        # Non-interactive renewal preserves the existing certificate
+        # policy exactly, as it did before.
+        extra_opts = ["clear", *fields["other_critical_opts"]]
+
+        if fields["force_command"]:
+            extra_opts.insert(
+                1,
+                f"force-command={fields['force_command']}",
+            )
+
+        extra_opts.extend(fields["extensions"])
 
     setup_ca_agent(USER_CA_KEY)
 
@@ -617,6 +1014,7 @@ def user_renew_cmd(args: list[str]) -> None:
 def user_cmd(args: list[str]) -> None:
     if not args:
         usage()
+
     cmd, rest = args[0], args[1:]
 
     if cmd == "sign":
@@ -634,13 +1032,20 @@ def user_cmd(args: list[str]) -> None:
 
 def main() -> None:
     hosts_json_path = os.environ.get("MEL_HOSTS_JSON_PATH")
+
     if not hosts_json_path:
-        die("MEL_HOSTS_JSON_PATH is not set (this binary must be run via the Nix wrapper).")
+        die(
+            "MEL_HOSTS_JSON_PATH is not set "
+            "(this binary must be run via the Nix wrapper)."
+        )
+
     hosts = json.loads(Path(hosts_json_path).read_text())
 
     args = sys.argv[1:]
+
     if not args:
         usage()
+
     top, rest = args[0], args[1:]
 
     try:
@@ -651,7 +1056,10 @@ def main() -> None:
         else:
             usage()
     except subprocess.CalledProcessError as e:
-        die(f"command failed ({' '.join(map(str, e.cmd))}): exit {e.returncode}")
+        die(
+            f"command failed ({' '.join(map(str, e.cmd))}): "
+            f"exit {e.returncode}"
+        )
     finally:
         cleanup()
 
