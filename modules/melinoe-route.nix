@@ -8,8 +8,15 @@ let
   inherit (lib) mkOption types;
   cfg = config.melinoe;
   routeCfg = config.melinoe.services.melinoe-route;
+  rtsCfg = config.melinoe.services.melinoe-rts;
   netCfg = config.melinoe.node.networking;
   nodeID = cfg.node.id;
+
+  # Must match controlSocketPath in melinoe-rts.nix -- only read when
+  # rts-integration is on, so melinoe-route never depends on melinoe-rts
+  # having actually loaded its option (avoids an option-ordering/module
+  # cycle concern) at the cost of the two literals needing to agree.
+  rtsControlSocketPath = "/run/melinoe-rts/control.sock";
 
   mod = a: b: a - (a / b) * b;
 
@@ -37,6 +44,7 @@ let
       inner_network = network24 cfg.cluster.networking.hostCidr;
       table_base = netCfg.vmOutboundMarkBase;
       vm_ifaces = map (vm: vm.iface) cfg.cluster.virtualMachines;
+      rts_socket_path = lib.optionalString routeCfg.rts-integration rtsControlSocketPath;
     }
   );
   melinoeGoBinary = pkgs.buildGoModule {
@@ -60,6 +68,22 @@ in
       default = [ ];
       description = "Additional IPv4 prefixes or host routes to advertise via melinoe-route.";
     };
+
+    rts-integration = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Wire this daemon directly into melinoe-rts (the ebpf RTS
+        daemon): every node-<id> IPIP tunnel this daemon creates or
+        tears down is reported over melinoe-rts's control socket, so
+        replies to a flow are forced back out whichever tunnel it first
+        arrived on -- instead of melinoe-rts having to guess the RTS set
+        from interface-name prefixes on its own.
+
+        Requires both melinoe.services.melinoe-route.enabled and
+        melinoe.services.melinoe-rts.enabled to be true.
+      '';
+    };
   };
 
   config = {
@@ -72,6 +96,10 @@ in
         assertion = !routeCfg.enabled || netCfg.enabled;
         message = "melinoe.node.networking.enabled must be true when melinoe.services.melinoe-route.enabled is true (melinoe.node.networking.uplinks is an uplink property and pub_ips are derived from it).";
       }
+      {
+        assertion = !routeCfg.rts-integration || (routeCfg.enabled && rtsCfg.enabled);
+        message = "melinoe.services.melinoe-route.rts-integration requires both melinoe.services.melinoe-route.enabled and melinoe.services.melinoe-rts.enabled to be true.";
+      }
     ];
 
     melinoe.node.networking.specialHostAccess.tcp = lib.mkIf routeCfg.enabled [ 60198 ]; # melinoe-route daemon port
@@ -80,8 +108,8 @@ in
     systemd.services.melinoe-route = lib.mkIf routeCfg.enabled {
       description = "Melinoe route daemon";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+      after = [ "network-online.target" ] ++ lib.optional routeCfg.rts-integration "melinoe-rts.service";
+      wants = [ "network-online.target" ] ++ lib.optional routeCfg.rts-integration "melinoe-rts.service";
       stopIfChanged = false;
       path = [ ];
       serviceConfig = {
