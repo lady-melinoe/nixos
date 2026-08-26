@@ -5,13 +5,12 @@
   ...
 }:
 let
-  cfg = config.melinoe;
   netCfg = config.melinoe.node.networking;
   addr = config.melinoe.cluster.networking;
-  nodeID = cfg.node.id;
+  nodeID = config.melinoe.node.id;
   hostAddr = melinoeNodeIntraIP nodeID;
   pubIps = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) netCfg.uplinks);
-  vms = cfg.cluster.virtualMachines;
+  vms = config.melinoe.cluster.virtualMachines;
   vmIpAddr = vm: builtins.head (lib.splitString "/" vm.ip);
   vmSaddr = vm: if lib.hasInfix "/" vm.ip then vm.ip else "${vm.ip}/32";
   vmTcp = vm: vm.tcp or [ ];
@@ -39,13 +38,6 @@ let
     lib.optionalString (ports != [ ]) ''
       ${matchExpr} ${proto} dport ${portSet ports} dnat to ${dst}
     '';
-  renderIfaceRules =
-    ifaceExpr:
-    lib.concatMapStrings (
-      mapping:
-      (renderProtoRule "tcp" mapping.tcp "iifname ${ifaceExpr}" mapping.dst)
-      + (renderProtoRule "udp" mapping.udp "iifname ${ifaceExpr}" mapping.dst)
-    ) natMappings;
   renderDestRules =
     destExpr:
     lib.concatMapStrings (
@@ -55,13 +47,8 @@ let
     ) natMappings;
   nftIfaceSet =
     names: if names == [ ] then "{ }" else "{ ${lib.concatStringsSep ", " (map (n: "\"${n}\"") names)} }";
-  vmIfaceNames = map (vm: vm.iface) vms;
-  nodeIfaceNames = map (id: "node-${toString id}") (
-    lib.filter (id: id != nodeID) (lib.range addr.nodeIdRange.min addr.nodeIdRange.max)
-  );
   wgIfaceNames = map (peer: "wg-${toString peer.id}") netCfg.peers;
   vmOutboundMarkBase = netCfg.vmOutboundMarkBase;
-  nodeOutboundMarkRange = "${toString vmOutboundMarkBase}-${toString (vmOutboundMarkBase + addr.nodeIdRange.max)}";
   vmOutboundRules = lib.filter (v: v != null) (
     map (
       vm:
@@ -77,6 +64,21 @@ let
   renderVmOutboundRules = lib.concatMapStrings (r: ''
     iifname "${r.iface}" ct direction original meta mark set ${toString r.mark}
   '') vmOutboundRules;
+
+  renderVmHairpinSnatRules =
+    let
+      vmVmMap = builtins.concatStringsSep ", " (
+        map (vm: "${vmIpAddr vm} . ${vmIpAddr vm}") vms
+      );
+      hairpinDests =
+        if pubIps != [ ] then
+          "{ ${hostAddr}, $pubroutefix }"
+        else
+          "{ ${hostAddr} }";
+    in
+    ''
+      ct original ip daddr ${hairpinDests} ip saddr . ip daddr { ${vmVmMap} } snat to 198.18.255.254
+    '';
 
   renderAccessRule =
     {
@@ -127,16 +129,7 @@ in
     networking.nftables.enable = true;
     networking.nftables.ruleset = ''
             flush ruleset
-            define vm_ifs = ${nftIfaceSet vmIfaceNames}
-            define node_gre_ifs = ${nftIfaceSet nodeIfaceNames}
             define wg_ifs = ${nftIfaceSet wgIfaceNames}
-            define gre_ctmark = { ${
-              builtins.concatStringsSep ", " (
-                builtins.genList (
-                  i: "\"node-${toString (i)}\" : ${toString (vmOutboundMarkBase + i)}"
-                ) (addr.nodeIdRange.max + 1)
-              )
-            } }
         ${lib.optionalString (pubIps != [ ]) ''
           define pubroutefix = { ${builtins.concatStringsSep ", " pubIps} }
         ''}
@@ -157,7 +150,6 @@ in
               }
               chain FORWARD {
                 type filter hook forward priority filter; policy accept;
-                ct state invalid drop
       ${renderVmOutboundDropRules}
       ${renderVmOutboundAllowOnlyRules}
                 ct state { established, related } accept
@@ -177,36 +169,27 @@ in
             table ip nat {
               chain prerouting {
                 type nat hook prerouting priority dstnat;
-        ${renderIfaceRules "\"${netCfg.uplinkVeth}\""}
         ${lib.optionalString (pubIps != [ ]) (renderDestRules "$pubroutefix")}
-        ${lib.optionalString (pubIps != [ ]) ''
-          ip daddr $pubroutefix dnat to ${hostAddr}
-        ''}
+        ${lib.optionalString (pubIps != [ ]) (renderDestRules "${hostAddr}")}
               }
               chain postrouting {
                 type nat hook postrouting priority srcnat;
+        ${renderVmHairpinSnatRules}
                 oifname "${netCfg.uplinkVeth}" masquerade
               }
               chain output {
                 type nat hook output priority dstnat; policy accept;
-        ${lib.optionalString (pubIps != [ ]) (renderDestRules "$pubroutefix")}
-        ${lib.optionalString (pubIps != [ ]) ''
-          ip daddr $pubroutefix dnat to ${hostAddr}
-        ''}
               }
             }
             table inet mangle {
               chain prerouting {
                 type filter hook prerouting priority mangle;
       ${renderVmOutboundRules}
-                iifname $vm_ifs ct direction reply ct mark ${nodeOutboundMarkRange} meta mark set ct mark
-                iifname $node_gre_ifs ct direction original ct mark != ${nodeOutboundMarkRange} ct mark set iifname map $gre_ctmark
                 iifname != ${netCfg.uplinkVeth} ct direction reply ct mark 999 meta mark set ${toString netCfg.uplinkFwMark}
                 iifname ${netCfg.uplinkVeth} ct direction original ct mark != 999 ct mark set 999
               }
               chain output {
                 type route hook output priority mangle;
-                ct direction reply ct mark ${nodeOutboundMarkRange} meta mark set ct mark
                 ct direction reply ct mark 999 meta mark set ${toString netCfg.uplinkFwMark}
               }
             }
