@@ -153,8 +153,7 @@
   ];
   melinoe.services.melinoe-route.enabled = true;
   melinoe.services.melinoe-rts.enabled = true;
-  melinoe.services.melinoe-route.rts-integration = true;
-  
+  melinoe.services.melinoe-route.rts-integration = true;  
   melinoe.services.haproxy = {
     backendNodes = [
       {

@@ -157,11 +157,13 @@ in
           "CAP_NET_ADMIN"
           "CAP_BPF"
           "CAP_SYS_RESOURCE"
+          "CAP_PERFMON"
         ];
         CapabilityBoundingSet = [
           "CAP_NET_ADMIN"
           "CAP_BPF"
           "CAP_SYS_RESOURCE"
+          "CAP_PERFMON"
         ];
       };
     };
