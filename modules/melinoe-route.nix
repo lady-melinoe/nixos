@@ -44,7 +44,7 @@ let
     version = "0.0.8";
 
     src = ./melinoe-route-daemon-src;
-    vendorHash = lib.fakeHash;
+    vendorHash = "sha256-4Oo7YKSOeQ2197QhS4jiljtN7OQsBmaNf17lSPg9YKI=";
   };
 in
 {
