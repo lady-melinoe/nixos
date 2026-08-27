@@ -172,6 +172,7 @@ in
                 type nat hook prerouting priority dstnat;
         ${lib.optionalString (pubIps != [ ]) (renderDestRules "$pubroutefix")}
         ${lib.optionalString (pubIps != [ ]) (renderDestRules "${hostAddr}")}
+                ip daddr $pubroutefix dnat to ${hostAddr}
               }
               chain postrouting {
                 type nat hook postrouting priority srcnat;
