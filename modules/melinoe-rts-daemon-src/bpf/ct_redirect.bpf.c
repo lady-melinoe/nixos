@@ -26,12 +26,10 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
-/* NOT #include <bpf/bpf_kfuncs.h> -- struct bpf_ct_opts and the
- * kfunc externs it would provide come from vmlinux.h instead now
- * (melinoe-rts.nix's vmlinuxH dumps nf_conntrack module BTF in
- * alongside core vmlinux). See the "kernel conntrack kfunc
- * declarations" comment further down for the current state of
- * whether that actually works. */
+/* NOT #include <bpf/bpf_kfuncs.h> -- see the "kernel conntrack kfunc
+ * declarations" comment further down for the hand-declared kfunc
+ * surface and why it's hand-declared rather than pulled from either
+ * of those. */
 
 #define TC_ACT_OK    0
 #define ETH_P_IP     0x0800
@@ -300,27 +298,55 @@ static __always_inline int do_redirect_or_ok(__u32 target_ifindex)
 
 /* --- kernel conntrack kfunc declarations ---
  *
- * struct nf_conn, struct bpf_ct_opts, and the three kfuncs
- * (bpf_skb_ct_lookup/bpf_ct_change_status/bpf_ct_release) come from
- * vmlinux.h -- not hand-declared here. melinoe-rts.nix's vmlinuxH
- * derivation dumps nf_conntrack module BTF (where these actually live,
- * not core vmlinux) via bpftool, statically from the compiled .ko, and
- * merges it in alongside the core vmlinux dump.
+ * Hand-declared, not relying on vmlinux.h. Tried merging
+ * nf_conntrack's own module BTF into vmlinux.h at build time, twice,
+ * correctly located both times (first via config.system.modulesTree,
+ * then via the cleaner config.boot.kernelPackages.kernel.modules) --
+ * `bpftool btf dump ... format c` never reconstructed usable C
+ * declarations from it either time; struct bpf_ct_opts came back with
+ * no declaration at all (not even a forward decl) and the three
+ * kfuncs were entirely undeclared, apparently because bpftool's C
+ * dumper drops types/funcs only reachable through a kfunc's
+ * FUNC_PROTO parameter list, regardless of which specific .ko is fed
+ * in. See melinoe-rts.nix's vmlinuxH derivation for the fuller
+ * writeup. Hand-declaring here is simply the only approach that
+ * actually compiles.
  *
- * Genuinely uncertain as of this writing whether that produces usable
- * declarations here or not -- an earlier attempt at this exact thing
- * appeared to show bpftool's C dumper omitting types (struct
- * bpf_ct_opts came back with no declaration at all) that are only
- * reachable through a kfunc's FUNC_PROTO parameter list, since it
- * never prints FUNC entries themselves as C prototypes. If that theory
- * holds, this section will fail to compile with undeclared-symbol
- * errors for bpf_skb_ct_lookup et al, same shape as before -- in which
- * case hand-declaring them here (opaque struct nf_conn, explicit
- * struct bpf_ct_opts, extern ... __ksym prototypes) is the known-
- * working fallback; a previous version of this file did exactly that
- * and built and ran successfully. Left relying on vmlinux.h for now
- * to find out for certain whether a correctly-located module dump
- * changes that outcome, rather than assuming it won't. */
+ * struct nf_conn stays a bare opaque forward-decl -- we only ever
+ * pass the pointer through to bpf_ct_change_status/bpf_ct_release,
+ * never dereference a field, so we don't need its real layout. The
+ * kfuncs themselves are resolved by cilium/ebpf against the *running*
+ * kernel's BTF at load time (module BTF included -- that's the whole
+ * point of __ksym), not at compile time, so this works whether
+ * nf_conntrack is builtin or a module on the box this actually runs
+ * on -- PROVIDED the daemon's process actually has CAP_SYS_ADMIN
+ * (cilium/ebpf's module-BTF search needs it specifically, not just
+ * CAP_BPF -- see melinoe-rts.nix's systemd unit comment on that
+ * capability, and https://github.com/cilium/ebpf/issues/1929).
+ * struct bpf_ct_opts's layout (and NF_BPF_CT_OPTS_SZ=12) has been
+ * stable since it was introduced in v6.0 (see
+ * net/netfilter/nf_conntrack_bpf.c upstream) -- if a future kernel
+ * changes it, this needs updating right alongside it, same as any
+ * other kernel ABI dependency in this file.
+ *
+ * (No CO-RE relocation concern either way: every fleet host runs the
+ * exact kernel derivation this was compiled against, per flake.lock,
+ * so there's no cross-version struct-layout drift to guard against
+ * the way upstream selftests' bpf_ct_opts___local exists for.) */
+struct bpf_ct_opts {
+    __s32 netns_id;
+    __s32 error;
+    __u8  l4proto;
+    __u8  dir;
+    __u8  reserved[2];
+};
+
+struct nf_conn; /* opaque -- see comment above */
+
+extern struct nf_conn *bpf_skb_ct_lookup(struct __sk_buff *skb_ctx, struct bpf_sock_tuple *bpf_tuple,
+                                          __u32 tuple__sz, struct bpf_ct_opts *opts, __u32 opts__sz) __ksym;
+extern int bpf_ct_change_status(struct nf_conn *nfct, __u32 status) __ksym;
+extern void bpf_ct_release(struct nf_conn *nfct) __ksym;
 
 /* status bits from uapi/linux/netfilter/nf_conntrack_common.h. Kept
  * hand-declared regardless of the above -- these are preprocessor
