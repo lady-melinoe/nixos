@@ -199,18 +199,25 @@ in
               }
             }
             table inet mangle {
+              # populated at runtime by melinoe-route (nftAddPeer/nftRemovePeer)
+              set melinoe_peer_marks {
+                type mark
+              }
+              map melinoe_peer_ifaces {
+                type ifname : mark
+              }
               chain prerouting {
                 type filter hook prerouting priority mangle;
       ${renderVmOutboundRules}
                 iifname != $uplink_ifs ct direction reply ct mark 999 meta mark set ${toString netCfg.uplinkFwMark}
                 iifname $uplink_ifs ct direction original ct mark != 999 ct mark set 999
-                ct direction reply ct mark { 1001, 1002, 1003, 1004, 1005, 1006, 1007 } meta mark set ct mark
-                ct direction original ct mark != { 1001, 1002, 1003, 1004, 1005, 1006, 1007 } ct mark set iifname map { "node-1" : 1001, "node-2" : 1002, "node-3" : 1003, "node-4" : 1004, "node-5" : 1005, "node-7" : 1007, "node-7" : 1007 }
+                ct direction reply ct mark @melinoe_peer_marks meta mark set ct mark
+                ct direction original ct mark != @melinoe_peer_marks ct mark set iifname map @melinoe_peer_ifaces
               }
               chain output {
                 type route hook output priority mangle;
                 ct direction reply ct mark 999 meta mark set ${toString netCfg.uplinkFwMark}
-                ct direction reply ct mark { 1001, 1002, 1003, 1004, 1005, 1006, 1007 } meta mark set ct mark
+                ct direction reply ct mark @melinoe_peer_marks meta mark set ct mark
               }
             }
     '';

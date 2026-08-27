@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/nftables"
+	"github.com/google/nftables/binaryutil"
 	"github.com/vishvananda/netlink"
 )
 
@@ -25,6 +27,10 @@ const (
 	Port         = "60198" // melinoe-route daemon port
 	ProtoMelinoe = 198
 	ListVersion  = "melinoe-list 0.0.2"
+
+	NftTableName = "mangle"
+	NftMarkSet   = "melinoe_peer_marks"
+	NftIfaceMap  = "melinoe_peer_ifaces"
 )
 
 type Config struct {
@@ -101,6 +107,11 @@ type Engine struct {
 	innerNet  network24
 	tableBase int
 	vmIfaces  map[string]bool
+
+	nftConn     *nftables.Conn
+	nftTable    *nftables.Table
+	nftMarkSet  *nftables.Set
+	nftIfaceMap *nftables.Set
 
 	peerMu      sync.RWMutex
 	peerRegions map[int][]string
@@ -310,12 +321,80 @@ func tunnelNodeID(tun string) (int, bool) {
 	return id, true
 }
 
+func (e *Engine) ensureNftInit() error {
+	conn, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("connect to nftables: %w", err)
+	}
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: NftTableName}
+	markSet, err := conn.GetSetByName(table, NftMarkSet)
+	if err != nil {
+		return fmt.Errorf("lookup nft set %s: %w", NftMarkSet, err)
+	}
+	ifaceMap, err := conn.GetSetByName(table, NftIfaceMap)
+	if err != nil {
+		return fmt.Errorf("lookup nft map %s: %w", NftIfaceMap, err)
+	}
+	e.nftConn = conn
+	e.nftTable = table
+	e.nftMarkSet = markSet
+	e.nftIfaceMap = ifaceMap
+	return nil
+}
+
+// ifname is IFNAMSIZ (16 bytes), NUL-padded.
+func ifname(n string) []byte {
+	b := make([]byte, 16)
+	copy(b, n)
+	return b
+}
+
+func (e *Engine) nftAddPeer(tun string, table int) {
+	if e.nftConn == nil {
+		if err := e.ensureNftInit(); err != nil {
+			log.Printf("warning: nft not ready, skipping peer registration for %s: %v", tun, err)
+			return
+		}
+	}
+	e.nftConn.SetAddElements(e.nftMarkSet, []nftables.SetElement{
+		{Key: binaryutil.NativeEndian.PutUint32(uint32(table))},
+	})
+	e.nftConn.SetAddElements(e.nftIfaceMap, []nftables.SetElement{
+		{Key: ifname(tun), Val: binaryutil.NativeEndian.PutUint32(uint32(table))},
+	})
+	if err := e.nftConn.Flush(); err != nil {
+		log.Printf("warning: failed to register peer %s (mark %d) with nftables: %v", tun, table, err)
+		e.nftConn = nil // force a fresh lookup (and connection) next time round
+	}
+}
+
+func (e *Engine) nftRemovePeer(tun string, table int) {
+	if e.nftConn == nil {
+		if err := e.ensureNftInit(); err != nil {
+			log.Printf("warning: nft not ready, skipping peer deregistration for %s: %v", tun, err)
+			return
+		}
+	}
+	e.nftConn.SetDeleteElements(e.nftIfaceMap, []nftables.SetElement{
+		{Key: ifname(tun), Val: binaryutil.NativeEndian.PutUint32(uint32(table))},
+	})
+	e.nftConn.SetDeleteElements(e.nftMarkSet, []nftables.SetElement{
+		{Key: binaryutil.NativeEndian.PutUint32(uint32(table))},
+	})
+	if err := e.nftConn.Flush(); err != nil {
+		log.Printf("warning: failed to deregister peer %s (mark %d) from nftables: %v", tun, table, err)
+		e.nftConn = nil
+	}
+}
+
 func (e *Engine) flushTunnel(ctx context.Context, tun string) {
 	remoteID, ok := tunnelNodeID(tun)
 	if !ok {
 		return
 	}
 	table := e.tableBase + remoteID
+
+	e.nftRemovePeer(tun, table)
 
 	nlRoutes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
 	if err == nil {
@@ -420,6 +499,8 @@ func (e *Engine) ensureTunnel(ctx context.Context, linkCache map[string]bool, lo
 		Scope:     netlink.SCOPE_UNIVERSE,
 	}
 	_ = netlink.RouteReplace(dr)
+
+	e.nftAddPeer(tun, table)
 
 	return true
 }
