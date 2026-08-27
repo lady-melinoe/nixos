@@ -27,26 +27,56 @@ let
   # regenerates it automatically instead of relying on someone
   # remembering to re-run bpftool on some dev box.
   #
-  # Deliberately NOT also dumping nf_conntrack module BTF here (tried
-  # it -- see git history). CONFIG_NF_CONNTRACK's BPF-facing types
-  # (struct nf_conn, struct bpf_ct_opts) and kfuncs
-  # (bpf_skb_ct_lookup/bpf_ct_change_status/bpf_ct_release) live in
-  # that module rather than core vmlinux, and dumping the module's own
-  # split BTF at build time did work mechanically (found it via
-  # config.system.modulesTree once the kernel's own `out` output
-  # turned out not to carry lib/modules directly) -- but `bpftool btf
-  # dump ... format c` doesn't reconstruct kfunc `extern` prototypes
-  # from that BTF at all, only plain type definitions, so the merged
-  # header still didn't declare bpf_skb_ct_lookup et al. Given that,
-  # hand-declaring the kfunc surface directly in ct_redirect.bpf.c
-  # (see that file's "kernel conntrack kfunc declarations" comment) is
-  # both simpler and the only approach that actually compiles -- no
-  # reason to keep the module-BTF machinery around for the plain type
-  # definitions alone when we don't need them (struct nf_conn stays
-  # opaque; we never dereference its fields).
-  vmlinuxH = pkgs.runCommand "melinoe-rts-vmlinux.h" { nativeBuildInputs = [ pkgs.bpftools ]; } ''
-    bpftool btf dump file ${config.boot.kernelPackages.kernel.dev}/vmlinux format c > $out
-  '';
+  # Also dumps nf_conntrack module BTF and merges it in, for
+  # ct_redirect.bpf.c's kernel-conntrack-sync section (struct nf_conn,
+  # struct bpf_ct_opts, bpf_skb_ct_lookup/bpf_ct_change_status/
+  # bpf_ct_release -- all defined in the nf_conntrack module, not core
+  # vmlinux). The module lives at
+  # ${config.boot.kernelPackages.kernel.modules}, a separate output of
+  # the kernel derivation from `out`/`dev` (this kernel's `out` doesn't
+  # carry lib/modules at all). DEBUG_INFO_BTF_MODULES bakes split BTF
+  # directly into each .ko, so this dumps straight from the compiled
+  # module file, no live loaded module required; -B resolves the split
+  # BTF's references back into core vmlinux's types.
+  #
+  # Open question we're deliberately not pre-resolving here: whether
+  # `bpftool btf dump ... format c` actually reconstructs the kfunc
+  # `extern` prototypes and struct bpf_ct_opts from this, or omits them
+  # the way an earlier attempt appeared to (struct bpf_ct_opts came
+  # back with no declaration at all, not even a forward decl, in that
+  # attempt -- possibly because bpftool's C dumper drops types only
+  # reachable through a kfunc's FUNC_PROTO param list, since it never
+  # prints FUNC entries themselves). ct_redirect.bpf.c is written
+  # assuming this works (relies on vmlinux.h directly, no hand-declared
+  # fallback) -- if the build fails with undeclared-kfunc errors again,
+  # that theory holds and hand-declaring is the fix, same as before.
+  vmlinuxH =
+    pkgs.runCommand "melinoe-rts-vmlinux.h"
+      {
+        nativeBuildInputs = [
+          pkgs.bpftools
+          pkgs.zstd
+          pkgs.xz
+        ];
+      }
+      ''
+        bpftool btf dump file ${config.boot.kernelPackages.kernel.dev}/vmlinux format c > core.h
+
+        ko=$(find ${config.boot.kernelPackages.kernel.modules}/lib/modules -iname 'nf_conntrack.ko*' | head -1)
+        if [ -z "$ko" ]; then
+          echo "melinoe-rts-vmlinux.h: couldn't find nf_conntrack.ko under ${config.boot.kernelPackages.kernel.modules}/lib/modules -- is CONFIG_NF_CONNTRACK enabled?" >&2
+          exit 1
+        fi
+        case "$ko" in
+          *.zst) zstd -d "$ko" -o nf_conntrack.ko ;;
+          *.xz)  unxz -c "$ko" > nf_conntrack.ko ;;
+          *.gz)  gzip -dc "$ko" > nf_conntrack.ko ;;
+          *)     cp "$ko" nf_conntrack.ko ;;
+        esac
+        bpftool btf dump file nf_conntrack.ko format c -B ${config.boot.kernelPackages.kernel.dev}/vmlinux > nf_conntrack.h
+
+        cat core.h nf_conntrack.h > $out
+      '';
 
   melinoeRtsBinary = pkgs.buildGoModule {
     pname = "melinoe-rts";
@@ -151,10 +181,28 @@ in
       }
     ];
 
+    # ct_redirect.bpf.c's kernel-conntrack-sync section calls
+    # bpf_skb_ct_lookup, a kfunc owned by the nf_conntrack module --
+    # its BTF ID is only registered with the kernel once the module is
+    # actually loaded (register_btf_kfunc_id_set() runs from the
+    # module's own init, not at kernel boot). Nothing else on this
+    # host is guaranteed to have triggered that load before
+    # melinoe-rts starts (no iptables/nftables ct rule may have run
+    # yet this early in boot), so the loader would otherwise
+    # intermittently fail with "kfunc bpf_skb_ct_lookup: not
+    # supported" depending on boot-order luck. boot.kernelModules is
+    # loaded by systemd-modules-load.service, which orders before
+    # multi-user.target (and therefore before this service, which is
+    # wantedBy multi-user.target) unconditionally, every boot.
+    boot.kernelModules = [ "nf_conntrack" ];
+
     systemd.services.melinoe-rts = {
       description = "Melinoe RTS (return-to-sender) eBPF daemon";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ];
+      after = [
+        "network.target"
+        "systemd-modules-load.service"
+      ];
       stopIfChanged = false;
       serviceConfig = {
         ExecStart =
