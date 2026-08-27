@@ -204,13 +204,13 @@ in
       ${renderVmOutboundRules}
                 iifname != $uplink_ifs ct direction reply ct mark 999 meta mark set ${toString netCfg.uplinkFwMark}
                 iifname $uplink_ifs ct direction original ct mark != 999 ct mark set 999
-                ct direction reply ct mark 1000-1007 meta mark set ct mark
-                ct direction original ct mark != 1000-1007 ct mark set iifname map { "node-1" : 1001, "node-2" : 1002, "node-3" : 1003, "node-4" : 1004, "node-5" : 1005, "node-7" : 1007, "node-7" : 1007 }
+                ct direction reply ct mark { 1001, 1002, 1003, 1004, 1005, 1006, 1007 } meta mark set ct mark
+                ct direction original ct mark != { 1001, 1002, 1003, 1004, 1005, 1006, 1007 } ct mark set iifname map { "node-1" : 1001, "node-2" : 1002, "node-3" : 1003, "node-4" : 1004, "node-5" : 1005, "node-7" : 1007, "node-7" : 1007 }
               }
               chain output {
                 type route hook output priority mangle;
                 ct direction reply ct mark 999 meta mark set ${toString netCfg.uplinkFwMark}
-                ct direction reply ct mark 1000-1007 meta mark set ct mark
+                ct direction reply ct mark { 1001, 1002, 1003, 1004, 1005, 1006, 1007 } meta mark set ct mark
               }
             }
     '';
