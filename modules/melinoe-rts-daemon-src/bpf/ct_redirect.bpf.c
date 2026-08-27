@@ -364,6 +364,27 @@ extern void bpf_ct_release(struct nf_conn *nfct) __ksym;
 #define IPS_ASSURED     (1 << IPS_ASSURED_BIT)
 #endif
 
+/* enum ip_conntrack_dir values, from
+ * uapi/linux/netfilter/nf_conntrack_tuple_common.h. Same hand-declare
+ * reasoning as the IPS_* bits above. Needed for bpf_ct_opts.dir below
+ * -- NOT cosmetic. bpf_nf_ct_tuple_parse() (net/netfilter/
+ * nf_conntrack_bpf.c) uses dir to decide whether to invert the
+ * src/dst we hand it before building the internal lookup tuple, AND
+ * tags the result's tuple->dst.dir with it -- which is itself part of
+ * what the hash lookup matches on (original and reply tuples are
+ * stored as distinct hash entries, disambiguated by this field). We
+ * always call ct_sync_v4/v6 with a tuple observed in the *reply*
+ * direction (that's the whole reason we're calling it -- see the
+ * section comment below), so dir must be IP_CT_DIR_REPLY, not the
+ * default-zero IP_CT_DIR_ORIGINAL every prior version of this file
+ * left it at. */
+#ifndef IP_CT_DIR_ORIGINAL
+#define IP_CT_DIR_ORIGINAL 0
+#endif
+#ifndef IP_CT_DIR_REPLY
+#define IP_CT_DIR_REPLY 1
+#endif
+
 /* --- kernel conntrack status sync ---
  *
  * v4_flows/v6_flows above are our own bookkeeping and are what actually
@@ -385,9 +406,17 @@ extern void bpf_ct_release(struct nf_conn *nfct) __ksym;
  *
  * The tuple handed to bpf_skb_ct_lookup() is always THIS packet's own
  * (unreversed) src/dst -- not our flow table's key/rkey convention.
- * The kernel matches it against its own orig/reply tuple and figures
- * out direction itself; we don't need to (and shouldn't) pre-reverse
- * anything here.
+ * opts.dir tells bpf_nf_ct_tuple_parse() (net/netfilter/
+ * nf_conntrack_bpf.c) how to interpret that tuple before it builds
+ * the internal lookup key: IP_CT_DIR_REPLY here because every call
+ * site below is, definitionally, syncing off a packet we've just
+ * classified as reply-direction traffic (our own flow table's rev
+ * match) -- get this wrong (leave dir at its IP_CT_DIR_ORIGINAL
+ * default, as an earlier version of this file did) and the lookup
+ * silently fails to match anything for every single call, since
+ * original and reply tuples are stored as distinct, dir-disambiguated
+ * hash entries; ct comes back NULL and nothing ever gets synced,
+ * without any visible error.
  *
  * status bit semantics, mirrored from our own flow_val fields:
  *   - IPS_SEEN_REPLY: set the moment we redirect a packet that matched
@@ -417,7 +446,7 @@ static __always_inline void ct_sync_v4(struct __sk_buff *skb, __be32 saddr, __be
     tuple.ipv4.sport = sport;
     tuple.ipv4.dport = dport;
 
-    struct bpf_ct_opts opts = { .l4proto = l4proto, .netns_id = -1 };
+    struct bpf_ct_opts opts = { .l4proto = l4proto, .netns_id = -1, .dir = IP_CT_DIR_REPLY };
     struct nf_conn *ct = bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv4), &opts, sizeof(opts));
     if (!ct)
         return; /* no kernel CT entry (yet) for this tuple -- fine, nothing to sync */
@@ -439,7 +468,7 @@ static __always_inline void ct_sync_v6(struct __sk_buff *skb, struct in6_addr *s
     tuple.ipv6.sport = sport;
     tuple.ipv6.dport = dport;
 
-    struct bpf_ct_opts opts = { .l4proto = l4proto, .netns_id = -1 };
+    struct bpf_ct_opts opts = { .l4proto = l4proto, .netns_id = -1, .dir = IP_CT_DIR_REPLY };
     struct nf_conn *ct = bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv6), &opts, sizeof(opts));
     if (!ct)
         return;
