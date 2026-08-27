@@ -51,13 +51,14 @@ let
   # kernel's `out` output turned out not to carry lib/modules at all
   # (confirmed -- ls on the store path shows only bzImage/System.map),
   # so the modules must be living somewhere else in this particular
-  # kernel derivation's output layout. Rather than guess which
-  # attribute/output that is, pkgs.aggregateModules over
-  # config.system.modulesTree is the same mechanism NixOS itself uses
-  # to assemble the real /run/current-system/kernel-modules tree at
-  # boot -- it's correct by construction regardless of how any given
-  # kernel derivation happens to lay out its own outputs.
-  modulesTree = pkgs.aggregateModules config.system.modulesTree;
+  # kernel derivation's output layout. config.system.modulesTree is
+  # the same tree NixOS itself assembles into
+  # /run/current-system/kernel-modules at boot -- correct by
+  # construction regardless of how any given kernel derivation lays
+  # out its own outputs. On this nixpkgs revision it already evaluates
+  # to a single merged derivation (not a list of per-package module
+  # trees), so used directly, no pkgs.aggregateModules wrapping.
+  modulesTree = config.system.modulesTree;
 
   vmlinuxH =
     pkgs.runCommand "melinoe-rts-vmlinux.h"
