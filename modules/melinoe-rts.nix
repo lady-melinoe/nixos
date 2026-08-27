@@ -31,25 +31,34 @@ let
   # and kfuncs (bpf_skb_ct_lookup/bpf_ct_change_status/bpf_ct_release,
   # used by ct_redirect.bpf.c's kernel-conntrack-sync section) live in
   # the nf_conntrack *module*, not core vmlinux, so a dump of vmlinux
-  # alone never has them. Dumping them too is possible without a live
-  # loaded module, though: nixpkgs's common-config.nix leaves
-  # DEBUG_INFO_BTF_MODULES at its upstream Kconfig default, which is
-  # `def_bool y depends on DEBUG_INFO_BTF && MODULES` -- on by default
-  # whenever DEBUG_INFO_BTF is (i.e. every >=5.11 kernel here) -- which
-  # means each .ko carries its own *split* BTF (built incrementally on
-  # top of vmlinux's, per bpftool-btf(8)) baked in statically at build
-  # time. bpftool can dump that straight from the compiled .ko, no
-  # /sys/kernel/btf/nf_conntrack or loaded module required -- which
-  # matters here specifically because the Nix build sandbox has no live
-  # kernel to load a module into in the first place. -B points bpftool
-  # at the matching vmlinux BTF to resolve the split module BTF's
-  # references back into it.
+  # alone never has them (confirmed CONFIG_MODULES is on and
+  # CONFIG_NF_CONNTRACK is set on this kernel -- not a builtin-only
+  # kernel, so this isn't skippable). Dumping them too is possible
+  # without a live loaded module, though: nixpkgs's common-config.nix
+  # leaves DEBUG_INFO_BTF_MODULES at its upstream Kconfig default,
+  # which is `def_bool y depends on DEBUG_INFO_BTF && MODULES` -- on
+  # by default whenever DEBUG_INFO_BTF is (i.e. every >=5.11 kernel
+  # here) -- which means each .ko carries its own *split* BTF (built
+  # incrementally on top of vmlinux's, per bpftool-btf(8)) baked in
+  # statically at build time. bpftool can dump that straight from the
+  # compiled .ko, no /sys/kernel/btf/nf_conntrack or loaded module
+  # required -- which matters here specifically because the Nix build
+  # sandbox has no live kernel to load a module into in the first
+  # place. -B points bpftool at the matching vmlinux BTF to resolve
+  # the split module BTF's references back into it.
   #
-  # Module path/compression genuinely varies by nixpkgs revision/kernel
-  # config (moduleCompress, module tree layout) -- the `find` below is
-  # meant to be robust to that rather than hardcoding a path, but if it
-  # ever comes up empty on a nixpkgs bump, that's the first thing to
-  # check by hand (`find <kernel>/lib/modules -iname 'nf_conntrack.ko*'`).
+  # modulesTree instead of `${kernel}/lib/modules` directly: this
+  # kernel's `out` output turned out not to carry lib/modules at all
+  # (confirmed -- ls on the store path shows only bzImage/System.map),
+  # so the modules must be living somewhere else in this particular
+  # kernel derivation's output layout. Rather than guess which
+  # attribute/output that is, pkgs.aggregateModules over
+  # config.system.modulesTree is the same mechanism NixOS itself uses
+  # to assemble the real /run/current-system/kernel-modules tree at
+  # boot -- it's correct by construction regardless of how any given
+  # kernel derivation happens to lay out its own outputs.
+  modulesTree = pkgs.aggregateModules config.system.modulesTree;
+
   vmlinuxH =
     pkgs.runCommand "melinoe-rts-vmlinux.h"
       {
@@ -62,9 +71,9 @@ let
       ''
         bpftool btf dump file ${config.boot.kernelPackages.kernel.dev}/vmlinux format c > core.h
 
-        ko=$(find ${config.boot.kernelPackages.kernel}/lib/modules -iname 'nf_conntrack.ko*' | head -1)
+        ko=$(find ${modulesTree}/lib/modules -iname 'nf_conntrack.ko*' | head -1)
         if [ -z "$ko" ]; then
-          echo "melinoe-rts-vmlinux.h: couldn't find nf_conntrack.ko under ${config.boot.kernelPackages.kernel}/lib/modules -- is CONFIG_NF_CONNTRACK enabled?" >&2
+          echo "melinoe-rts-vmlinux.h: couldn't find nf_conntrack.ko under ${modulesTree}/lib/modules -- is CONFIG_NF_CONNTRACK enabled?" >&2
           exit 1
         fi
         case "$ko" in
@@ -77,7 +86,6 @@ let
 
         cat core.h nf_conntrack.h > $out
       '';
-
 
   melinoeRtsBinary = pkgs.buildGoModule {
     pname = "melinoe-rts";
