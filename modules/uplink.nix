@@ -88,20 +88,6 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = pkgs.writeShellScript "melinoe-inet-setup" ''
-          # One-time migration cleanup: older generations of this unit moved
-          # each uplink's physical interfaces into a separate "inet" netns
-          # and bridged it to the main namespace with a veth pair (host side
-          # historically named "inet0"). Undo that if it's still present so
-          # this unit can (re-)configure the physical interfaces directly in
-          # the main namespace below. No-op on hosts that never had it.
-          if ip netns list | grep -qx "inet"; then
-            ${lib.concatMapStringsSep "\n" (
-              iface: ''ip netns exec inet ip link set ${iface} netns 1 2>/dev/null || true''
-            ) (lib.unique (lib.concatMap (u: u.iface) netCfg.uplinks))}
-            ip netns del inet 2>/dev/null || true
-          fi
-          ip link del inet0 2>/dev/null || true
-
           ip rule del fwmark ${table} lookup ${table} >/dev/null 2>&1 || true
           ip rule add fwmark ${table} lookup ${table}
           sysctl -w net.ipv4.conf.default.rp_filter=0
@@ -121,7 +107,6 @@ in
       path = [
         pkgs.iproute2
         pkgs.procps
-        pkgs.gnugrep
       ];
     };
   };
