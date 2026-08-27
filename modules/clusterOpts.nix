@@ -137,18 +137,8 @@ in
         default = "198.18.0.0/24";
         description = ''
           Per-node "host"/intra address range. Node N's own address on this
-          range (see melinoeNodeIntraIP) is used for haproxy sourcing, the
-          firewall's own-node range, and as the base for the inet-netns setup.
-        '';
-      };
-
-      hostUplinkAddress = mkOption {
-        type = types.str;
-        default = "198.18.0.255";
-        description = ''
-          The "my uplink" special address inside hostCidr: the address the host
-          side of the inet netns veth pair uses to reach the node's own uplink
-          netns from containers/VMs.
+          range (see melinoeNodeIntraIP) is used for haproxy sourcing and
+          the firewall's own-node range.
         '';
       };
 
@@ -169,8 +159,8 @@ in
           The "my host" special address reserved out of containerCidr: intended
           for containers/VMs to use as their uplink to reach the node itself.
           Not yet wired up to anything - reserved here so containerCidr's
-          documented exclusions (hostCidr, hostUplinkAddress's /16 sibling, this
-          address) stay accurate as that lands.
+          documented exclusions (hostCidr, this address) stay accurate as
+          that lands.
         '';
       };
 
