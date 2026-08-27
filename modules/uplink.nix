@@ -2,10 +2,11 @@
   config,
   lib,
   pkgs,
+  melinoeNodeIntraIP,
   ...
 }:
 let
-  nid = toString config.melinoe.node.id;
+  hostAddr = melinoeNodeIntraIP config.melinoe.node.id;
   netCfg = config.melinoe.node.networking;
   table = toString netCfg.uplinkFwMark;
   uplinkIface =
@@ -94,8 +95,8 @@ in
           ip rule del pref 1 from all lookup local >/dev/null 2>&1 || true
           ip rule add pref 1 from all lookup local
           ip rule del pref 0 from all lookup local >/dev/null 2>&1 || true
-          ip addr del 198.18.0.${nid}/32 dev lo >/dev/null 2>&1 || true
-          ip addr add 198.18.0.${nid}/32 dev lo
+          ip addr del ${hostAddr}/32 dev lo >/dev/null 2>&1 || true
+          ip addr add ${hostAddr}/32 dev lo
           sysctl -w net.ipv4.conf.default.rp_filter=0
           sysctl -w net.ipv4.conf.all.rp_filter=0
           ${lib.concatStringsSep "\n" (lib.imap0 mkUplinkScript netCfg.uplinks)}
