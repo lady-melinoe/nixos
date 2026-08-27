@@ -296,29 +296,60 @@ static __always_inline int do_redirect_or_ok(__u32 target_ifindex)
 
 /* --- kernel conntrack kfunc declarations ---
  *
- * struct nf_conn, struct bpf_ct_opts, and the three kfuncs below
- * (bpf_skb_ct_lookup/bpf_ct_change_status/bpf_ct_release) all come
- * from vmlinux.h now, not hand-declared here -- they're defined in
- * net/netfilter/nf_conntrack_bpf.c, which is part of the nf_conntrack
- * *module*, not core vmlinux, so they'd be missing from a plain
- * `bpftool btf dump file vmlinux` if CONFIG_NF_CONNTRACK=m. See
- * melinoe-rts.nix's vmlinuxH derivation: it additionally dumps
- * nf_conntrack.ko's own (split) BTF at build time -- no live loaded
- * module needed, since DEBUG_INFO_BTF_MODULES bakes split BTF
- * directly into the compiled .ko -- and concatenates it with the core
- * vmlinux.h dump. Nothing to declare here as a result; just use them.
+ * Hand-declared, not relying on vmlinux.h. Tried dumping
+ * nf_conntrack's own module BTF at build time first (see
+ * melinoe-rts.nix's git history) -- that part actually worked
+ * (nf_conntrack.ko's split BTF is dumpable statically, no live
+ * module needed, once the .ko was located via
+ * config.system.modulesTree). What didn't work: `bpftool btf dump
+ * ... format c` doesn't reconstruct kfunc `extern` prototypes from
+ * BTF at all in the version available here -- only plain type
+ * definitions -- so bpf_skb_ct_lookup/bpf_ct_change_status/
+ * bpf_ct_release never actually appeared in the merged header, and
+ * struct bpf_ct_opts came through as an incomplete forward decl with
+ * no members. Hand-declaring is simpler and is what actually
+ * compiles, so that's what this is.
+ *
+ * struct nf_conn stays a bare opaque forward-decl -- we only ever
+ * pass the pointer through to bpf_ct_change_status/bpf_ct_release,
+ * never dereference a field, so we don't need its real layout. The
+ * kfuncs themselves are resolved by cilium/ebpf against the *running*
+ * kernel's BTF at load time (module BTF included -- that's the whole
+ * point of __ksym), not at compile time, so this works whether
+ * nf_conntrack is builtin or a module on the box this actually runs
+ * on. struct bpf_ct_opts's layout (and NF_BPF_CT_OPTS_SZ=12) has been
+ * stable since it was introduced in v6.0 (see
+ * net/netfilter/nf_conntrack_bpf.c upstream) -- if a future kernel
+ * changes it, this needs updating right alongside it, same as any
+ * other kernel ABI dependency in this file.
  *
  * (No CO-RE relocation concern either way: every fleet host runs the
  * exact kernel derivation this was compiled against, per flake.lock,
- * so there's no cross-version struct-layout drift to guard against.) */
+ * so there's no cross-version struct-layout drift to guard against
+ * the way upstream selftests' bpf_ct_opts___local exists for.) */
+struct bpf_ct_opts {
+    __s32 netns_id;
+    __s32 error;
+    __u8  l4proto;
+    __u8  dir;
+    __u8  reserved[2];
+};
 
-/* status bits from uapi/linux/netfilter/nf_conntrack_common.h. Kept
- * hand-declared regardless of the vmlinux.h change above -- these are
- * preprocessor #defines in upstream, and BTF dumps types, not
- * preprocessor text, so they don't reliably survive a `bpftool btf
- * dump ... format c` round-trip even when the enum they're paired
- * with does. Guarded in case a future toolchain/vmlinux.h vendors
- * them some other way. */
+struct nf_conn; /* opaque -- see comment above */
+
+extern struct nf_conn *bpf_skb_ct_lookup(struct __sk_buff *skb_ctx, struct bpf_sock_tuple *bpf_tuple,
+                                          __u32 tuple__sz, struct bpf_ct_opts *opts, __u32 opts__sz) __ksym;
+extern int bpf_ct_change_status(struct nf_conn *nfct, __u32 status) __ksym;
+extern void bpf_ct_release(struct nf_conn *nfct) __ksym;
+
+/* status bits from uapi/linux/netfilter/nf_conntrack_common.h. Same
+ * situation as the kfunc block above: these are preprocessor
+ * #defines in upstream, and BTF dumps types, not preprocessor text,
+ * so they don't survive a `bpftool btf dump ... format c` round-trip
+ * regardless of vmlinux.h's contents -- hand-declaring is the only
+ * option, not a fallback for the module-BTF issue specifically.
+ * Guarded in case a future toolchain/vmlinux.h vendors them some
+ * other way. */
 #ifndef IPS_SEEN_REPLY
 #define IPS_SEEN_REPLY_BIT 1
 #define IPS_SEEN_REPLY     (1 << IPS_SEEN_REPLY_BIT)
