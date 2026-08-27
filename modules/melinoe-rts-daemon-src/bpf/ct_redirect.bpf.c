@@ -312,10 +312,9 @@ static __always_inline int do_redirect_or_ok(__u32 target_ifindex)
  * writeup. Hand-declaring here is simply the only approach that
  * actually compiles.
  *
- * struct nf_conn stays a bare opaque forward-decl -- we only ever
- * pass the pointer through to bpf_ct_change_status/bpf_ct_release,
- * never dereference a field, so we don't need its real layout. The
- * kfuncs themselves are resolved by cilium/ebpf against the *running*
+ * struct nf_conn now declares one CO-RE-relocatable field (status) --
+ * see that declaration's own comment for why and how. The kfuncs
+ * themselves are resolved by cilium/ebpf against the *running*
  * kernel's BTF at load time (module BTF included -- that's the whole
  * point of __ksym), not at compile time, so this works whether
  * nf_conntrack is builtin or a module on the box this actually runs
@@ -341,7 +340,28 @@ struct bpf_ct_opts {
     __u8  reserved[2];
 };
 
-struct nf_conn; /* opaque -- see comment above */
+/* struct nf_conn is no longer a bare opaque forward-decl -- we now
+ * need to read its `status` field (see the "kernel conntrack status
+ * sync" comment below for why: bpf_ct_change_status's calling
+ * convention requires it). Declared here with just that one field,
+ * tagged preserve_access_index, rather than pulled from vmlinux.h --
+ * same reasoning as everything else in this block: nf_conn lives in
+ * the nf_conntrack module, bpftool's C dumper doesn't reconstruct
+ * module-only types reliably (established earlier in this file's
+ * history), so there's no full definition to pull in anyway.
+ * preserve_access_index means clang doesn't bake in the offset we
+ * wrote below at compile time -- it emits a CO-RE relocation record
+ * instead, matched by struct tag ("nf_conn") + field name ("status")
+ * against the *real* struct layout in the target's BTF at program-
+ * load time (cilium/ebpf's applyRelocations searches loaded module
+ * BTF for this, same as kfunc resolution does -- see linker.go's
+ * cache.Modules()/cache.Module()). So this doesn't need to match the
+ * real struct's other fields, sizes, or padding -- only this one
+ * field's name and type need to be right; the offset is resolved for
+ * real at load time regardless of what we wrote here. */
+struct nf_conn {
+    unsigned long status;
+} __attribute__((preserve_access_index));
 
 extern struct nf_conn *bpf_skb_ct_lookup(struct __sk_buff *skb_ctx, struct bpf_sock_tuple *bpf_tuple,
                                           __u32 tuple__sz, struct bpf_ct_opts *opts, __u32 opts__sz) __ksym;
@@ -530,10 +550,21 @@ static __always_inline void ct_sync_v4(struct __sk_buff *skb,
     if (!ct)
         return; /* no kernel CT entry (yet) for this tuple -- fine, nothing to sync */
 
-    __u32 status = IPS_SEEN_REPLY;
+    /* nf_ct_change_status_common() (net/netfilter/nf_conntrack_core.c)
+     * treats `status` as the FULL desired resulting value, not a
+     * bitmask of bits to add -- it computes d = ct->status ^ status
+     * and rejects (-EBUSY) if IPS_CONFIRMED (among others) is among
+     * the differing bits. Every real, already-tracked connection has
+     * IPS_CONFIRMED set; passing just IPS_SEEN_REPLY (without OR-ing
+     * in the connection's existing status first, as every earlier
+     * version of this file did) makes IPS_CONFIRMED "differ" and
+     * guarantees -EBUSY on every single call, silently, since we
+     * never checked the return value -- a no-op from the very first
+     * version of this section. OR-ing in ct->status first is the fix. */
+    unsigned long status = ct->status | IPS_SEEN_REPLY;
     if (set_assured)
         status |= IPS_ASSURED;
-    bpf_ct_change_status(ct, status);
+    bpf_ct_change_status(ct, (__u32)status);
     bpf_ct_release(ct);
 }
 
@@ -549,10 +580,10 @@ static __always_inline void ct_sync_v6(struct __sk_buff *skb,
     if (!ct)
         return;
 
-    __u32 status = IPS_SEEN_REPLY;
+    unsigned long status = ct->status | IPS_SEEN_REPLY;
     if (set_assured)
         status |= IPS_ASSURED;
-    bpf_ct_change_status(ct, status);
+    bpf_ct_change_status(ct, (__u32)status);
     bpf_ct_release(ct);
 }
 
