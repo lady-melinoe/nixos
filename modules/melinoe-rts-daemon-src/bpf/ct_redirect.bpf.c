@@ -26,6 +26,8 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
+/* NOT #include <bpf/bpf_kfuncs.h> -- see the declarations right below
+ * this include block for why. */
 
 #define TC_ACT_OK    0
 #define ETH_P_IP     0x0800
@@ -290,6 +292,127 @@ static __always_inline int do_redirect_or_ok(__u32 target_ifindex)
     if (target_ifindex)
         return bpf_redirect_neigh(target_ifindex, NULL, 0, 0);
     return TC_ACT_OK;
+}
+
+/* --- kernel conntrack kfunc declarations ---
+ *
+ * struct nf_conn, struct bpf_ct_opts, and the three kfuncs below
+ * (bpf_skb_ct_lookup/bpf_ct_change_status/bpf_ct_release) all come
+ * from vmlinux.h now, not hand-declared here -- they're defined in
+ * net/netfilter/nf_conntrack_bpf.c, which is part of the nf_conntrack
+ * *module*, not core vmlinux, so they'd be missing from a plain
+ * `bpftool btf dump file vmlinux` if CONFIG_NF_CONNTRACK=m. See
+ * melinoe-rts.nix's vmlinuxH derivation: it additionally dumps
+ * nf_conntrack.ko's own (split) BTF at build time -- no live loaded
+ * module needed, since DEBUG_INFO_BTF_MODULES bakes split BTF
+ * directly into the compiled .ko -- and concatenates it with the core
+ * vmlinux.h dump. Nothing to declare here as a result; just use them.
+ *
+ * (No CO-RE relocation concern either way: every fleet host runs the
+ * exact kernel derivation this was compiled against, per flake.lock,
+ * so there's no cross-version struct-layout drift to guard against.) */
+
+/* status bits from uapi/linux/netfilter/nf_conntrack_common.h. Kept
+ * hand-declared regardless of the vmlinux.h change above -- these are
+ * preprocessor #defines in upstream, and BTF dumps types, not
+ * preprocessor text, so they don't reliably survive a `bpftool btf
+ * dump ... format c` round-trip even when the enum they're paired
+ * with does. Guarded in case a future toolchain/vmlinux.h vendors
+ * them some other way. */
+#ifndef IPS_SEEN_REPLY
+#define IPS_SEEN_REPLY_BIT 1
+#define IPS_SEEN_REPLY     (1 << IPS_SEEN_REPLY_BIT)
+#endif
+#ifndef IPS_ASSURED
+#define IPS_ASSURED_BIT 2
+#define IPS_ASSURED     (1 << IPS_ASSURED_BIT)
+#endif
+
+/* --- kernel conntrack status sync ---
+ *
+ * v4_flows/v6_flows above are our own bookkeeping and are what actually
+ * drives the redirect decision -- this section doesn't touch that.
+ * It's a separate, best-effort nudge to the *kernel's* real
+ * nf_conntrack entry for the same 5-tuple, for anything downstream
+ * that reads real conntrack (conntrack -L, iptables/nftables ctstate
+ * matching, etc.) so it sees the same IPS_SEEN_REPLY/IPS_ASSURED it
+ * would have without this program in the path. Failure to find/update
+ * the kernel entry is silently ignored -- it never affects the
+ * redirect decision.
+ *
+ * TCP/UDP only -- bpf_skb_ct_lookup() itself rejects any other
+ * l4proto with -EPROTO (see bpf_nf_ct_tuple_parse() in
+ * net/netfilter/nf_conntrack_bpf.c: "l4proto isn't one of IPPROTO_TCP
+ * or IPPROTO_UDP"), so there's no ICMP/GRE/ESP/generic-bucket variant
+ * of this to add -- the kfunc can't look those up at all, regardless
+ * of what tuple we hand it.
+ *
+ * The tuple handed to bpf_skb_ct_lookup() is always THIS packet's own
+ * (unreversed) src/dst -- not our flow table's key/rkey convention.
+ * The kernel matches it against its own orig/reply tuple and figures
+ * out direction itself; we don't need to (and shouldn't) pre-reverse
+ * anything here.
+ *
+ * status bit semantics, mirrored from our own flow_val fields:
+ *   - IPS_SEEN_REPLY: set the moment we redirect a packet that matched
+ *     an existing flow's *reverse* tuple -- i.e. a genuine reply has
+ *     now been seen, same event as our own is_fwd_dir==0 case in
+ *     flow_update().
+ *   - IPS_ASSURED: kernel conntrack's own bar for this is "this flow
+ *     has proven itself, don't be first against the wall under table
+ *     pressure" -- TCP_S_ESTABLISHED is our equivalent for TCP (real
+ *     data exchanged both ways, not just a handshake in flight). For
+ *     UDP we don't model conntrack's stricter "assured" semantics
+ *     (conntrack's UDP tracker actually only asserts it once a *third*
+ *     packet arrives continuing the flow after a reply was seen, to
+ *     avoid marking single request/response probes assured); we reuse
+ *     our own e->assured's simpler "first reply seen" bar instead,
+ *     same as the comment on flow_val.assured already documents. If
+ *     that mismatch matters for your use of ctstate, gate this UDP
+ *     call on a packet counter instead of firing unconditionally on
+ *     first reply. */
+static __always_inline void ct_sync_v4(struct __sk_buff *skb, __be32 saddr, __be32 daddr,
+                                        __be16 sport, __be16 dport, __u8 l4proto,
+                                        __u8 set_assured)
+{
+    struct bpf_sock_tuple tuple = {};
+    tuple.ipv4.saddr = saddr;
+    tuple.ipv4.daddr = daddr;
+    tuple.ipv4.sport = sport;
+    tuple.ipv4.dport = dport;
+
+    struct bpf_ct_opts opts = { .l4proto = l4proto, .netns_id = -1 };
+    struct nf_conn *ct = bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv4), &opts, sizeof(opts));
+    if (!ct)
+        return; /* no kernel CT entry (yet) for this tuple -- fine, nothing to sync */
+
+    __u32 status = IPS_SEEN_REPLY;
+    if (set_assured)
+        status |= IPS_ASSURED;
+    bpf_ct_change_status(ct, status);
+    bpf_ct_release(ct);
+}
+
+static __always_inline void ct_sync_v6(struct __sk_buff *skb, struct in6_addr *saddr, struct in6_addr *daddr,
+                                        __be16 sport, __be16 dport, __u8 l4proto,
+                                        __u8 set_assured)
+{
+    struct bpf_sock_tuple tuple = {};
+    __builtin_memcpy(tuple.ipv6.saddr, saddr, sizeof(tuple.ipv6.saddr));
+    __builtin_memcpy(tuple.ipv6.daddr, daddr, sizeof(tuple.ipv6.daddr));
+    tuple.ipv6.sport = sport;
+    tuple.ipv6.dport = dport;
+
+    struct bpf_ct_opts opts = { .l4proto = l4proto, .netns_id = -1 };
+    struct nf_conn *ct = bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv6), &opts, sizeof(opts));
+    if (!ct)
+        return;
+
+    __u32 status = IPS_SEEN_REPLY;
+    if (set_assured)
+        status |= IPS_ASSURED;
+    bpf_ct_change_status(ct, status);
+    bpf_ct_release(ct);
 }
 
 /* --- TCP handling --- */
@@ -763,6 +886,8 @@ static __always_inline int handle_v4(struct __sk_buff *skb, void *l3, void *data
             flow_update(fwd, IPPROTO_TCP, 1, cur_ifindex, now, 1, seq, is_syn, is_fin, is_rst, is_ingress);
         } else if (rev) {
             flow_update(rev, IPPROTO_TCP, 0, cur_ifindex, now, 1, seq, is_syn, is_fin, is_rst, is_ingress);
+            ct_sync_v4(skb, ip->saddr, ip->daddr, tcp->source, tcp->dest, IPPROTO_TCP,
+                       rev->state == TCP_S_ESTABLISHED);
         } else {
             struct flow_val v = {
                 .ifindex = cur_ifindex,
@@ -796,6 +921,7 @@ static __always_inline int handle_v4(struct __sk_buff *skb, void *l3, void *data
             flow_update(fwd, IPPROTO_UDP, 1, cur_ifindex, now, 0, 0, 0, 0, 0, is_ingress);
         } else if (rev) {
             flow_update(rev, IPPROTO_UDP, 0, cur_ifindex, now, 0, 0, 0, 0, 0, is_ingress);
+            ct_sync_v4(skb, ip->saddr, ip->daddr, udp->source, udp->dest, IPPROTO_UDP, 1);
         } else {
             struct flow_val v = { .ifindex = cur_ifindex, .assured = 0, .last_seen_ns = now };
             bpf_map_update_elem(&v4_flows, &key, &v, BPF_NOEXIST);
@@ -895,6 +1021,8 @@ static __always_inline int handle_v6(struct __sk_buff *skb, void *l3, void *data
             flow_update(fwd, IPPROTO_TCP, 1, cur_ifindex, now, 1, seq, is_syn, is_fin, is_rst, is_ingress);
         } else if (rev) {
             flow_update(rev, IPPROTO_TCP, 0, cur_ifindex, now, 1, seq, is_syn, is_fin, is_rst, is_ingress);
+            ct_sync_v6(skb, &ip6->saddr, &ip6->daddr, tcp->source, tcp->dest, IPPROTO_TCP,
+                       rev->state == TCP_S_ESTABLISHED);
         } else {
             struct flow_val v = {
                 .ifindex = cur_ifindex,
@@ -926,6 +1054,7 @@ static __always_inline int handle_v6(struct __sk_buff *skb, void *l3, void *data
             flow_update(fwd, IPPROTO_UDP, 1, cur_ifindex, now, 0, 0, 0, 0, 0, is_ingress);
         } else if (rev) {
             flow_update(rev, IPPROTO_UDP, 0, cur_ifindex, now, 0, 0, 0, 0, 0, is_ingress);
+            ct_sync_v6(skb, &ip6->saddr, &ip6->daddr, udp->source, udp->dest, IPPROTO_UDP, 1);
         } else {
             struct flow_val v = { .ifindex = cur_ifindex, .assured = 0, .last_seen_ns = now };
             bpf_map_update_elem(&v6_flows, &key, &v, BPF_NOEXIST);
