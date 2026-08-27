@@ -151,6 +151,7 @@ in
             table inet filter {
               chain INPUT {
                 type filter hook input priority filter; policy drop;
+                ct state invalid drop
                 ct state { established, related } accept
                 icmp type { echo-request, echo-reply } accept
                 icmpv6 type { echo-request, nd-neighbor-solicit } accept
@@ -164,6 +165,7 @@ in
               }
               chain FORWARD {
                 type filter hook forward priority filter; policy accept;
+                ct state invalid drop
       ${renderVmOutboundDropRules}
       ${renderVmOutboundAllowOnlyRules}
                 ct state { established, related } accept
