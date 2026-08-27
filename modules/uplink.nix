@@ -5,7 +5,7 @@
   ...
 }:
 let
-  nid = config.melinoe.node.id;
+  nid = toString config.melinoe.node.id;
   netCfg = config.melinoe.node.networking;
   table = toString netCfg.uplinkFwMark;
   uplinkIface =
