@@ -366,11 +366,10 @@ extern void bpf_ct_release(struct nf_conn *nfct) __ksym;
 
 /* enum ip_conntrack_dir values, from
  * uapi/linux/netfilter/nf_conntrack_tuple_common.h. Same hand-declare
- * reasoning as the IPS_* bits above. IP_CT_DIR_ORIGINAL is the only
- * one this file actually uses (see ct_sync_v4/v6's tuple-orientation
- * comment below for why) -- IP_CT_DIR_REPLY kept declared alongside
- * it for readability/documentation, not because anything here passes
- * it. */
+ * reasoning as the IPS_* bits above. Both used now -- see
+ * ct_try_lookup_v4/v6 below, which tries every (tuple-orientation x
+ * dir) combination rather than trusting one derivation of which
+ * single combination is correct. */
 #ifndef IP_CT_DIR_ORIGINAL
 #define IP_CT_DIR_ORIGINAL 0
 #endif
@@ -397,24 +396,17 @@ extern void bpf_ct_release(struct nf_conn *nfct) __ksym;
  * of this to add -- the kfunc can't look those up at all, regardless
  * of what tuple we hand it.
  *
- * The tuple handed to bpf_skb_ct_lookup() is the flow's ORIGINAL
- * (forward) direction tuple -- i.e. our own flow table's rkey, the
- * *reverse* of the packet we're currently holding -- paired with
- * dir=IP_CT_DIR_ORIGINAL, not the packet's own raw src/dst. This
- * looks backwards at first (we're syncing off a reply packet; why
- * pass the original direction?) but bpf_nf_ct_tuple_parse() actually
- * performs a real src/dst swap whenever dir=IP_CT_DIR_REPLY is used,
- * not a pass-through -- so handing it the reply packet's own raw
- * fields with dir=IP_CT_DIR_REPLY produces a tuple matching neither
- * the stored original tuple (right values, wrong dir) nor the stored
- * reply tuple (right dir, swapped values): a guaranteed lookup miss,
- * silently returning ct=NULL and syncing nothing, which is exactly
- * what an earlier version of this file did. dir=IP_CT_DIR_ORIGINAL
- * with the reversed/original-direction tuple lands exactly on the
- * stored original tuple instead, which resolves to the same nf_conn
- * either way -- and matches the only calling convention the kernel's
- * own selftest (net/netfilter/nf_conntrack_bpf.c's associated
- * selftest) actually exercises; it never sets dir at all.
+ * ct_try_lookup_v4/v6 (below) try all four combinations of {this
+ * packet's own tuple, the reversed/flow tuple} x {IP_CT_DIR_ORIGINAL,
+ * IP_CT_DIR_REPLY} and use whichever one actually returns a live ct.
+ * Reasoning from bpf_nf_ct_tuple_parse()'s source alone (it performs
+ * a real src/dst swap when dir=IP_CT_DIR_REPLY, not a pass-through)
+ * pointed at reversed-tuple+IP_CT_DIR_ORIGINAL as *the* correct
+ * combination -- but that reasoning has already produced two
+ * confidently-wrong answers in a row here, so this settles it
+ * empirically instead: at most one of the four constructed lookups
+ * can ever match a real stored tuple, so trying all four is safe to
+ * leave in permanently, not just for this round of debugging.
  *
  * status bit semantics, mirrored from our own flow_val fields:
  *   - IPS_SEEN_REPLY: set the moment we redirect a packet that matched
@@ -434,18 +426,107 @@ extern void bpf_ct_release(struct nf_conn *nfct) __ksym;
  *     that mismatch matters for your use of ctstate, gate this UDP
  *     call on a packet counter instead of firing unconditionally on
  *     first reply. */
-static __always_inline void ct_sync_v4(struct __sk_buff *skb, __be32 saddr, __be32 daddr,
-                                        __be16 sport, __be16 dport, __u8 l4proto,
-                                        __u8 set_assured)
+/* Try all four (tuple-orientation x dir) combinations and use
+ * whichever one actually returns a live ct -- not just a debugging
+ * shim, safe to leave in permanently: a real conntrack entry equals
+ * exactly one of these four constructed lookups (raw-vs-reversed
+ * tuple x IP_CT_DIR_ORIGINAL-vs-REPLY), so at most one of the four
+ * calls below ever succeeds; the other three just cost a wasted
+ * lookup. This replaces confidently guessing the single "right"
+ * combination from reading bpf_nf_ct_tuple_parse() -- that reasoning
+ * has been wrong twice already in getting here, so empirically
+ * finding out which one actually works (does conntrack -L's unreplied
+ * count actually drop) beats a third guess. Once it's confirmed which
+ * combination is the real one, this can be trimmed back down to just
+ * that call -- kept as all four for now specifically to settle that
+ * empirically rather than assume. */
+static __always_inline struct nf_conn *ct_try_lookup_v4(struct __sk_buff *skb,
+                                                          __be32 fwd_saddr, __be32 fwd_daddr,
+                                                          __be16 fwd_sport, __be16 fwd_dport,
+                                                          __be32 rev_saddr, __be32 rev_daddr,
+                                                          __be16 rev_sport, __be16 rev_dport,
+                                                          __u8 l4proto)
 {
     struct bpf_sock_tuple tuple = {};
-    tuple.ipv4.saddr = saddr;
-    tuple.ipv4.daddr = daddr;
-    tuple.ipv4.sport = sport;
-    tuple.ipv4.dport = dport;
+    struct bpf_ct_opts opts = { .l4proto = l4proto, .netns_id = -1 };
+    struct nf_conn *ct;
 
-    struct bpf_ct_opts opts = { .l4proto = l4proto, .netns_id = -1, .dir = IP_CT_DIR_ORIGINAL };
-    struct nf_conn *ct = bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv4), &opts, sizeof(opts));
+    tuple.ipv4.saddr = fwd_saddr;
+    tuple.ipv4.daddr = fwd_daddr;
+    tuple.ipv4.sport = fwd_sport;
+    tuple.ipv4.dport = fwd_dport;
+
+    opts.dir = IP_CT_DIR_ORIGINAL;
+    ct = bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv4), &opts, sizeof(opts));
+    if (ct)
+        return ct;
+
+    opts.dir = IP_CT_DIR_REPLY;
+    ct = bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv4), &opts, sizeof(opts));
+    if (ct)
+        return ct;
+
+    tuple.ipv4.saddr = rev_saddr;
+    tuple.ipv4.daddr = rev_daddr;
+    tuple.ipv4.sport = rev_sport;
+    tuple.ipv4.dport = rev_dport;
+
+    opts.dir = IP_CT_DIR_ORIGINAL;
+    ct = bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv4), &opts, sizeof(opts));
+    if (ct)
+        return ct;
+
+    opts.dir = IP_CT_DIR_REPLY;
+    return bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv4), &opts, sizeof(opts));
+}
+
+static __always_inline struct nf_conn *ct_try_lookup_v6(struct __sk_buff *skb,
+                                                          struct in6_addr *fwd_saddr, struct in6_addr *fwd_daddr,
+                                                          __be16 fwd_sport, __be16 fwd_dport,
+                                                          struct in6_addr *rev_saddr, struct in6_addr *rev_daddr,
+                                                          __be16 rev_sport, __be16 rev_dport,
+                                                          __u8 l4proto)
+{
+    struct bpf_sock_tuple tuple = {};
+    struct bpf_ct_opts opts = { .l4proto = l4proto, .netns_id = -1 };
+    struct nf_conn *ct;
+
+    __builtin_memcpy(tuple.ipv6.saddr, fwd_saddr, sizeof(tuple.ipv6.saddr));
+    __builtin_memcpy(tuple.ipv6.daddr, fwd_daddr, sizeof(tuple.ipv6.daddr));
+    tuple.ipv6.sport = fwd_sport;
+    tuple.ipv6.dport = fwd_dport;
+
+    opts.dir = IP_CT_DIR_ORIGINAL;
+    ct = bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv6), &opts, sizeof(opts));
+    if (ct)
+        return ct;
+
+    opts.dir = IP_CT_DIR_REPLY;
+    ct = bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv6), &opts, sizeof(opts));
+    if (ct)
+        return ct;
+
+    __builtin_memcpy(tuple.ipv6.saddr, rev_saddr, sizeof(tuple.ipv6.saddr));
+    __builtin_memcpy(tuple.ipv6.daddr, rev_daddr, sizeof(tuple.ipv6.daddr));
+    tuple.ipv6.sport = rev_sport;
+    tuple.ipv6.dport = rev_dport;
+
+    opts.dir = IP_CT_DIR_ORIGINAL;
+    ct = bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv6), &opts, sizeof(opts));
+    if (ct)
+        return ct;
+
+    opts.dir = IP_CT_DIR_REPLY;
+    return bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv6), &opts, sizeof(opts));
+}
+
+static __always_inline void ct_sync_v4(struct __sk_buff *skb,
+                                        __be32 fwd_saddr, __be32 fwd_daddr, __be16 fwd_sport, __be16 fwd_dport,
+                                        __be32 rev_saddr, __be32 rev_daddr, __be16 rev_sport, __be16 rev_dport,
+                                        __u8 l4proto, __u8 set_assured)
+{
+    struct nf_conn *ct = ct_try_lookup_v4(skb, fwd_saddr, fwd_daddr, fwd_sport, fwd_dport,
+                                           rev_saddr, rev_daddr, rev_sport, rev_dport, l4proto);
     if (!ct)
         return; /* no kernel CT entry (yet) for this tuple -- fine, nothing to sync */
 
@@ -456,18 +537,15 @@ static __always_inline void ct_sync_v4(struct __sk_buff *skb, __be32 saddr, __be
     bpf_ct_release(ct);
 }
 
-static __always_inline void ct_sync_v6(struct __sk_buff *skb, struct in6_addr *saddr, struct in6_addr *daddr,
-                                        __be16 sport, __be16 dport, __u8 l4proto,
-                                        __u8 set_assured)
+static __always_inline void ct_sync_v6(struct __sk_buff *skb,
+                                        struct in6_addr *fwd_saddr, struct in6_addr *fwd_daddr,
+                                        __be16 fwd_sport, __be16 fwd_dport,
+                                        struct in6_addr *rev_saddr, struct in6_addr *rev_daddr,
+                                        __be16 rev_sport, __be16 rev_dport,
+                                        __u8 l4proto, __u8 set_assured)
 {
-    struct bpf_sock_tuple tuple = {};
-    __builtin_memcpy(tuple.ipv6.saddr, saddr, sizeof(tuple.ipv6.saddr));
-    __builtin_memcpy(tuple.ipv6.daddr, daddr, sizeof(tuple.ipv6.daddr));
-    tuple.ipv6.sport = sport;
-    tuple.ipv6.dport = dport;
-
-    struct bpf_ct_opts opts = { .l4proto = l4proto, .netns_id = -1, .dir = IP_CT_DIR_ORIGINAL };
-    struct nf_conn *ct = bpf_skb_ct_lookup(skb, &tuple, sizeof(tuple.ipv6), &opts, sizeof(opts));
+    struct nf_conn *ct = ct_try_lookup_v6(skb, fwd_saddr, fwd_daddr, fwd_sport, fwd_dport,
+                                           rev_saddr, rev_daddr, rev_sport, rev_dport, l4proto);
     if (!ct)
         return;
 
@@ -949,7 +1027,8 @@ static __always_inline int handle_v4(struct __sk_buff *skb, void *l3, void *data
             flow_update(fwd, IPPROTO_TCP, 1, cur_ifindex, now, 1, seq, is_syn, is_fin, is_rst, is_ingress);
         } else if (rev) {
             flow_update(rev, IPPROTO_TCP, 0, cur_ifindex, now, 1, seq, is_syn, is_fin, is_rst, is_ingress);
-            ct_sync_v4(skb, rkey.saddr, rkey.daddr, rkey.sport, rkey.dport, IPPROTO_TCP,
+            ct_sync_v4(skb, key.saddr, key.daddr, key.sport, key.dport,
+                       rkey.saddr, rkey.daddr, rkey.sport, rkey.dport, IPPROTO_TCP,
                        rev->state == TCP_S_ESTABLISHED);
         } else {
             struct flow_val v = {
@@ -984,7 +1063,8 @@ static __always_inline int handle_v4(struct __sk_buff *skb, void *l3, void *data
             flow_update(fwd, IPPROTO_UDP, 1, cur_ifindex, now, 0, 0, 0, 0, 0, is_ingress);
         } else if (rev) {
             flow_update(rev, IPPROTO_UDP, 0, cur_ifindex, now, 0, 0, 0, 0, 0, is_ingress);
-            ct_sync_v4(skb, rkey.saddr, rkey.daddr, rkey.sport, rkey.dport, IPPROTO_UDP, 1);
+            ct_sync_v4(skb, key.saddr, key.daddr, key.sport, key.dport,
+                       rkey.saddr, rkey.daddr, rkey.sport, rkey.dport, IPPROTO_UDP, 1);
         } else {
             struct flow_val v = { .ifindex = cur_ifindex, .assured = 0, .last_seen_ns = now };
             bpf_map_update_elem(&v4_flows, &key, &v, BPF_NOEXIST);
@@ -1084,7 +1164,8 @@ static __always_inline int handle_v6(struct __sk_buff *skb, void *l3, void *data
             flow_update(fwd, IPPROTO_TCP, 1, cur_ifindex, now, 1, seq, is_syn, is_fin, is_rst, is_ingress);
         } else if (rev) {
             flow_update(rev, IPPROTO_TCP, 0, cur_ifindex, now, 1, seq, is_syn, is_fin, is_rst, is_ingress);
-            ct_sync_v6(skb, &rkey.saddr, &rkey.daddr, rkey.sport, rkey.dport, IPPROTO_TCP,
+            ct_sync_v6(skb, &key.saddr, &key.daddr, key.sport, key.dport,
+                       &rkey.saddr, &rkey.daddr, rkey.sport, rkey.dport, IPPROTO_TCP,
                        rev->state == TCP_S_ESTABLISHED);
         } else {
             struct flow_val v = {
@@ -1117,7 +1198,8 @@ static __always_inline int handle_v6(struct __sk_buff *skb, void *l3, void *data
             flow_update(fwd, IPPROTO_UDP, 1, cur_ifindex, now, 0, 0, 0, 0, 0, is_ingress);
         } else if (rev) {
             flow_update(rev, IPPROTO_UDP, 0, cur_ifindex, now, 0, 0, 0, 0, 0, is_ingress);
-            ct_sync_v6(skb, &rkey.saddr, &rkey.daddr, rkey.sport, rkey.dport, IPPROTO_UDP, 1);
+            ct_sync_v6(skb, &key.saddr, &key.daddr, key.sport, key.dport,
+                       &rkey.saddr, &rkey.daddr, rkey.sport, rkey.dport, IPPROTO_UDP, 1);
         } else {
             struct flow_val v = { .ifindex = cur_ifindex, .assured = 0, .last_seen_ns = now };
             bpf_map_update_elem(&v6_flows, &key, &v, BPF_NOEXIST);
