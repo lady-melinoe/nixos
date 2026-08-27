@@ -363,7 +363,20 @@ struct bpf_ct_opts {
 extern struct nf_conn *bpf_skb_ct_lookup(struct __sk_buff *skb_ctx, struct bpf_sock_tuple *bpf_tuple,
                                           __u32 tuple__sz, struct bpf_ct_opts *opts, __u32 opts__sz) __ksym;
 extern int bpf_ct_change_status(struct nf_conn *nfct, __u32 status) __ksym;
+extern int bpf_ct_change_timeout(struct nf_conn *nfct, __u32 timeout) __ksym;
 extern void bpf_ct_release(struct nf_conn *nfct) __ksym;
+
+/* Timeout (msecs) to set on every successful sync, matching
+ * conntrack's own defaults for the state these flows *should* be in
+ * (tcp_timeout_established / udp_timeout_stream -- see
+ * defaultGCTimeouts in main.go, same numbers). Doesn't fix
+ * ct->proto.tcp.state getting stuck at SYN_SENT (no kfunc exists for
+ * that -- see the "kernel conntrack status sync" comment), but stops
+ * SYN_SENT's own much shorter timeout (120s default) from reaping and
+ * recreating the entry regardless of what status bits are set, which
+ * risks a different NAT mapping on recreation. */
+#define CT_SYNC_TIMEOUT_MS_TCP 432000000u /* 5 days */
+#define CT_SYNC_TIMEOUT_MS_UDP 120000u    /* 120s */
 
 /* status bits from uapi/linux/netfilter/nf_conntrack_common.h. Kept
  * hand-declared regardless of the above -- these are preprocessor
@@ -562,6 +575,7 @@ static __always_inline void ct_sync_v4(struct __sk_buff *skb,
     if (set_assured)
         status |= IPS_ASSURED;
     bpf_ct_change_status(ct, (__u32)status);
+    bpf_ct_change_timeout(ct, l4proto == IPPROTO_TCP ? CT_SYNC_TIMEOUT_MS_TCP : CT_SYNC_TIMEOUT_MS_UDP);
     bpf_ct_release(ct);
 }
 
@@ -581,6 +595,7 @@ static __always_inline void ct_sync_v6(struct __sk_buff *skb,
     if (set_assured)
         status |= IPS_ASSURED;
     bpf_ct_change_status(ct, (__u32)status);
+    bpf_ct_change_timeout(ct, l4proto == IPPROTO_TCP ? CT_SYNC_TIMEOUT_MS_TCP : CT_SYNC_TIMEOUT_MS_UDP);
     bpf_ct_release(ct);
 }
 
