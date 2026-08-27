@@ -312,8 +312,9 @@ static __always_inline int do_redirect_or_ok(__u32 target_ifindex)
  * writeup. Hand-declaring here is simply the only approach that
  * actually compiles.
  *
- * struct nf_conn now declares one CO-RE-relocatable field (status) --
- * see that declaration's own comment for why and how. The kfuncs
+ * struct nf_conn turned out to already be fully defined in
+ * vmlinux.h despite living in the nf_conntrack module -- see that
+ * declaration's own comment (just below) for why. The kfuncs
  * themselves are resolved by cilium/ebpf against the *running*
  * kernel's BTF at load time (module BTF included -- that's the whole
  * point of __ksym), not at compile time, so this works whether
@@ -340,28 +341,24 @@ struct bpf_ct_opts {
     __u8  reserved[2];
 };
 
-/* struct nf_conn is no longer a bare opaque forward-decl -- we now
- * need to read its `status` field (see the "kernel conntrack status
- * sync" comment below for why: bpf_ct_change_status's calling
- * convention requires it). Declared here with just that one field,
- * tagged preserve_access_index, rather than pulled from vmlinux.h --
- * same reasoning as everything else in this block: nf_conn lives in
- * the nf_conntrack module, bpftool's C dumper doesn't reconstruct
- * module-only types reliably (established earlier in this file's
- * history), so there's no full definition to pull in anyway.
- * preserve_access_index means clang doesn't bake in the offset we
- * wrote below at compile time -- it emits a CO-RE relocation record
- * instead, matched by struct tag ("nf_conn") + field name ("status")
- * against the *real* struct layout in the target's BTF at program-
- * load time (cilium/ebpf's applyRelocations searches loaded module
- * BTF for this, same as kfunc resolution does -- see linker.go's
- * cache.Modules()/cache.Module()). So this doesn't need to match the
- * real struct's other fields, sizes, or padding -- only this one
- * field's name and type need to be right; the offset is resolved for
- * real at load time regardless of what we wrote here. */
-struct nf_conn {
-    unsigned long status;
-} __attribute__((preserve_access_index));
+/* struct nf_conn: NOT hand-declared here (was, briefly -- caused a
+ * redefinition error against vmlinux.h once we actually tried
+ * compiling, which is how we found this out). Turns out it's already
+ * fully defined in vmlinux.h -- despite living in the nf_conntrack
+ * module and despite everything else in this file's history about
+ * module-only types not surviving `bpftool btf dump ... format c`.
+ * The difference: that limitation is specifically about FUNC entries
+ * (the kfuncs) never getting reconstructed as C prototypes; STRUCT
+ * types are a different BTF kind and apparently do survive when
+ * they're reachable from something core-compiled elsewhere (some
+ * built-in code holds an `nf_conn *` even without CONFIG_NF_CONNTRACK
+ * doing the actual tracking, keeping the full type in core BTF).
+ * Since it's coming from vmlinux.h -- the same core dump everything
+ * else in this file already trusts, with no CO-RE portability concern
+ * for the same "build kernel == runtime kernel" reasoning as always
+ * -- we just use its `status` field directly (see the "kernel
+ * conntrack status sync" comment below for why we need it), no
+ * preserve_access_index/CO-RE relocation needed for this one. */
 
 extern struct nf_conn *bpf_skb_ct_lookup(struct __sk_buff *skb_ctx, struct bpf_sock_tuple *bpf_tuple,
                                           __u32 tuple__sz, struct bpf_ct_opts *opts, __u32 opts__sz) __ksym;
