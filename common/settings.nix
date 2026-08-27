@@ -274,7 +274,7 @@
       ip = "198.18.1.19";
     }
     {
-      iface = "vm-playground";
+      iface = "vm-play";
       ip = "198.18.1.20";
       outbound-via-node = 1;
     }
