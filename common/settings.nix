@@ -152,8 +152,6 @@
     "ucc.asn.au"
   ];
   melinoe.services.melinoe-route.enabled = true;
-  melinoe.services.melinoe-rts.enabled = false;
-  melinoe.services.melinoe-route.rts-integration = false;  
   melinoe.services.haproxy = {
     backendNodes = [
       {

@@ -37,11 +37,6 @@ type Config struct {
 	InnerNetwork     string   `json:"inner_network"`
 	TableBase        int      `json:"table_base"`
 	VMIfaces         []string `json:"vm_ifaces"`
-	// RTSSocketPath is the melinoe-rts control socket (see the ebpf
-	// project's --control-socket) to notify as tunnels come and go.
-	// Empty disables notification entirely -- ensureTunnel/flushTunnel
-	// just skip it.
-	RTSSocketPath string `json:"rts_socket_path"`
 }
 
 type network24 [4]byte
@@ -106,7 +101,6 @@ type Engine struct {
 	innerNet  network24
 	tableBase int
 	vmIfaces  map[string]bool
-	rtsSocket string
 
 	peerMu      sync.RWMutex
 	peerRegions map[int][]string
@@ -145,7 +139,6 @@ func NewEngine(cfg Config, noLocalVMs bool) *Engine {
 		innerNet:         innerNet,
 		tableBase:        cfg.TableBase,
 		vmIfaces:         vmIfaces,
-		rtsSocket:        cfg.RTSSocketPath,
 		peerRegions:      make(map[int][]string),
 	}
 }
@@ -317,34 +310,6 @@ func tunnelNodeID(tun string) (int, bool) {
 	return id, true
 }
 
-// notifyRTS tells the melinoe-rts (ebpf) daemon, over its control
-// socket, that tun should (op="add") or should no longer (op="remove")
-// have its replies forced back out the interface they arrived on. Best
-// effort and fire-and-forget: a dial/write failure (rts daemon not
-// running yet, socket not there this boot, etc.) is logged and dropped
-// rather than retried here, because deployOnce re-derives and re-sends
-// the full desired state every 2 seconds anyway (see ensureTunnel's call
-// site) -- a missed "add" self-heals on the next tick, and a missed
-// "remove" self-heals as soon as the ebpf side's own GC or interface-
-// detach handling catches up.
-func (e *Engine) notifyRTS(op, tun string) {
-	if e.rtsSocket == "" {
-		return
-	}
-	conn, err := net.DialTimeout("unix", e.rtsSocket, 500*time.Millisecond)
-	if err != nil {
-		log.Printf("rts notify: dial %s: %v", e.rtsSocket, err)
-		return
-	}
-	defer conn.Close()
-	if err := json.NewEncoder(conn).Encode(struct {
-		Op    string `json:"op"`
-		Iface string `json:"iface"`
-	}{Op: op, Iface: tun}); err != nil {
-		log.Printf("rts notify: encode %s %s: %v", op, tun, err)
-	}
-}
-
 func (e *Engine) flushTunnel(ctx context.Context, tun string) {
 	remoteID, ok := tunnelNodeID(tun)
 	if !ok {
@@ -365,8 +330,6 @@ func (e *Engine) flushTunnel(ctx context.Context, tun string) {
 	rule.Mark = table
 	rule.Table = table
 	_ = netlink.RuleDel(rule)
-
-	e.notifyRTS("remove", tun)
 
 	if link, err := netlink.LinkByName(tun); err == nil {
 		_ = netlink.LinkSetDown(link)
@@ -611,7 +574,6 @@ func (e *Engine) deployOnce(ctx context.Context) {
 		if !e.ensureTunnel(ctx, linkCache, localVIP, localInner, remoteVIP, remoteInner, tun, table) {
 			continue
 		}
-		e.notifyRTS("add", tun)
 		peerStates = append(peerStates, PeerState{
 			RemoteInner:     remoteInner,
 			Tun:             tun,
