@@ -51,7 +51,7 @@ let
 
   melinoeRtsBinary = pkgs.buildGoModule {
     pname = "melinoe-rts";
-    version = "0.0.1";
+    version = "0.0.2";
 
     src = ./melinoe-rts-daemon-src;
     vendorHash = "sha256-83YSPTT2HRVZELTNIpsYUnvcrJaJM7xt6FgNXpylhCs=";
