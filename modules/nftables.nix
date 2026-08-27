@@ -77,6 +77,7 @@ let
   );
   renderVmOutboundRules = lib.concatMapStrings (r: ''
     iifname "${r.iface}" ct direction original meta mark set ${toString r.mark}
+    iifname "${r.iface}" ct direction original ct mark set 998
   '') vmOutboundRules;
 
   renderVmHairpinSnatRules =
@@ -212,7 +213,7 @@ in
                 iifname != $uplink_ifs ct direction reply ct mark 999 meta mark set ${toString netCfg.uplinkFwMark}
                 iifname $uplink_ifs ct direction original ct mark != 999 ct mark set 999
                 ct direction reply ct mark @melinoe_peer_marks meta mark set ct mark
-                ct direction original ct mark != @melinoe_peer_marks ct mark set iifname map @melinoe_peer_ifaces
+                ct mark != 998 ct direction original ct mark != @melinoe_peer_marks ct mark set iifname map @melinoe_peer_ifaces
               }
               chain output {
                 type route hook output priority mangle;
