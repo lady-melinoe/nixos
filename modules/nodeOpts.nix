@@ -103,27 +103,16 @@ in
         description = "Enable Melinoe-managed networking modules (uplink setup, etc).";
       };
 
-      uplinkVeth = mkOption {
-        type = types.str;
-        default = "inet0";
-        description = ''
-          Name of the host-side veth interface for the inet netns pair set up
-          by uplink.nix. Consumed there (where the interface is
-          created) and in nftables.nix (NAT/masquerade rules), so it's an
-          option rather than a literal duplicated in both.
-        '';
-      };
-
       uplinkFwMark = mkOption {
         type = types.ints.u32;
         default = 51820;
         description = ''
           fwmark value - and, since uplink.nix also uses it as
           the policy-routing table id, table number - used to route return
-          traffic for the internet uplink back out via uplinkVeth instead
-          of over the WireGuard mesh. Consumed by wireguard.nix,
-          uplink.nix, and nftables.nix; kept as a single option
-          so those three stay in sync.
+          traffic for the internet uplink(s) back out via the uplink
+          interfaces instead of over the WireGuard mesh. Consumed by
+          wireguard.nix, uplink.nix, and nftables.nix; kept as a single
+          option so those three stay in sync.
         '';
       };
 

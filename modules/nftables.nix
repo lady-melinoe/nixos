@@ -10,6 +10,20 @@ let
   nodeID = config.melinoe.node.id;
   hostAddr = melinoeNodeIntraIP nodeID;
   pubIps = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) netCfg.uplinks);
+  uplinkIface =
+    idx: uplink:
+    if builtins.length uplink.iface > 1 then "bond${toString idx}" else builtins.head uplink.iface;
+  uplinkIpAddr = uplink: builtins.head (lib.splitString "/" uplink.ip);
+  uplinkIfaceNames = lib.imap0 uplinkIface netCfg.uplinks;
+  renderUplinkDnatRules = lib.concatStringsSep "\n" (
+    lib.imap0 (
+      idx: uplink:
+      ''iifname "${uplinkIface idx uplink}" ip daddr ${uplinkIpAddr uplink} dnat to ${hostAddr}''
+    ) netCfg.uplinks
+  );
+  renderUplinkMasqueradeRules = lib.concatStringsSep "\n" (
+    map (iface: ''oifname "${iface}" masquerade'') uplinkIfaceNames
+  );
   vms = config.melinoe.cluster.virtualMachines;
   vmIpAddr = vm: builtins.head (lib.splitString "/" vm.ip);
   vmSaddr = vm: if lib.hasInfix "/" vm.ip then vm.ip else "${vm.ip}/32";
@@ -130,6 +144,7 @@ in
     networking.nftables.ruleset = ''
             flush ruleset
             define wg_ifs = ${nftIfaceSet wgIfaceNames}
+            define uplink_ifs = ${nftIfaceSet uplinkIfaceNames}
         ${lib.optionalString (pubIps != [ ]) ''
           define pubroutefix = { ${builtins.concatStringsSep ", " pubIps} }
         ''}
@@ -168,6 +183,7 @@ in
             table ip nat {
               chain prerouting {
                 type nat hook prerouting priority dstnat;
+        ${renderUplinkDnatRules}
         ${lib.optionalString (pubIps != [ ]) (renderDestRules "$pubroutefix")}
         ${lib.optionalString (pubIps != [ ]) (renderDestRules "${hostAddr}")}
                 ip daddr $pubroutefix dnat to ${hostAddr}
@@ -175,7 +191,7 @@ in
               chain postrouting {
                 type nat hook postrouting priority srcnat;
         ${renderVmHairpinSnatRules}
-                oifname "${netCfg.uplinkVeth}" masquerade
+        ${renderUplinkMasqueradeRules}
               }
               chain output {
                 type nat hook output priority dstnat; policy accept;
@@ -185,8 +201,8 @@ in
               chain prerouting {
                 type filter hook prerouting priority mangle;
       ${renderVmOutboundRules}
-                iifname != ${netCfg.uplinkVeth} ct direction reply ct mark 999 meta mark set ${toString netCfg.uplinkFwMark}
-                iifname ${netCfg.uplinkVeth} ct direction original ct mark != 999 ct mark set 999
+                iifname != $uplink_ifs ct direction reply ct mark 999 meta mark set ${toString netCfg.uplinkFwMark}
+                iifname $uplink_ifs ct direction original ct mark != 999 ct mark set 999
               }
               chain output {
                 type route hook output priority mangle;
