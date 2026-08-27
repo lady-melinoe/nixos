@@ -27,66 +27,26 @@ let
   # regenerates it automatically instead of relying on someone
   # remembering to re-run bpftool on some dev box.
   #
-  # nf_conntrack's BPF-facing types (struct nf_conn, struct bpf_ct_opts)
-  # and kfuncs (bpf_skb_ct_lookup/bpf_ct_change_status/bpf_ct_release,
-  # used by ct_redirect.bpf.c's kernel-conntrack-sync section) live in
-  # the nf_conntrack *module*, not core vmlinux, so a dump of vmlinux
-  # alone never has them (confirmed CONFIG_MODULES is on and
-  # CONFIG_NF_CONNTRACK is set on this kernel -- not a builtin-only
-  # kernel, so this isn't skippable). Dumping them too is possible
-  # without a live loaded module, though: nixpkgs's common-config.nix
-  # leaves DEBUG_INFO_BTF_MODULES at its upstream Kconfig default,
-  # which is `def_bool y depends on DEBUG_INFO_BTF && MODULES` -- on
-  # by default whenever DEBUG_INFO_BTF is (i.e. every >=5.11 kernel
-  # here) -- which means each .ko carries its own *split* BTF (built
-  # incrementally on top of vmlinux's, per bpftool-btf(8)) baked in
-  # statically at build time. bpftool can dump that straight from the
-  # compiled .ko, no /sys/kernel/btf/nf_conntrack or loaded module
-  # required -- which matters here specifically because the Nix build
-  # sandbox has no live kernel to load a module into in the first
-  # place. -B points bpftool at the matching vmlinux BTF to resolve
-  # the split module BTF's references back into it.
-  #
-  # modulesTree instead of `${kernel}/lib/modules` directly: this
-  # kernel's `out` output turned out not to carry lib/modules at all
-  # (confirmed -- ls on the store path shows only bzImage/System.map),
-  # so the modules must be living somewhere else in this particular
-  # kernel derivation's output layout. config.system.modulesTree is
-  # the same tree NixOS itself assembles into
-  # /run/current-system/kernel-modules at boot -- correct by
-  # construction regardless of how any given kernel derivation lays
-  # out its own outputs. On this nixpkgs revision it already evaluates
-  # to a single merged derivation (not a list of per-package module
-  # trees), so used directly, no pkgs.aggregateModules wrapping.
-  modulesTree = config.system.modulesTree;
-
-  vmlinuxH =
-    pkgs.runCommand "melinoe-rts-vmlinux.h"
-      {
-        nativeBuildInputs = [
-          pkgs.bpftools
-          pkgs.zstd
-          pkgs.xz
-        ];
-      }
-      ''
-        bpftool btf dump file ${config.boot.kernelPackages.kernel.dev}/vmlinux format c > core.h
-
-        ko=$(find ${modulesTree}/lib/modules -iname 'nf_conntrack.ko*' | head -1)
-        if [ -z "$ko" ]; then
-          echo "melinoe-rts-vmlinux.h: couldn't find nf_conntrack.ko under ${modulesTree}/lib/modules -- is CONFIG_NF_CONNTRACK enabled?" >&2
-          exit 1
-        fi
-        case "$ko" in
-          *.zst) zstd -d "$ko" -o nf_conntrack.ko ;;
-          *.xz)  unxz -c "$ko" > nf_conntrack.ko ;;
-          *.gz)  gzip -dc "$ko" > nf_conntrack.ko ;;
-          *)     cp "$ko" nf_conntrack.ko ;;
-        esac
-        bpftool btf dump file nf_conntrack.ko format c -B ${config.boot.kernelPackages.kernel.dev}/vmlinux > nf_conntrack.h
-
-        cat core.h nf_conntrack.h > $out
-      '';
+  # Deliberately NOT also dumping nf_conntrack module BTF here (tried
+  # it -- see git history). CONFIG_NF_CONNTRACK's BPF-facing types
+  # (struct nf_conn, struct bpf_ct_opts) and kfuncs
+  # (bpf_skb_ct_lookup/bpf_ct_change_status/bpf_ct_release) live in
+  # that module rather than core vmlinux, and dumping the module's own
+  # split BTF at build time did work mechanically (found it via
+  # config.system.modulesTree once the kernel's own `out` output
+  # turned out not to carry lib/modules directly) -- but `bpftool btf
+  # dump ... format c` doesn't reconstruct kfunc `extern` prototypes
+  # from that BTF at all, only plain type definitions, so the merged
+  # header still didn't declare bpf_skb_ct_lookup et al. Given that,
+  # hand-declaring the kfunc surface directly in ct_redirect.bpf.c
+  # (see that file's "kernel conntrack kfunc declarations" comment) is
+  # both simpler and the only approach that actually compiles -- no
+  # reason to keep the module-BTF machinery around for the plain type
+  # definitions alone when we don't need them (struct nf_conn stays
+  # opaque; we never dereference its fields).
+  vmlinuxH = pkgs.runCommand "melinoe-rts-vmlinux.h" { nativeBuildInputs = [ pkgs.bpftools ]; } ''
+    bpftool btf dump file ${config.boot.kernelPackages.kernel.dev}/vmlinux format c > $out
+  '';
 
   melinoeRtsBinary = pkgs.buildGoModule {
     pname = "melinoe-rts";
