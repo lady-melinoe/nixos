@@ -136,7 +136,6 @@ in
             table inet filter {
               chain INPUT {
                 type filter hook input priority filter; policy drop;
-                ct state invalid drop
                 ct state { established, related } accept
                 icmp type { echo-request, echo-reply } accept
                 icmpv6 type { echo-request, nd-neighbor-solicit } accept
@@ -150,7 +149,6 @@ in
               }
               chain FORWARD {
                 type filter hook forward priority filter; policy accept;
-                ct state invalid drop
       ${renderVmOutboundDropRules}
       ${renderVmOutboundAllowOnlyRules}
                 ct state { established, related } accept
@@ -172,7 +170,7 @@ in
                 type nat hook prerouting priority dstnat;
         ${lib.optionalString (pubIps != [ ]) (renderDestRules "$pubroutefix")}
         ${lib.optionalString (pubIps != [ ]) (renderDestRules "${hostAddr}")}
-                tcp dport { 22 } ip daddr $pubroutefix dnat to ${hostAddr}
+                ip daddr $pubroutefix dnat to ${hostAddr}
               }
               chain postrouting {
                 type nat hook postrouting priority srcnat;
