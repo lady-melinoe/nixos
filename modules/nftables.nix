@@ -186,7 +186,6 @@ in
             table ip nat {
               chain prerouting {
                 type nat hook prerouting priority dstnat;
-        ${renderUplinkDnatRules}
         ${lib.optionalString (pubIps != [ ]) (renderDestRules "$pubroutefix")}
         ${lib.optionalString (pubIps != [ ]) (renderDestRules "${hostAddr}")}
               }
