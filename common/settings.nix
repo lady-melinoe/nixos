@@ -24,6 +24,7 @@
     pkgs.aria2
     pkgs.nfs-utils
     pkgs.sshfs
+    pkgs.skopeo
   ];
 
   nix = {
