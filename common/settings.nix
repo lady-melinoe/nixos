@@ -285,6 +285,11 @@
       udp = [ 51820 ];
     }
     {
+      iface = "vm-dadbridge";
+      ip = "198.18.4.0/24";
+      udp = [ 51821 ];
+    }
+    {
       iface = "vm-glrunner0";
       ip = "198.18.2.0";
     }
