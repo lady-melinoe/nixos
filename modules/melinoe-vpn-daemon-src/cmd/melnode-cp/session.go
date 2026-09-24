@@ -36,7 +36,7 @@ const (
 
 // dpSession is one attachment to the data plane.
 type dpSession struct {
-	cl    *dpproto.Client
+	cl    dpproto.Datapath
 	punts chan dpproto.Punt
 	done  chan struct{} // closed to stop the punt worker
 }
@@ -130,14 +130,14 @@ func (n *Node) attach(socket string) (*dpSession, error) {
 		return fail(fmt.Errorf("hello: %w", err))
 	}
 	if n.wrongBinary(hr.PID) {
-		return nil, n.replaceDataplane(cl, fmt.Sprintf("pid %d is not running %s", hr.PID, n.dpCommand[0]))
+		return nil, n.replaceDataplane(cl, fmt.Sprintf("pid %d is not running %s", hr.PID, n.dpCommand[0]), true)
 	}
 
 	// Configure the data plane. Idempotent for an adopted data plane that is
 	// already set up the same way; a different setup can't be applied live.
 	dsr, err := cl.DeviceSet(n.device)
 	if dpproto.IsCode(err, dpproto.CodeExists) {
-		return nil, n.replaceDataplane(cl, "it was configured differently ("+err.Error()+")")
+		return nil, n.replaceDataplane(cl, "it was configured differently ("+err.Error()+")", false)
 	}
 	if err != nil {
 		return fail(fmt.Errorf("configuring the data plane: %w", err))
@@ -175,8 +175,12 @@ func (n *Node) attach(socket string) (*dpSession, error) {
 		n.log.Verbosef("removed link %d from the data plane (not in config)", li.PeerID)
 	}
 
+	// From here on punts and events come to us.
+	if err := cl.Attach(); err != nil {
+		return fail(fmt.Errorf("attaching to the data plane: %w", err))
+	}
 	go sess.worker(n)
-	n.dpc.Store(cl)
+	n.dpc.Store(&dpHandle{cl})
 	n.router.attach()
 	for _, l := range n.sortedLinks() {
 		l.monitor.Start()

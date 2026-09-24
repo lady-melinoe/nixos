@@ -163,8 +163,8 @@ type fakeDP struct {
 	adds    []dpproto.LinkAdd
 	dels    []uint32
 	dev     *dpproto.DeviceSet
-	// shutdowns counts Shutdown requests.
-	shutdowns int
+	// deviceDels counts DeviceDel requests.
+	deviceDels int
 }
 
 func newFakeDP(id uint32) *fakeDP {
@@ -184,11 +184,14 @@ func (f *fakeDP) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) 
 	return dpproto.DeviceSetReply{PubKey: [32]byte{0xaa}}, nil
 }
 func (f *fakeDP) Stats() ([]dpproto.Stat, error) { return nil, nil }
-func (f *fakeDP) Shutdown() {
+func (f *fakeDP) DeviceDel() error {
 	f.mu.Lock()
-	f.shutdowns++
-	f.mu.Unlock()
+	defer f.mu.Unlock()
+	f.deviceDels++
+	f.dev = nil
+	return nil
 }
+func (f *fakeDP) Quit() {}
 func (f *fakeDP) LinkAdd(m dpproto.LinkAdd) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -373,7 +376,8 @@ func TestSessionSurvivesDataPlaneRestart(t *testing.T) {
 }
 
 // A data plane configured differently than we want can't be changed live: the
-// attach fails and asks it to exit so the next attempt starts a right one.
+// attach fails and has it tear its device down, so the next attempt configures
+// it afresh (no process restart needed).
 func TestAttachReplacesMisconfiguredDataplane(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "dp.sock")
 	dp := newFakeDP(1)
@@ -390,10 +394,10 @@ func TestAttachReplacesMisconfiguredDataplane(t *testing.T) {
 	if _, err := n.attach(sock); err == nil {
 		t.Fatal("attach to a differently-configured data plane succeeded")
 	}
-	waitFor(t, "shutdown request", func() bool {
+	waitFor(t, "DeviceDel request", func() bool {
 		dp.mu.Lock()
 		defer dp.mu.Unlock()
-		return dp.shutdowns == 1
+		return dp.deviceDels == 1
 	})
 }
 

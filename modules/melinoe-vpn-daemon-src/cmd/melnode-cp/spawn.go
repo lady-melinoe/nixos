@@ -30,10 +30,13 @@ const spawnWait = 5 * time.Second
 
 // dialDataplane connects to the data plane, starting it first if we own that
 // and it isn't running.
-func (n *Node) dialDataplane(socket string, onPunt func(dpproto.Punt), onEvent func(dpproto.Event)) (*dpproto.Client, error) {
+func (n *Node) dialDataplane(socket string, onPunt func(dpproto.Punt), onEvent func(dpproto.Event)) (dpproto.Datapath, error) {
 	cl, err := dpproto.Dial(socket, onPunt, onEvent)
-	if err == nil || len(n.dpCommand) == 0 {
-		return cl, err
+	if err == nil {
+		return cl, nil
+	}
+	if len(n.dpCommand) == 0 {
+		return nil, err
 	}
 	// Only "nothing is listening" means start one; anything else (say,
 	// permission denied on the socket) starting another wouldn't fix.
@@ -118,22 +121,30 @@ func (n *Node) wrongBinary(pid uint32) bool {
 	return have != want
 }
 
-// replaceDataplane asks the running data plane to exit so a correct one can
-// take its place. Restarting it drops its links, tuns and keys -- the mesh
-// flaps, exactly as restarting the old single daemon did -- so it only
-// happens when the running one can't be made right (wrong binary, or
-// configured differently, which it cannot change live). It returns an error
-// either way: the attach attempt is over, and the retry finds no data plane
-// (and starts one if we own that, or waits for its supervisor to).
-func (n *Node) replaceDataplane(cl *dpproto.Client, why string) error {
+// replaceDataplane makes the data plane start over. It drops its links, tuns
+// and keys -- the mesh flaps, exactly as restarting the old single daemon did
+// -- so it only happens when the running one can't be made right: it was
+// configured differently, which it cannot change live (DeviceDel, after which
+// the same process can be configured again), or it is the wrong binary (also
+// Quit, when this kind of data plane is a process we can ask to exit). It
+// returns an error either way: the attach attempt is over, and the retry
+// finds a clean data plane (or none, and starts one if we own that, or waits
+// for its supervisor to).
+func (n *Node) replaceDataplane(cl dpproto.Datapath, why string, restart bool) error {
 	n.log.Errorf("replacing the data plane: %s", why)
-	if err := cl.Shutdown(); err != nil {
+	if err := cl.DeviceDel(); err != nil {
 		cl.Close()
-		return fmt.Errorf("asking the data plane to exit (%s): %w", why, err)
+		return fmt.Errorf("tearing down the data plane's device (%s): %w", why, err)
 	}
-	select {
-	case <-cl.Done():
-	case <-time.After(3 * time.Second):
+	if q, ok := cl.(dpproto.Quitter); ok && restart {
+		if err := q.Quit(); err != nil {
+			cl.Close()
+			return fmt.Errorf("asking the data plane to exit (%s): %w", why, err)
+		}
+		select {
+		case <-cl.Done():
+		case <-time.After(3 * time.Second):
+		}
 	}
 	cl.Close()
 	return fmt.Errorf("replaced the data plane (%s)", why)
@@ -148,7 +159,10 @@ func stopDataplane(socket string) error {
 		return fmt.Errorf("no data plane reachable on %s: %w", socket, err)
 	}
 	defer cl.Close()
-	if err := cl.Shutdown(); err != nil {
+	if err := cl.DeviceDel(); err != nil {
+		return err
+	}
+	if err := cl.Quit(); err != nil {
 		return err
 	}
 	select {

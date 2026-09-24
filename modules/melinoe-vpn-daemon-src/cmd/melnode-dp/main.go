@@ -25,7 +25,8 @@
 // both halves in userspace for now.
 //
 // This process keeps forwarding, with whatever links/tuns/routes it was last
-// given, if the control plane goes away or restarts. melnode-cp can also
+// given, if the control plane goes away or restarts. The protocol it speaks is
+// specified in dpproto/API.md (a generic netlink family). melnode-cp can also
 // start it (adopting one that is already running).
 //
 // Build:
@@ -103,7 +104,7 @@ func main() {
 	go srv.Run()
 	log.Printf("control socket listening on %s (waiting for melnode-cp to configure this data plane)", *socket)
 
-	// SIGINT/SIGTERM, or a Shutdown request from melnode-cp, triggers a
+	// SIGINT/SIGTERM, or a Quit request from melnode-cp, triggers a
 	// clean shutdown (stops every peer, closes every tun, closes the udp
 	// socket and the control socket) instead of just dying mid-syscall.
 	sigCh := make(chan os.Signal, 1)

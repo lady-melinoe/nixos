@@ -18,7 +18,7 @@ import (
 
 type ctlHandler struct {
 	srv  *dpproto.Server // set by main right after NewServer
-	quit func()          // asks main to exit (Shutdown)
+	quit func()          // asks main to exit (Quit)
 
 	mu     sync.Mutex
 	dev    *Device // nil until DeviceSet
@@ -144,8 +144,23 @@ func (h *ctlHandler) Stats() ([]dpproto.Stat, error) {
 	return out, nil
 }
 
-// Shutdown is called once the reply has been sent.
-func (h *ctlHandler) Shutdown() { h.quit() }
+// DeviceDel tears the device down (peers, tuns, keys, the UDP socket) and
+// goes back to waiting for a DeviceSet, without exiting: the same thing
+// deleting a kernel device would do.
+func (h *ctlHandler) DeviceDel() error {
+	h.mu.Lock()
+	dev := h.dev
+	h.dev, h.params = nil, dpproto.DeviceSet{}
+	h.mu.Unlock()
+	if dev != nil {
+		dev.keepCtl = true // the control socket outlives the device
+		dev.Close()
+	}
+	return nil
+}
+
+// Quit (a userspace-only command) is called once its reply has been sent.
+func (h *ctlHandler) Quit() { h.quit() }
 
 // LinkAdd creates the Noise tunnel to one neighbor and starts it, or (if the
 // link already exists with the same key) re-applies its configured endpoint.
