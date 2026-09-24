@@ -32,7 +32,10 @@ type Config struct {
 	// Hook failures are logged but never fatal.
 	TunCreateHookBin  string `toml:"tunCreateHookBin"`
 	TunDestroyHookBin string `toml:"tunDestroyHookBin"`
-	Fwmark            int    `toml:"fwmark"` // 0 (default) means unset -- see conn.Bind.SetMark; SO_MARK, Linux-only
+	// MTU of every peer tun. The default (defaultMTU, router.go) is
+	// WireGuard's 1420 minus melnode's 4-byte routing header.
+	MTU    int `toml:"mtu"`
+	Fwmark int `toml:"fwmark"` // 0 (default) means unset -- see conn.Bind.SetMark; SO_MARK, Linux-only
 
 	// IdentityPrefix is this node's own always-advertised prefix (a
 	// single /32 identity address, e.g. the node's own loopback --
@@ -56,6 +59,7 @@ type Config struct {
 func loadConfig(path string) (*Config, error) {
 	cfg := &Config{
 		TunPrefix: "node-",
+		MTU:       defaultMTU,
 	}
 	meta, err := toml.DecodeFile(path, cfg)
 	if err != nil {
@@ -95,6 +99,9 @@ func (c *Config) validate() error {
 	}
 	if c.LocalPrivkey != "" && c.LocalPrivkeyPath != "" {
 		return fmt.Errorf("localPrivkey and localPrivkeyPath are mutually exclusive")
+	}
+	if c.MTU < 576 || c.MTU > 65000 {
+		return fmt.Errorf("mtu must be between 576 and 65000, got %d", c.MTU)
 	}
 	if c.Fwmark < 0 || c.Fwmark > 0xffffffff {
 		return fmt.Errorf("fwmark must fit in a uint32, got %d", c.Fwmark)

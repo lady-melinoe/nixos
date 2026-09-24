@@ -4,6 +4,11 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
+// routeProtocolMelnode tags every kernel route melnode installs
+// (`ip route show proto 198`), so they're easy to tell apart from anything
+// else, and so removal only ever touches routes we installed.
+const routeProtocolMelnode netlink.RouteProtocol = 198
+
 // kernelroutes.go is the piece that actually replaces melinoe-route's
 // own netlink work (see PROJECT_STATE.md): once path-vector
 // (pathvector.go) has resolved which peerid currently owns a given
@@ -29,7 +34,12 @@ func (r *Router) InstallPrefixRoute(prefix pvPrefix, viaPeerID uint32) {
 	if viaPeerID == r.localID {
 		return
 	}
+	// If this peer's tun is still being created (another goroutine's
+	// AddOrUpdateRoute), wait for that to finish rather than failing.
+	pl := r.peerLock(viaPeerID)
+	pl.Lock()
 	name, ok := r.tunNameForPeerID(viaPeerID)
+	pl.Unlock()
 	if !ok {
 		r.dev.log.Errorf("router: no tun for peerid %d -- can't install kernel route for %v", viaPeerID, prefix)
 		return
@@ -42,6 +52,7 @@ func (r *Router) InstallPrefixRoute(prefix pvPrefix, viaPeerID uint32) {
 	route := &netlink.Route{
 		LinkIndex: link.Attrs().Index,
 		Dst:       prefix.ipNet(),
+		Protocol:  routeProtocolMelnode,
 	}
 	if err := netlink.RouteReplace(route); err != nil {
 		r.dev.log.Errorf("router: failed to install kernel route %v via peerid %d (dev %s): %v", prefix, viaPeerID, name, err)
@@ -54,7 +65,7 @@ func (r *Router) InstallPrefixRoute(prefix pvPrefix, viaPeerID uint32) {
 // becomes unowned (its last claimant is no longer reachable, or
 // withdrew).
 func (r *Router) RemovePrefixRoute(prefix pvPrefix) {
-	route := &netlink.Route{Dst: prefix.ipNet()}
+	route := &netlink.Route{Dst: prefix.ipNet(), Protocol: routeProtocolMelnode}
 	if err := netlink.RouteDel(route); err != nil {
 		// Not upgraded to Errorf: this fires normally whenever the
 		// route was never actually installed in the first place (e.g.

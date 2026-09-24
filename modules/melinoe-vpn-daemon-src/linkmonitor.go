@@ -83,6 +83,21 @@ const (
 	diagAdminDown                 // WE are deliberately shutting this session down (peer.Stop())
 )
 
+func (d diag) String() string {
+	switch d {
+	case diagNone:
+		return "none"
+	case diagDetectTimeout:
+		return "detect-timeout"
+	case diagNeighborSignaledDown:
+		return "neighbor-signaled-down"
+	case diagAdminDown:
+		return "admin-down"
+	default:
+		return "unknown"
+	}
+}
+
 const (
 	livenessProto = 1 // sibling to proto=0 (tunneled IP) in the 4-byte routing header
 
@@ -167,7 +182,8 @@ type LinkMonitor struct {
 
 	mu                  sync.Mutex
 	state               linkState
-	diag                diag // last diag associated with state, per transitionTo -- this is what actually goes out on the wire, see sendPacket
+	stateSince          time.Time // when state last changed (introspect.go)
+	diag                diag      // last diag associated with state, per transitionTo -- this is what actually goes out on the wire, see sendPacket
 	localDiscriminator  uint32
 	remoteDiscriminator uint32 // 0 == not yet learned
 	remoteDesiredMinTX  time.Duration
@@ -191,6 +207,7 @@ func newLinkMonitor(peer *Peer) *LinkMonitor {
 	return &LinkMonitor{
 		peer:               peer,
 		state:              linkStateDown,
+		stateSince:         time.Now(),
 		localDiscriminator: binary.BigEndian.Uint32(discBuf[:]),
 	}
 }
@@ -417,6 +434,7 @@ func (m *LinkMonitor) transitionTo(next linkState, d diag) {
 		return
 	}
 	m.state = next
+	m.stateSince = time.Now()
 	m.diag = d
 	cb := m.onStateChange
 	m.mu.Unlock()

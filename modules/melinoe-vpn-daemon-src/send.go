@@ -603,12 +603,14 @@ func (device *Device) RoutineEncryption(id int) {
 			binary.LittleEndian.PutUint32(fieldReceiver, elem.keypair.remoteIndex)
 			binary.LittleEndian.PutUint64(fieldNonce, elem.nonce)
 
-			// pad content to multiple of 16. Bounded by defaultMTU
-			// (router.go) rather than a per-tun MTU: RoutineEncryption is
-			// device-wide and shared across every peer-tun, so unlike
+			// pad content to multiple of 16. Bounded by the device-wide
+			// MTU (config: mtu, Device.mtu) rather than a per-tun MTU:
+			// RoutineEncryption is shared across every peer-tun, so unlike
 			// wireguard-go (one tun) there's no single "the" MTU to read
-			// here -- see PROJECT_STATE.md's "Padding" section.
-			paddingSize := calculatePaddingSize(len(elem.packet), defaultMTU)
+			// here -- see PROJECT_STATE.md's "Padding" section. elem.packet
+			// still carries our own 4-byte routing header at this point, so
+			// the bound is the tun MTU plus headerSize.
+			paddingSize := calculatePaddingSize(len(elem.packet), device.mtu+headerSize)
 			elem.packet = append(elem.packet, paddingZeros[:paddingSize]...)
 
 			// encrypt content and release to consumer
