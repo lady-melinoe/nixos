@@ -24,14 +24,27 @@ const routeProtocolMelnode netlink.RouteProtocol = 198
 // onto the right tun. Called by PathVector.applyPrefixChanges whenever
 // prefix ownership changes.
 //
-// A no-op when viaPeerID is this node's own localID: if we're the
-// prefix's own origin, there's no tun to route through -- whatever
-// locally attached this prefix (a container, a VM) already has its own
-// kernel routing sorted out; melnode's job here is only to get *other*
-// nodes routing toward us for it, which happens on their end once they
-// resolve the winning owner to a tun pointed at us.
+// When viaPeerID is this node's own localID there's no tun to route
+// through: whatever locally attached this prefix (a container, a VM)
+// already has its own kernel routing sorted out, and melnode's job is only
+// to get *other* nodes routing toward us for it, which happens on their end
+// once they resolve the winning owner to a tun pointed at us. The one thing
+// to do here is drop a stale route left over from a previous remote owner
+// (see below).
 func (r *Router) InstallPrefixRoute(prefix pvPrefix, viaPeerID uint32) {
 	if viaPeerID == r.localID {
+		// The prefix may only just have become ours (we started advertising
+		// it, or won the path-length tiebreak) after a remote node owned it,
+		// in which case we still hold the route installed for that previous
+		// owner. Left in place it keeps forwarding traffic out the old tun
+		// instead of delivering it locally. Only routes tagged
+		// routeProtocolMelnode match, so whatever locally attached the
+		// prefix (a container/VM route) is untouched; "no such process" is
+		// the normal case (nothing was installed) and not worth reporting.
+		stale := &netlink.Route{Dst: prefix.ipNet(), Protocol: routeProtocolMelnode}
+		if err := netlink.RouteDel(stale); err == nil {
+			r.dev.log.Verbosef("router: removed stale kernel route for %v (now locally owned)", prefix)
+		}
 		return
 	}
 	// If this peer's tun is still being created (another goroutine's
