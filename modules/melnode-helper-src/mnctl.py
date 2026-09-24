@@ -8,9 +8,10 @@
           -a also lists alternate paths
 
 With no target, talks to the local node over its control socket
-(/run/melnode/control.sock). With a target, talks to that node's read-only
-TCP introspection API (default port 60198), so any node can show any other
-node's view. Only GETs are ever sent.
+(/run/melnode/control.sock), falling back to its local TCP API on 127.0.0.1
+if the socket isn't accessible to this user. With a target, talks to that
+node's read-only TCP introspection API (default port 60198), so any node can
+show any other node's view. Only GETs are ever sent.
 """
 
 import argparse
@@ -23,6 +24,7 @@ import sys
 
 DEFAULT_SOCKET = "/run/melnode/control.sock"
 DEFAULT_PORT = 60198
+LOCAL_TCP_HOST = "127.0.0.1"
 TIMEOUT = 5.0
 
 
@@ -57,19 +59,22 @@ class Client:
     def __init__(self, target, socket_path):
         self.target = target
         self.socket_path = socket_path
+        # Set once the local control socket has refused us (no permission):
+        # every later request goes straight to the local TCP API.
+        self.tcp_fallback = False
+
+    def _tcp_target(self):
+        if self.target is not None:
+            return split_target(self.target)
+        return LOCAL_TCP_HOST, DEFAULT_PORT
 
     def describe(self):
-        if self.target is None:
+        if self.target is None and not self.tcp_fallback:
             return self.socket_path
-        host, port = split_target(self.target)
+        host, port = self._tcp_target()
         return f"{host}:{port}"
 
-    def get(self, path):
-        if self.target is None:
-            conn = UnixHTTPConnection(self.socket_path, TIMEOUT)
-        else:
-            host, port = split_target(self.target)
-            conn = http.client.HTTPConnection(host, port, timeout=TIMEOUT)
+    def _request(self, conn, path):
         try:
             conn.request("GET", path)
             resp = conn.getresponse()
@@ -79,6 +84,17 @@ class Client:
             return json.loads(body)
         finally:
             conn.close()
+
+    def get(self, path):
+        if self.target is None and not self.tcp_fallback:
+            try:
+                return self._request(UnixHTTPConnection(self.socket_path, TIMEOUT), path)
+            except PermissionError:
+                # The control socket is only writable by root, but the local
+                # TCP introspection API serves the same read-only data.
+                self.tcp_fallback = True
+        host, port = self._tcp_target()
+        return self._request(http.client.HTTPConnection(host, port, timeout=TIMEOUT), path)
 
 
 # ---- formatting helpers -----------------------------------------------------
