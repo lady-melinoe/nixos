@@ -198,19 +198,6 @@ type PathVector struct {
 	dev     *Device
 	localID uint32
 
-	// applyMu serializes "decide, then apply" across every state-changing
-	// entry point (OnLinkDown, handlePacket, setLocalPrefix, resyncKernel).
-	// Each of those computes its changes under mu, releases mu, and only
-	// then creates/removes tuns and installs/removes kernel routes. Without
-	// applyMu two of them could interleave: one records that peerid N is
-	// reachable (and owns prefix P) but hasn't created N's tun yet, while
-	// another, seeing that state, installs P's route first and finds "no
-	// tun for peerid N" -- and since pv.prefixOwner already says P is
-	// handled, that route was then never retried. Held for the whole
-	// decide+apply span, so changes hit the router in the order they were
-	// decided. Lock order: applyMu, then mu, then the router's locks.
-	applyMu sync.Mutex
-
 	mu sync.Mutex
 	// learned[dest][neighborPeerID] = that neighbor's currently
 	// advertised route to dest. Kept per-neighbor (not just the winner)
@@ -305,38 +292,7 @@ func (pv *PathVector) fullSyncLoop() {
 			for _, p := range neighbors {
 				pv.fullSyncTo(p)
 			}
-			pv.resyncKernel()
 		}
-	}
-}
-
-// resyncKernel re-applies, from path-vector's current view, everything the
-// update paths apply incrementally: a tun (and its peerid route) for every
-// reachable dest, and a kernel route for every owned prefix. All of it is
-// idempotent, so this is a no-op when nothing has drifted; it exists so a
-// one-off failure (a tun that couldn't be created, a route install that
-// lost a race or hit a transient netlink error) heals within one interval
-// instead of leaving the route missing until the next ownership change.
-func (pv *PathVector) resyncKernel() {
-	pv.applyMu.Lock()
-	defer pv.applyMu.Unlock()
-
-	pv.mu.Lock()
-	dests := make(map[uint32]uint32, len(pv.best))
-	for dest, route := range pv.best {
-		dests[dest] = route.viaNeighbor()
-	}
-	owners := make(map[pvPrefix]uint32, len(pv.prefixOwner))
-	for p, owner := range pv.prefixOwner {
-		owners[p] = owner
-	}
-	pv.mu.Unlock()
-
-	for dest, nhid := range dests {
-		pv.dev.router.AddOrUpdateRoute(dest, nhid) // creates the tun if it's missing
-	}
-	for p, owner := range owners {
-		pv.dev.router.InstallPrefixRoute(p, owner)
 	}
 }
 
@@ -360,8 +316,6 @@ func (pv *PathVector) OnLinkUp(peer *Peer) {
 // for a timeout. Also reconciles any prefixes that were claimed
 // through a dest that just became unreachable.
 func (pv *PathVector) OnLinkDown(peer *Peer) {
-	pv.applyMu.Lock()
-	defer pv.applyMu.Unlock()
 	pv.mu.Lock()
 	delete(pv.neighbors, peer.id)
 	delete(pv.advertised, peer.id) // it drops everything we told it on its own link-down
@@ -439,8 +393,6 @@ func (pv *PathVector) handlePacket(from *Peer, payload []byte) {
 		return
 	}
 
-	pv.applyMu.Lock()
-	defer pv.applyMu.Unlock()
 	pv.mu.Lock()
 	var announceChanges []struct {
 		dest  uint32
@@ -569,8 +521,6 @@ func (pv *PathVector) AdvertisePrefix(p pvPrefix) { pv.setLocalPrefix(p, true) }
 func (pv *PathVector) WithdrawPrefix(p pvPrefix)  { pv.setLocalPrefix(p, false) }
 
 func (pv *PathVector) setLocalPrefix(p pvPrefix, advertise bool) {
-	pv.applyMu.Lock()
-	defer pv.applyMu.Unlock()
 	pv.mu.Lock()
 	if pv.localPrefixes[p] == advertise {
 		pv.mu.Unlock()
