@@ -1,107 +1,125 @@
 // Package dpproto is the protocol between melnode's two halves: the data
-// plane (melnode-dp: the WireGuard-like "kernel" side) and the control
-// plane (melnode-cp: liveness, path-vector routing, host integration).
+// plane (melnode-dp: the WireGuard-like "kernel" side) and the control plane
+// (melnode-cp: liveness, path-vector routing, host integration).
 //
-// The relationship is the one between an OVS/OVN-style kernel datapath and
-// its userspace daemon, just with both halves in userspace for now:
+// The relationship is the one between an OVS-style kernel datapath and its
+// userspace daemon, with the kernel half being userspace for now. To make the
+// day the data plane becomes a kernel module a backend swap for the control
+// plane, the protocol is a generic netlink family ("melnode") in every
+// respect but the socket: real nlmsghdr/genlmsghdr/nlattr framing (nl.go),
+// commands with attribute sets, ACKs with extended-ack text, multipart dumps,
+// unsolicited multicast-style events. API.md and melnode_genl.h are the
+// specification; this package is its userspace implementation.
 //
 //   - The data plane owns everything per-packet: the UDP socket, the Noise
 //     handshakes and keypairs, encryption, the tun devices and the
 //     dst-peerid -> next-hop link table. It forwards proto=0 (tunneled IP)
 //     packets entirely on its own.
 //   - Any packet with a non-zero proto in the 4-byte routing header is a
-//     control packet. The data plane never interprets it: it "punts" it up
-//     to the control plane (Punt), and sends whatever the control plane
-//     hands it (Inject).
+//     control packet. The data plane never interprets it: it punts it up to
+//     the control plane (CmdPunt), and sends whatever the control plane hands
+//     it (CmdInject).
 //   - The control plane puppets the data plane: it configures the device
-//     (identity, key, port, MTU: DeviceSet), adds/removes links, asks for
-//     tuns to be created/started/destroyed, and installs/changes/removes
-//     next-hop routes. All of that is request/reply (Call). A freshly started
-//     data plane knows nothing but its socket path and refuses everything
-//     except Hello, DeviceSet, Stats and Shutdown until it has been given a
-//     device -- the same way `wg set` gives a WireGuard interface its key.
+//     (DeviceSet), adds/removes links, asks for tuns to be created, started and
+//     destroyed, and installs/changes/removes next-hop routes.
 //   - The data plane tells the control plane about the few things it cannot
-//     infer (Event, currently just "a handshake completed"). Events are lossy
-//     by design; anything that matters is recoverable with a dump.
+//     infer (CmdEvent, currently "a handshake completed"). Events are lossy by
+//     design; anything that matters is recoverable with a dump.
 //
-// Transport is one SOCK_SEQPACKET unix socket: message boundaries are
-// preserved (so no length framing is needed), delivery is reliable and
-// ordered, and a peer going away is an immediate EOF, which is what makes
+// Transport (userspace data plane): a unix SOCK_SEQPACKET socket, one netlink
+// message per datagram. Message boundaries are preserved, delivery is reliable
+// and ordered, and a peer going away is an immediate EOF, which is what makes
 // "the control plane died" cheap to notice.
-//
-// Every message is
-//
-//	type u8 | id u32 | body...
-//
-// (big endian). id is chosen by the requester and echoed in the reply; it is
-// 0 on messages that have no reply (Punt, Inject).
 package dpproto
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 )
 
-// Version is bumped on any incompatible change to this protocol. The control
-// plane sends it in Hello and the data plane refuses a mismatch.
-const Version = 2
+// Version is the API version, carried in every genlmsghdr and in Hello. It is
+// bumped on an incompatible change; adding a command or attribute is not one.
+const Version = 3
 
+// Commands (genl "ops"). The reply to a request carries the same command.
 const (
-	// HeaderLen is the fixed message header: type u8 + id u32.
-	HeaderLen = 5
-	// MaxMessage bounds one datagram: a full 64KiB payload plus headers.
-	MaxMessage = 65535 + 64
+	CmdHello      uint8 = 1  // doit: describe this data plane
+	CmdAttach     uint8 = 2  // doit: become the control plane (punts and events come to this socket)
+	CmdDeviceSet  uint8 = 3  // doit: configure the device (once)
+	CmdDeviceDel  uint8 = 4  // doit: tear the device down; back to unconfigured
+	CmdStatsGet   uint8 = 5  // dump
+	CmdLinkAdd    uint8 = 6  // doit
+	CmdLinkDel    uint8 = 7  // doit
+	CmdLinkGet    uint8 = 8  // dump
+	CmdTunCreate  uint8 = 9  // doit
+	CmdTunStart   uint8 = 10 // doit
+	CmdTunDestroy uint8 = 11 // doit
+	CmdTunGet     uint8 = 12 // dump
+	CmdRouteSet   uint8 = 13 // doit
+	CmdRouteDel   uint8 = 14 // doit
+	CmdRouteGet   uint8 = 15 // dump
+	CmdPunt       uint8 = 16 // data plane -> control plane, no reply
+	CmdInject     uint8 = 17 // control plane -> data plane, no reply
+	CmdEvent      uint8 = 18 // data plane -> control plane, no reply
+
+	// Vendor range: commands only the userspace data plane has. A kernel one
+	// has no process to ask to exit (it is unloaded), so nothing above may
+	// depend on these.
+	CmdXQuit uint8 = 128 // doit: exit the process (after DeviceDel semantics)
 )
 
-// Type is a message type.
-type Type uint8
-
+// Attribute types (one flat namespace, the way small genl families do it).
 const (
-	// Requests, control plane -> data plane. Each gets exactly one Reply or
-	// ReplyErr carrying the same id.
-	TypeHello      Type = 1
-	TypeLinkAdd    Type = 2
-	TypeLinkDel    Type = 3
-	TypeLinkList   Type = 4
-	TypeTunCreate  Type = 5
-	TypeTunStart   Type = 6
-	TypeTunDestroy Type = 7
-	TypeTunList    Type = 8
-	TypeRouteSet   Type = 9
-	TypeRouteDel   Type = 10
-	TypeRouteList  Type = 11
-	TypeDeviceSet  Type = 12
-	TypeStats      Type = 13
-	TypeShutdown   Type = 14
-
-	// Replies, data plane -> control plane.
-	TypeReply    Type = 0x80
-	TypeReplyErr Type = 0x81
-
-	// Asynchronous, no reply.
-	TypePunt   Type = 0x90 // data plane -> control plane
-	TypeInject Type = 0x91 // control plane -> data plane
-	TypeEvent  Type = 0x92 // data plane -> control plane
+	AttrUnspec       uint16 = 0
+	AttrPad          uint16 = 1 // alignment padding before u64 attributes
+	AttrAPIVersion   uint16 = 2 // u32
+	AttrPID          uint16 = 3 // u32: userspace data plane's pid (absent in a kernel one)
+	AttrConfigured   uint16 = 4 // u8: 1 once a DeviceSet has been applied
+	AttrLocalID      uint16 = 5 // u32: this node's id
+	AttrPrivateKey   uint16 = 6 // 32 bytes
+	AttrPublicKey    uint16 = 7 // 32 bytes
+	AttrListenPort   uint16 = 8 // u16, host order
+	AttrFwmark       uint16 = 9 // u32
+	AttrMTU          uint16 = 10
+	AttrPeerID       uint16 = 11 // u32: the link (neighbor) or tun destination this is about
+	AttrEndpoint     uint16 = 12 // struct sockaddr_in / sockaddr_in6; absent = none
+	AttrLastHS       uint16 = 13 // u64: unix nanoseconds of the last handshake, 0 = never
+	AttrTxBytes      uint16 = 14 // u64
+	AttrRxBytes      uint16 = 15 // u64
+	AttrTunName      uint16 = 16 // NUL-terminated string, at most 15 characters
+	AttrTunStarted   uint16 = 17 // u8
+	AttrRouteDst     uint16 = 18 // u32
+	AttrRouteNextHop uint16 = 19 // u32
+	AttrStatID       uint16 = 20 // u16
+	AttrStatValue    uint16 = 21 // u64
+	AttrPktLink      uint16 = 22 // u32: link peerid (ingress for a punt, egress for an inject)
+	AttrPktProto     uint16 = 23 // u8
+	AttrPktSrc       uint16 = 24 // u8
+	AttrPktDst       uint16 = 25 // u8
+	AttrPktTTL       uint16 = 26 // u8
+	AttrPktData      uint16 = 27 // binary
+	AttrEvtKind      uint16 = 28 // u8
+	AttrEvtTime      uint16 = 29 // u64: unix nanoseconds
 )
 
-// Error codes carried in ReplyErr.
+// Error codes are errnos, as they are on a netlink socket (the error reply
+// carries -errno, plus the text as an extended-ack message).
 const (
-	CodeInvalid     uint16 = 1 // malformed or nonsensical request
-	CodeNotFound    uint16 = 2
-	CodeExists      uint16 = 3
-	CodeInternal    uint16 = 4
-	CodeUnsupported uint16 = 5 // unknown message type / version mismatch
-	CodeNotReady    uint16 = 6 // the data plane has not been given a device yet (DeviceSet)
+	CodeInvalid     uint16 = 22 // EINVAL: malformed or nonsensical request
+	CodeNotFound    uint16 = 2  // ENOENT
+	CodeExists      uint16 = 17 // EEXIST
+	CodeInternal    uint16 = 5  // EIO
+	CodeUnsupported uint16 = 95 // EOPNOTSUPP: unknown command / version mismatch
+	CodeNotReady    uint16 = 19 // ENODEV: no device yet (DeviceSet)
 )
 
 // Error is a failure reported by the data plane for one request.
 type Error struct {
-	Code uint16
+	Code uint16 // an errno
 	Msg  string
 }
 
-func (e *Error) Error() string { return fmt.Sprintf("data plane: %s (code %d)", e.Msg, e.Code) }
+func (e *Error) Error() string { return fmt.Sprintf("data plane: %s (errno %d)", e.Msg, e.Code) }
 
 // Errorf builds an *Error for a Handler to return.
 func Errorf(code uint16, format string, args ...any) *Error {
@@ -113,8 +131,6 @@ func IsCode(err error, code uint16) bool {
 	var e *Error
 	return errors.As(err, &e) && e.Code == code
 }
-
-var errShort = errors.New("dpproto: truncated message")
 
 // ---- messages ---------------------------------------------------------------
 
@@ -137,8 +153,8 @@ type HelloReply struct {
 //
 // It is configure-once: repeating the same DeviceSet is a no-op (so a
 // control plane can safely send it on every attach), but a *different* one
-// fails with CodeExists -- the data plane would have to be restarted to take
-// it, which is the control plane's call (Shutdown).
+// fails with CodeExists -- the control plane must DeviceDel first, which drops
+// every link, tun and route.
 type DeviceSet struct {
 	LocalID    uint32
 	PrivateKey [32]byte
@@ -288,388 +304,231 @@ type Inject struct {
 	Payload []byte
 }
 
-// ---- codec ------------------------------------------------------------------
+// ---- codec: each message is a set of netlink attributes ----------------------------
 
-type enc struct{ b []byte }
+// The put methods append a message's attributes; the get methods read them
+// back, insisting on the ones that are required. Absent optional attributes
+// decode to zero values.
 
-func (e *enc) u8(v uint8)   { e.b = append(e.b, v) }
-func (e *enc) u16(v uint16) { e.b = binary.BigEndian.AppendUint16(e.b, v) }
-func (e *enc) u32(v uint32) { e.b = binary.BigEndian.AppendUint32(e.b, v) }
-func (e *enc) u64(v uint64) { e.b = binary.BigEndian.AppendUint64(e.b, v) }
-func (e *enc) raw(v []byte) { e.b = append(e.b, v...) }
-func (e *enc) boolean(v bool) {
+func b2u8(v bool) uint8 {
 	if v {
-		e.u8(1)
-	} else {
-		e.u8(0)
-	}
-}
-func (e *enc) str(s string) {
-	if len(s) > 0xffff {
-		s = s[:0xffff]
-	}
-	e.u16(uint16(len(s)))
-	e.b = append(e.b, s...)
-}
-
-type dec struct {
-	b   []byte
-	err error
-}
-
-func (d *dec) take(n int) []byte {
-	if d.err != nil {
-		return nil
-	}
-	if len(d.b) < n {
-		d.err = errShort
-		return nil
-	}
-	v := d.b[:n]
-	d.b = d.b[n:]
-	return v
-}
-func (d *dec) u8() uint8 {
-	if v := d.take(1); v != nil {
-		return v[0]
+		return 1
 	}
 	return 0
 }
-func (d *dec) u16() uint16 {
-	if v := d.take(2); v != nil {
-		return binary.BigEndian.Uint16(v)
-	}
-	return 0
-}
-func (d *dec) u32() uint32 {
-	if v := d.take(4); v != nil {
-		return binary.BigEndian.Uint32(v)
-	}
-	return 0
-}
-func (d *dec) u64() uint64 {
-	if v := d.take(8); v != nil {
-		return binary.BigEndian.Uint64(v)
-	}
-	return 0
-}
-func (d *dec) key() (k [32]byte) {
-	if v := d.take(32); v != nil {
-		copy(k[:], v)
-	}
-	return
-}
-func (d *dec) str() string {
-	n := int(d.u16())
-	return string(d.take(n))
-}
 
-// rest returns a copy of everything left (a copy, since the receive buffer is reused).
-func (d *dec) rest() []byte {
-	if d.err != nil {
-		return nil
+func (m Hello) put(b *nlb) { b.u32(AttrAPIVersion, uint32(m.Version)) }
+func (m *Hello) get(a attrs) error {
+	if err := a.need(AttrAPIVersion); err != nil {
+		return err
 	}
-	out := append([]byte(nil), d.b...)
-	d.b = nil
-	return out
-}
-
-// done reports a decode error, including trailing garbage.
-func (d *dec) done() error {
-	if d.err != nil {
-		return d.err
-	}
-	if len(d.b) != 0 {
-		return fmt.Errorf("dpproto: %d trailing bytes", len(d.b))
-	}
+	m.Version = uint16(a.u32(AttrAPIVersion))
 	return nil
 }
 
-func (m Hello) Marshal() []byte { e := enc{}; e.u16(m.Version); return e.b }
-func UnmarshalHello(b []byte) (m Hello, err error) {
-	d := dec{b: b}
-	m.Version = d.u16()
-	return m, d.done()
+func (m HelloReply) put(b *nlb) {
+	b.u32(AttrAPIVersion, uint32(m.Version)).u32(AttrPID, m.PID).u8(AttrConfigured, b2u8(m.Configured))
 }
-
-func (m HelloReply) Marshal() []byte {
-	e := enc{}
-	e.u16(m.Version)
-	e.u32(m.PID)
-	e.boolean(m.Configured)
-	return e.b
-}
-func UnmarshalHelloReply(b []byte) (m HelloReply, err error) {
-	d := dec{b: b}
-	m.Version = d.u16()
-	m.PID = d.u32()
-	m.Configured = d.u8() != 0
-	return m, d.done()
-}
-
-func (m DeviceSet) Marshal() []byte {
-	e := enc{}
-	e.u32(m.LocalID)
-	e.raw(m.PrivateKey[:])
-	e.u16(m.ListenPort)
-	e.u32(m.Fwmark)
-	e.u32(m.MTU)
-	return e.b
-}
-func UnmarshalDeviceSet(b []byte) (m DeviceSet, err error) {
-	d := dec{b: b}
-	m.LocalID = d.u32()
-	m.PrivateKey = d.key()
-	m.ListenPort = d.u16()
-	m.Fwmark = d.u32()
-	m.MTU = d.u32()
-	return m, d.done()
-}
-
-func (m DeviceSetReply) Marshal() []byte { e := enc{}; e.raw(m.PubKey[:]); return e.b }
-func UnmarshalDeviceSetReply(b []byte) (m DeviceSetReply, err error) {
-	d := dec{b: b}
-	m.PubKey = d.key()
-	return m, d.done()
-}
-
-func (m TunCreate) Marshal() []byte { e := enc{}; e.u32(m.PeerID); e.str(m.Name); return e.b }
-func UnmarshalTunCreate(b []byte) (m TunCreate, err error) {
-	d := dec{b: b}
-	m.PeerID = d.u32()
-	m.Name = d.str()
-	return m, d.done()
-}
-
-func MarshalStats(l []Stat) []byte {
-	e := enc{}
-	e.u32(uint32(len(l)))
-	for _, s := range l {
-		e.u16(s.ID)
-		e.u64(s.Value)
+func (m *HelloReply) get(a attrs) error {
+	if err := a.need(AttrAPIVersion); err != nil {
+		return err
 	}
-	return e.b
+	m.Version = uint16(a.u32(AttrAPIVersion))
+	m.PID = a.u32(AttrPID)
+	m.Configured = a.u8(AttrConfigured) != 0
+	return nil
 }
-func UnmarshalStats(b []byte) ([]Stat, error) {
-	d := dec{b: b}
-	n := d.u32()
-	var out []Stat
-	for i := uint32(0); i < n && d.err == nil; i++ {
-		out = append(out, Stat{ID: d.u16(), Value: d.u64()})
+
+func (m DeviceSet) put(b *nlb) {
+	b.u32(AttrLocalID, m.LocalID).attr(AttrPrivateKey, m.PrivateKey[:]).u16(AttrListenPort, m.ListenPort)
+	b.u32(AttrFwmark, m.Fwmark).u32(AttrMTU, m.MTU)
+}
+func (m *DeviceSet) get(a attrs) error {
+	if err := a.need(AttrLocalID, AttrPrivateKey, AttrListenPort, AttrMTU); err != nil {
+		return err
 	}
-	return out, d.done()
+	m.LocalID = a.u32(AttrLocalID)
+	m.PrivateKey = a.key(AttrPrivateKey)
+	m.ListenPort = a.u16(AttrListenPort)
+	m.Fwmark = a.u32(AttrFwmark)
+	m.MTU = a.u32(AttrMTU)
+	return nil
 }
 
-// MarshalMessage is the full wire form of an Event (header included).
-func (m Event) MarshalMessage() []byte {
-	e := enc{}
-	e.u8(uint8(TypeEvent))
-	e.u32(0)
-	e.u8(m.Kind)
-	e.u32(m.PeerID)
-	e.u64(uint64(m.UnixNano))
-	e.str(m.Endpoint)
-	return e.b
-}
-func UnmarshalEvent(b []byte) (m Event, err error) {
-	d := dec{b: b}
-	m.Kind = d.u8()
-	m.PeerID = d.u32()
-	m.UnixNano = int64(d.u64())
-	m.Endpoint = d.str()
-	return m, d.done()
-}
-
-func (m LinkAdd) Marshal() []byte {
-	e := enc{}
-	e.u32(m.PeerID)
-	e.raw(m.PubKey[:])
-	e.str(m.Endpoint)
-	return e.b
-}
-func UnmarshalLinkAdd(b []byte) (m LinkAdd, err error) {
-	d := dec{b: b}
-	m.PeerID = d.u32()
-	m.PubKey = d.key()
-	m.Endpoint = d.str()
-	return m, d.done()
-}
-
-// MarshalID / UnmarshalID encode the single-peerid bodies (LinkDel, TunCreate,
-// TunStart, TunDestroy, RouteDel).
-func MarshalID(id uint32) []byte { e := enc{}; e.u32(id); return e.b }
-func UnmarshalID(b []byte) (uint32, error) {
-	d := dec{b: b}
-	id := d.u32()
-	return id, d.done()
-}
-
-func (m LinkInfo) marshalTo(e *enc) {
-	e.u32(m.PeerID)
-	e.raw(m.PubKey[:])
-	e.str(m.Endpoint)
-	e.u64(uint64(m.LastHandshakeUnixNano))
-	e.u64(m.TxBytes)
-	e.u64(m.RxBytes)
-}
-func (m *LinkInfo) unmarshalFrom(d *dec) {
-	m.PeerID = d.u32()
-	m.PubKey = d.key()
-	m.Endpoint = d.str()
-	m.LastHandshakeUnixNano = int64(d.u64())
-	m.TxBytes = d.u64()
-	m.RxBytes = d.u64()
-}
-
-func MarshalLinkList(l []LinkInfo) []byte {
-	e := enc{}
-	e.u32(uint32(len(l)))
-	for _, x := range l {
-		x.marshalTo(&e)
+func (m DeviceSetReply) put(b *nlb) { b.attr(AttrPublicKey, m.PubKey[:]) }
+func (m *DeviceSetReply) get(a attrs) error {
+	if err := a.need(AttrPublicKey); err != nil {
+		return err
 	}
-	return e.b
-}
-func UnmarshalLinkList(b []byte) ([]LinkInfo, error) {
-	d := dec{b: b}
-	n := d.u32()
-	var out []LinkInfo
-	for i := uint32(0); i < n && d.err == nil; i++ {
-		var x LinkInfo
-		x.unmarshalFrom(&d)
-		out = append(out, x)
-	}
-	return out, d.done()
+	m.PubKey = a.key(AttrPublicKey)
+	return nil
 }
 
-func (m TunCreateReply) Marshal() []byte {
-	e := enc{}
-	e.str(m.Name)
-	if m.Started {
-		e.u8(1)
-	} else {
-		e.u8(0)
+func putEndpoint(b *nlb, ep string) error {
+	if ep == "" {
+		return nil
 	}
-	return e.b
-}
-func UnmarshalTunCreateReply(b []byte) (m TunCreateReply, err error) {
-	d := dec{b: b}
-	m.Name = d.str()
-	m.Started = d.u8() != 0
-	return m, d.done()
+	sa, err := endpointToSockaddr(ep)
+	if err != nil {
+		return err
+	}
+	b.attr(AttrEndpoint, sa)
+	return nil
 }
 
-func MarshalTunList(l []TunInfo) []byte {
-	e := enc{}
-	e.u32(uint32(len(l)))
-	for _, x := range l {
-		e.u32(x.PeerID)
-		e.str(x.Name)
-		e.u32(x.MTU)
-		if x.Started {
-			e.u8(1)
-		} else {
-			e.u8(0)
-		}
+func getEndpoint(a attrs) (string, error) {
+	v, ok := a.get(AttrEndpoint)
+	if !ok {
+		return "", nil
 	}
-	return e.b
-}
-func UnmarshalTunList(b []byte) ([]TunInfo, error) {
-	d := dec{b: b}
-	n := d.u32()
-	var out []TunInfo
-	for i := uint32(0); i < n && d.err == nil; i++ {
-		var x TunInfo
-		x.PeerID = d.u32()
-		x.Name = d.str()
-		x.MTU = d.u32()
-		x.Started = d.u8() != 0
-		out = append(out, x)
-	}
-	return out, d.done()
+	return sockaddrToEndpoint(v)
 }
 
-func (m Route) Marshal() []byte { e := enc{}; e.u32(m.Dst); e.u32(m.NextHop); return e.b }
-func UnmarshalRoute(b []byte) (m Route, err error) {
-	d := dec{b: b}
-	m.Dst = d.u32()
-	m.NextHop = d.u32()
-	return m, d.done()
+func (m LinkAdd) put(b *nlb) error {
+	b.u32(AttrPeerID, m.PeerID).attr(AttrPublicKey, m.PubKey[:])
+	return putEndpoint(b, m.Endpoint)
 }
-
-func MarshalRouteList(l []Route) []byte {
-	e := enc{}
-	e.u32(uint32(len(l)))
-	for _, x := range l {
-		e.u32(x.Dst)
-		e.u32(x.NextHop)
+func (m *LinkAdd) get(a attrs) (err error) {
+	if err := a.need(AttrPeerID, AttrPublicKey); err != nil {
+		return err
 	}
-	return e.b
+	m.PeerID = a.u32(AttrPeerID)
+	m.PubKey = a.key(AttrPublicKey)
+	m.Endpoint, err = getEndpoint(a)
+	return err
 }
-func UnmarshalRouteList(b []byte) ([]Route, error) {
-	d := dec{b: b}
-	n := d.u32()
-	var out []Route
-	for i := uint32(0); i < n && d.err == nil; i++ {
-		out = append(out, Route{Dst: d.u32(), NextHop: d.u32()})
+
+func (m LinkInfo) put(b *nlb) error {
+	b.u32(AttrPeerID, m.PeerID).attr(AttrPublicKey, m.PubKey[:])
+	if err := putEndpoint(b, m.Endpoint); err != nil {
+		return err
 	}
-	return out, d.done()
+	b.u64(AttrLastHS, uint64(m.LastHandshakeUnixNano)).u64(AttrTxBytes, m.TxBytes).u64(AttrRxBytes, m.RxBytes)
+	return nil
 }
-
-// MarshalMessage is the full wire form of a Punt (header included), so the
-// data plane builds it in one allocation.
-func (m Punt) MarshalMessage() []byte {
-	e := enc{b: make([]byte, 0, HeaderLen+8+len(m.Payload))}
-	e.u8(uint8(TypePunt))
-	e.u32(0)
-	e.u32(m.Ingress)
-	e.u8(m.Proto)
-	e.u8(m.Src)
-	e.u8(m.Dst)
-	e.u8(m.TTL)
-	e.raw(m.Payload)
-	return e.b
-}
-func UnmarshalPunt(b []byte) (m Punt, err error) {
-	d := dec{b: b}
-	m.Ingress = d.u32()
-	m.Proto = d.u8()
-	m.Src = d.u8()
-	m.Dst = d.u8()
-	m.TTL = d.u8()
-	m.Payload = d.rest()
-	return m, d.done()
-}
-
-func (m Inject) Marshal() []byte {
-	e := enc{b: make([]byte, 0, 7+len(m.Payload))}
-	e.u32(m.Link)
-	e.u8(m.Proto)
-	e.u8(m.Dst)
-	e.u8(m.TTL)
-	e.raw(m.Payload)
-	return e.b
-}
-func UnmarshalInject(b []byte) (m Inject, err error) {
-	d := dec{b: b}
-	m.Link = d.u32()
-	m.Proto = d.u8()
-	m.Dst = d.u8()
-	m.TTL = d.u8()
-	m.Payload = d.rest()
-	return m, d.done()
-}
-
-func marshalError(e *Error) []byte {
-	x := enc{}
-	x.u16(e.Code)
-	x.str(e.Msg)
-	return x.b
-}
-func unmarshalError(b []byte) *Error {
-	d := dec{b: b}
-	e := &Error{Code: d.u16(), Msg: d.str()}
-	if d.err != nil {
-		return &Error{Code: CodeInternal, Msg: "malformed error reply"}
+func (m *LinkInfo) get(a attrs) (err error) {
+	if err := a.need(AttrPeerID, AttrPublicKey); err != nil {
+		return err
 	}
-	return e
+	m.PeerID = a.u32(AttrPeerID)
+	m.PubKey = a.key(AttrPublicKey)
+	if m.Endpoint, err = getEndpoint(a); err != nil {
+		return err
+	}
+	m.LastHandshakeUnixNano = int64(a.u64(AttrLastHS))
+	m.TxBytes = a.u64(AttrTxBytes)
+	m.RxBytes = a.u64(AttrRxBytes)
+	return nil
+}
+
+// putID / getID are the bodies that name just one id under a given attribute
+// (LinkDel, TunStart, TunDestroy: AttrPeerID; RouteDel: AttrRouteDst).
+func putID(b *nlb, typ uint16, id uint32) { b.u32(typ, id) }
+func getID(a attrs, typ uint16) (uint32, error) {
+	if err := a.need(typ); err != nil {
+		return 0, err
+	}
+	return a.u32(typ), nil
+}
+
+func (m TunCreate) put(b *nlb) { b.u32(AttrPeerID, m.PeerID).str(AttrTunName, m.Name) }
+func (m *TunCreate) get(a attrs) error {
+	if err := a.need(AttrPeerID, AttrTunName); err != nil {
+		return err
+	}
+	m.PeerID = a.u32(AttrPeerID)
+	m.Name = a.str(AttrTunName)
+	return nil
+}
+
+func (m TunCreateReply) put(b *nlb) { b.str(AttrTunName, m.Name).u8(AttrTunStarted, b2u8(m.Started)) }
+func (m *TunCreateReply) get(a attrs) error {
+	if err := a.need(AttrTunName); err != nil {
+		return err
+	}
+	m.Name = a.str(AttrTunName)
+	m.Started = a.u8(AttrTunStarted) != 0
+	return nil
+}
+
+func (m TunInfo) put(b *nlb) {
+	b.u32(AttrPeerID, m.PeerID).str(AttrTunName, m.Name).u32(AttrMTU, m.MTU).u8(AttrTunStarted, b2u8(m.Started))
+}
+func (m *TunInfo) get(a attrs) error {
+	if err := a.need(AttrPeerID, AttrTunName); err != nil {
+		return err
+	}
+	m.PeerID = a.u32(AttrPeerID)
+	m.Name = a.str(AttrTunName)
+	m.MTU = a.u32(AttrMTU)
+	m.Started = a.u8(AttrTunStarted) != 0
+	return nil
+}
+
+func (m Route) put(b *nlb) { b.u32(AttrRouteDst, m.Dst).u32(AttrRouteNextHop, m.NextHop) }
+func (m *Route) get(a attrs) error {
+	if err := a.need(AttrRouteDst, AttrRouteNextHop); err != nil {
+		return err
+	}
+	m.Dst = a.u32(AttrRouteDst)
+	m.NextHop = a.u32(AttrRouteNextHop)
+	return nil
+}
+
+func (m Stat) put(b *nlb) { b.u16(AttrStatID, m.ID).u64(AttrStatValue, m.Value) }
+func (m *Stat) get(a attrs) error {
+	if err := a.need(AttrStatID, AttrStatValue); err != nil {
+		return err
+	}
+	m.ID = a.u16(AttrStatID)
+	m.Value = a.u64(AttrStatValue)
+	return nil
+}
+
+func (m Event) put(b *nlb) error {
+	b.u8(AttrEvtKind, m.Kind).u32(AttrPeerID, m.PeerID).u64(AttrEvtTime, uint64(m.UnixNano))
+	return putEndpoint(b, m.Endpoint)
+}
+func (m *Event) get(a attrs) (err error) {
+	if err := a.need(AttrEvtKind, AttrPeerID); err != nil {
+		return err
+	}
+	m.Kind = a.u8(AttrEvtKind)
+	m.PeerID = a.u32(AttrPeerID)
+	m.UnixNano = int64(a.u64(AttrEvtTime))
+	m.Endpoint, err = getEndpoint(a)
+	return err
+}
+
+func (m Punt) put(b *nlb) {
+	b.u32(AttrPktLink, m.Ingress).u8(AttrPktProto, m.Proto).u8(AttrPktSrc, m.Src).u8(AttrPktDst, m.Dst).u8(AttrPktTTL, m.TTL)
+	b.attr(AttrPktData, m.Payload)
+}
+func (m *Punt) get(a attrs) error {
+	if err := a.need(AttrPktLink, AttrPktProto); err != nil {
+		return err
+	}
+	m.Ingress = a.u32(AttrPktLink)
+	m.Proto = a.u8(AttrPktProto)
+	m.Src = a.u8(AttrPktSrc)
+	m.Dst = a.u8(AttrPktDst)
+	m.TTL = a.u8(AttrPktTTL)
+	m.Payload = a.bin(AttrPktData)
+	return nil
+}
+
+func (m Inject) put(b *nlb) {
+	b.u32(AttrPktLink, m.Link).u8(AttrPktProto, m.Proto).u8(AttrPktDst, m.Dst).u8(AttrPktTTL, m.TTL)
+	b.attr(AttrPktData, m.Payload)
+}
+func (m *Inject) get(a attrs) error {
+	if err := a.need(AttrPktLink, AttrPktProto); err != nil {
+		return err
+	}
+	m.Link = a.u32(AttrPktLink)
+	m.Proto = a.u8(AttrPktProto)
+	m.Dst = a.u8(AttrPktDst)
+	m.TTL = a.u8(AttrPktTTL)
+	m.Payload = a.bin(AttrPktData)
+	return nil
 }

@@ -40,7 +40,7 @@ type Node struct {
 	mtu atomic.Int32
 
 	// dpc is the live data plane session, nil while detached (session.go).
-	dpc atomic.Pointer[dpproto.Client]
+	dpc atomic.Pointer[dpHandle]
 	// pubkey is this node's public key, as the data plane derived it from the
 	// private key we gave it (nil until the first successful attach).
 	pubkey atomic.Pointer[[32]byte]
@@ -53,7 +53,16 @@ type Node struct {
 }
 
 // dp returns the attached data plane, or nil.
-func (n *Node) dp() *dpproto.Client { return n.dpc.Load() }
+// dpHandle boxes the Datapath interface so it can live in an atomic.Pointer.
+type dpHandle struct{ dpproto.Datapath }
+
+// dp returns the live data plane session, or nil while detached.
+func (n *Node) dp() dpproto.Datapath {
+	if h := n.dpc.Load(); h != nil {
+		return h.Datapath
+	}
+	return nil
+}
 
 // sortedLinks returns the configured links ordered by peerid.
 func (n *Node) sortedLinks() []*Link {

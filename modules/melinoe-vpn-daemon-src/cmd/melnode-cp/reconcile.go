@@ -280,7 +280,7 @@ var errNoDataplane = errors.New("no data plane attached")
 // realHost is hostOps backed by the data plane (over dpproto) and netlink.
 type realHost struct{ r *Router }
 
-func (h *realHost) client() (*dpproto.Client, error) {
+func (h *realHost) client() (dpproto.Datapath, error) {
 	if cl := h.r.node.dp(); cl != nil {
 		return cl, nil
 	}

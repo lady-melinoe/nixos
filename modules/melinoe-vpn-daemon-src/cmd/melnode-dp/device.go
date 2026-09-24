@@ -105,7 +105,8 @@ type Device struct {
 		injectSent, injectDropped                                atomic.Uint64
 	}
 
-	ctl *dpproto.Server // the control plane's side of the socket (ctl.go); set once in main.go
+	keepCtl bool            // Close leaves the control socket open (DeviceDel)
+	ctl     *dpproto.Server // the control plane's side of the socket (ctl.go); set once in main.go
 
 	closedFlag atomic.Bool
 	closed     chan struct{}
@@ -168,7 +169,7 @@ func (device *Device) Close() {
 		peer.Stop()
 	}
 	device.peers.RUnlock()
-	if device.ctl != nil {
+	if device.ctl != nil && !device.keepCtl {
 		device.ctl.Close()
 	}
 	if device.router != nil {
