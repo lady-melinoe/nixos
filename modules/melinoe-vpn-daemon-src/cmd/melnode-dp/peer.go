@@ -34,10 +34,6 @@ type Peer struct {
 
 	id uint32 // the link's peerid (melnode addition -- wireguard-go has no equivalent, identifies peers by pubkey only)
 
-	prependCount uint32 // AS-prepending for path-vector traffic engineering (config: [[link]] prependCount) -- see pathvector.go's forwardPath
-
-	monitor *LinkMonitor // BFD-like liveness session for this link, see linkmonitor.go
-
 	endpoint struct {
 		sync.Mutex
 		val            conn.Endpoint
@@ -77,11 +73,10 @@ type Peer struct {
 // device.peers.keyMap itself), melnode's peers are all known upfront from
 // config, so construction and registration (Device.addPeer, in device.go)
 // are separate steps, same as melnode did before this port.
-func newPeer(dev *Device, id uint32, remoteStatic NoisePublicKey, endpoint conn.Endpoint, prependCount uint32) (*Peer, error) {
+func newPeer(dev *Device, id uint32, remoteStatic NoisePublicKey, endpoint conn.Endpoint) (*Peer, error) {
 	peer := &Peer{
-		device:       dev,
-		id:           id,
-		prependCount: prependCount,
+		device: dev,
+		id:     id,
 	}
 	peer.cookieGenerator.Init(remoteStatic)
 	peer.queue.outbound = newAutodrainingOutboundQueue(dev)
@@ -101,7 +96,6 @@ func newPeer(dev *Device, id uint32, remoteStatic NoisePublicKey, endpoint conn.
 	peer.endpoint.Unlock()
 
 	peer.timersInit()
-	peer.monitor = newLinkMonitor(peer)
 
 	return peer, nil
 }
@@ -178,7 +172,6 @@ func (peer *Peer) Start() {
 
 	peer.isRunning.Store(true)
 
-	peer.monitor.Start()
 }
 
 func (peer *Peer) ZeroAndFlushAll() {
@@ -231,9 +224,6 @@ func (peer *Peer) Stop() {
 	}
 
 	peer.device.log.Verbosef("%v - Stopping", peer)
-
-	peer.monitor.AdminDown()
-	peer.monitor.Stop()
 
 	peer.timersStop()
 	peer.queue.inbound.c <- nil

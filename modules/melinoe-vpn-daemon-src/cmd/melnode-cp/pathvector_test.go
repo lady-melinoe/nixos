@@ -14,7 +14,7 @@ import (
 type pvNet struct {
 	t     *testing.T
 	nodes map[uint32]*PathVector
-	peers map[[2]uint32]*Peer // [owner, neighborID] -> owner's Peer for that neighbor
+	peers map[[2]uint32]*Link // [owner, neighborID] -> owner's Peer for that neighbor
 	up    map[[2]uint32]bool  // undirected, key sorted
 	queue []pvMsg
 }
@@ -33,14 +33,15 @@ func linkKey(a, b uint32) [2]uint32 {
 }
 
 func newPVNet(t *testing.T, ids ...uint32) *pvNet {
-	n := &pvNet{t: t, nodes: map[uint32]*PathVector{}, peers: map[[2]uint32]*Peer{}, up: map[[2]uint32]bool{}}
+	n := &pvNet{t: t, nodes: map[uint32]*PathVector{}, peers: map[[2]uint32]*Link{}, up: map[[2]uint32]bool{}}
 	for _, id := range ids {
 		id := id
-		dev := &Device{localID: id, mtu: defaultMTU, log: &Logger{DiscardLogf, DiscardLogf}}
-		dev.router = newRouter(dev, id, "t-", nil, "", "")
-		dev.router.host = newFakeHost()
-		pv := newPathVector(dev, id)
-		pv.sendHook = func(peer *Peer, a []pvAnnouncement, w []uint32) {
+		node := &Node{localID: id, log: &Logger{DiscardLogf, DiscardLogf}}
+		node.mtu.Store(defaultMTU)
+		node.router = newRouter(node, id, nil, "", "")
+		node.router.host = newFakeHost()
+		pv := newPathVector(node, id)
+		pv.sendHook = func(peer *Link, a []pvAnnouncement, w []uint32) {
 			n.queue = append(n.queue, pvMsg{from: id, to: peer.id, announces: a, withdraws: w})
 		}
 		n.nodes[id] = pv
@@ -48,12 +49,12 @@ func newPVNet(t *testing.T, ids ...uint32) *pvNet {
 	return n
 }
 
-func (n *pvNet) peer(owner, nbr uint32) *Peer {
+func (n *pvNet) peer(owner, nbr uint32) *Link {
 	k := [2]uint32{owner, nbr}
 	if p, ok := n.peers[k]; ok {
 		return p
 	}
-	p := &Peer{id: nbr}
+	p := &Link{id: nbr}
 	n.peers[k] = p
 	return p
 }
@@ -95,7 +96,7 @@ func (n *pvNet) drain() {
 // loop in tests since Start isn't called).
 func (n *pvNet) reconcileAll() {
 	for _, pv := range n.nodes {
-		pv.dev.router.reconcileOnce()
+		pv.node.router.reconcileOnce()
 	}
 }
 
@@ -113,7 +114,7 @@ func (n *pvNet) fullSyncAll() {
 
 // nextHop returns node's currently-installed next hop to dest.
 func (n *pvNet) nextHop(node, dest uint32) (uint32, bool) {
-	return n.nodes[node].dev.router.LookupRoute(dest)
+	return n.nodes[node].node.router.LookupRoute(dest)
 }
 
 // assertNoLoop follows next hops from src toward dest and fails on a
@@ -201,7 +202,7 @@ func TestPathLengthOverflow(t *testing.T) {
 func TestChunking(t *testing.T) {
 	n := newPVNet(t, 1, 2)
 	for _, pv := range n.nodes {
-		pv.dev.mtu = 200 // tiny, to force many chunks with few routes
+		pv.node.mtu.Store(200) // tiny, to force many chunks with few routes
 	}
 	// node 1 claims lots of prefixes -> a big self-origin entry per packet limit
 	for i := 0; i < 30; i++ { // 8+2+1+1+30*5 = 162 <= 200
@@ -216,11 +217,11 @@ func TestChunking(t *testing.T) {
 	// many dests behind node 1 -> node 2's table to node 3 must split
 	m := newPVNet(t, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 	for _, pv := range m.nodes {
-		pv.dev.mtu = 40 // 8 hdr + ~5 entries of 6 bytes
+		pv.node.mtu.Store(40) // 8 hdr + ~5 entries of 6 bytes
 	}
 	sizes := 0
 	orig := m.nodes[2].sendHook
-	m.nodes[2].sendHook = func(p *Peer, a []pvAnnouncement, w []uint32) {
+	m.nodes[2].sendHook = func(p *Link, a []pvAnnouncement, w []uint32) {
 		if sz := len(encodePVPacket(a, w)); sz > 40 {
 			t.Errorf("packet of %d bytes exceeds mtu 40", sz)
 		}
@@ -247,15 +248,18 @@ type fakeHost struct {
 	mu         sync.Mutex
 	tuns       map[uint32]bool
 	routes     map[pvPrefix]string
-	failCreate map[uint32]int // remaining EnsureTun failures per peerid
-	ops        []string       // ordered log of mutating calls
+	dpRoutes   map[uint32]uint32 // what the data plane's next-hop table was last programmed to
+	failCreate map[uint32]int    // remaining EnsureTun failures per peerid
+	ops        []string          // ordered log of mutating calls
 }
 
 func newFakeHost() *fakeHost {
 	return &fakeHost{tuns: map[uint32]bool{}, routes: map[pvPrefix]string{}, failCreate: map[uint32]int{}}
 }
 
-func (f *fakeHost) Tuns() []uint32 {
+func (f *fakeHost) Ready() bool { return true }
+
+func (f *fakeHost) Tuns() ([]uint32, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []uint32
@@ -263,7 +267,20 @@ func (f *fakeHost) Tuns() []uint32 {
 		out = append(out, id)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
+	return out, nil
+}
+
+// ProgramRoutes stands in for the data plane's next-hop table.
+func (f *fakeHost) ProgramRoutes(want map[uint32]uint32, prune bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.dpRoutes == nil || prune {
+		f.dpRoutes = make(map[uint32]uint32, len(want))
+	}
+	for d, nh := range want {
+		f.dpRoutes[d] = nh
+	}
+	return nil
 }
 
 func (f *fakeHost) TunName(id uint32) (string, bool) {
@@ -327,7 +344,7 @@ func (f *fakeHost) DelRoute(p pvPrefix) error {
 }
 
 func (n *pvNet) host(node uint32) *fakeHost {
-	return n.nodes[node].dev.router.host.(*fakeHost)
+	return n.nodes[node].node.router.host.(*fakeHost)
 }
 
 func mustPrefix(t *testing.T, s string) pvPrefix {
@@ -378,7 +395,7 @@ func TestReconcileRetriesFailedTun(t *testing.T) {
 	if h.tuns[2] || len(h.routes) != 0 {
 		t.Fatal("tun/route present despite injected create failure")
 	}
-	r := n.nodes[1].dev.router
+	r := n.nodes[1].node.router
 	if !r.reconcileOnce() {
 		t.Fatal("pass with a still-failing tun should ask for a retry")
 	}
@@ -423,7 +440,7 @@ func TestReconcileHealsDrift(t *testing.T) {
 	h := n.host(1)
 	delete(h.routes, p)
 	h.routes[stray] = "t-2"
-	r := n.nodes[1].dev.router
+	r := n.nodes[1].node.router
 	r.reconcileOnce()
 	if h.routes[p] != "t-2" {
 		t.Fatal("flushed route not restored")

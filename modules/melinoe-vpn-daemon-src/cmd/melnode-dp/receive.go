@@ -14,6 +14,8 @@ import (
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.zx2c4.com/wireguard/conn"
+
+	"melnode/dpproto"
 )
 
 // Multi-hop forwards are grouped by next-hop *Peer and staged as one
@@ -557,59 +559,22 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 					device.log.Verbosef("proto-0 packet with invalid inner IP version from %v", peer)
 					continue
 				}
-			case 1:
-				// proto 1 == BFD-like link liveness (linkmonitor.go).
-				// Link-local only -- never forwarded multi-hop, so
-				// handle and drop right here rather than falling into
-				// the local-delivery/forward branch below. Vers byte
-				// selects the payload layout, same role IP's version
-				// nibble plays for proto 0; only Vers=1 exists so far.
-				payload := elem.packet[headerSize:]
-				if len(payload) < 1 {
-					continue
-				}
-				switch payload[0] {
-				case livenessVers1:
-					if len(payload) < 6 {
-						continue
-					}
-					length := binary.BigEndian.Uint16(payload[4:6])
-					if int(length) > len(payload) || int(length) < livenessV1Size {
-						continue
-					}
-					peer.monitor.handlePacket(payload[:length])
-				default:
-					device.log.Verbosef("proto-1 packet with unknown version %d from %v", payload[0], peer)
-				}
-				continue
-			case 2:
-				// proto 2 == path-vector routing (pathvector.go). Same
-				// Vers-selects-layout convention as proto=1, but here
-				// the Length field does real self-description work
-				// (route updates are naturally variable-length),
-				// unlike proto=1's fixed-size payload.
-				payload := elem.packet[headerSize:]
-				if len(payload) < 1 {
-					continue
-				}
-				switch payload[0] {
-				case pvVers1:
-					if len(payload) < 4 {
-						continue
-					}
-					length := binary.BigEndian.Uint16(payload[2:4])
-					if int(length) > len(payload) || int(length) < pvHeaderSize {
-						continue
-					}
-					device.pathVector.handlePacket(peer, payload[:length])
-				default:
-					device.log.Verbosef("proto-2 packet with unknown version %d from %v", payload[0], peer)
-				}
-				continue
 			default:
-				// Unknown protos (future control-plane use, e.g.
-				// path-vector routing) are dropped rather than
-				// misrouted -- see PROJECT_STATE.md's "Padding" section.
+				// Any non-zero proto is a control packet (link
+				// liveness, path-vector routing, whatever comes
+				// next). The data plane deliberately knows nothing
+				// about their formats: it hands the payload up to the
+				// control plane tagged with the link it arrived on,
+				// and moves on. Never forwarded, whatever dst says --
+				// the control plane decides what (if anything) to do.
+				device.ctl.Punt(dpproto.Punt{
+					Ingress: peer.id,
+					Proto:   proto,
+					Src:     src,
+					Dst:     dst,
+					TTL:     elem.packet[hdrOffTTL],
+					Payload: elem.packet[headerSize:],
+				})
 				continue
 			}
 

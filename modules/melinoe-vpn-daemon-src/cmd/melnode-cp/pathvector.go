@@ -12,7 +12,7 @@ import (
 // pathvector.go implements the path-vector (BGP-alike) routing protocol
 // mentioned in PROJECT_STATE.md: it replaces static [[peer]]/nhid config
 // with dst peerid -> nhid routes discovered by exchanging reachability
-// advertisements with each currently-live neighbor (a Peer, i.e. a
+// advertisements with each currently-live neighbor (a Link, i.e. a
 // [[link]]). "Live" is entirely linkmonitor.go's call -- nothing is
 // advertised over, or trusted from, a link whose LinkMonitor isn't Up,
 // and a link going Down withdraws immediately (per earlier discussion)
@@ -70,7 +70,7 @@ const (
 	//   0:    Vers          (uint8)
 	//   1:    reserved      (uint8, zero)
 	//   2:4:  Length        (uint16, big-endian, self-declared -- see
-	//         receive.go's proto=2 dispatch)
+	//         punt.go's proto=2 dispatch)
 	//   4:6:  NumAnnounce   (uint16, big-endian)
 	//   6:8:  NumWithdraw   (uint16, big-endian)
 	//   then NumAnnounce entries, each:
@@ -192,10 +192,10 @@ type prefixOwnerChange struct {
 }
 
 // PathVector owns route discovery for the whole mesh as seen from this
-// node: one PathVector per Device, talking proto=2 with every currently
-// Up-per-linkmonitor Peer.
+// node: one PathVector per Node, talking proto=2 with every currently
+// Up-per-linkmonitor Link.
 type PathVector struct {
-	dev     *Device
+	node    *Node
 	localID uint32
 
 	// tblMu serializes "snapshot pv.best, push it to the router" so the
@@ -212,12 +212,12 @@ type PathVector struct {
 	// thrown the alternative away.
 	learned map[uint32]map[uint32]pvRoute
 	// best[dest] = the currently-installed route (mirrors
-	// dev.router.routeTable, but path-vector needs the full path, not
+	// node.router.routeTable, but path-vector needs the full path, not
 	// just the nhid, to do loop prevention/split-horizon on the way
 	// back out).
 	best map[uint32]pvRoute
 
-	neighbors map[uint32]*Peer // currently-Up links we're running the protocol with
+	neighbors map[uint32]*Link // currently-Up links we're running the protocol with
 
 	// advertised[neighborID][dest] = we've told that neighbor about a route
 	// to dest and not yet withdrawn it. This is what lets split-horizon
@@ -251,33 +251,33 @@ type PathVector struct {
 	// sendHook, if non-nil, replaces the real wire send in sendTo -- test
 	// seam only (pathvector_test.go wires several PathVectors together
 	// in-memory); always nil in production.
-	sendHook func(peer *Peer, announces []pvAnnouncement, withdraws []uint32)
+	sendHook func(peer *Link, announces []pvAnnouncement, withdraws []uint32)
 }
 
-func newPathVector(dev *Device, localID uint32) *PathVector {
+func newPathVector(node *Node, localID uint32) *PathVector {
 	pv := &PathVector{
-		dev:           dev,
+		node:          node,
 		localID:       localID,
 		learned:       make(map[uint32]map[uint32]pvRoute),
 		best:          make(map[uint32]pvRoute),
-		neighbors:     make(map[uint32]*Peer),
+		neighbors:     make(map[uint32]*Link),
 		advertised:    make(map[uint32]map[uint32]bool),
 		localPrefixes: make(map[pvPrefix]bool),
 		prefixClaims:  make(map[pvPrefix]map[uint32]bool),
 		prefixOwner:   make(map[pvPrefix]uint32),
 	}
-	if dev.router != nil {
-		dev.router.desiredPrefixes = pv.snapshotPrefixOwners
+	if node.router != nil {
+		node.router.desiredPrefixes = pv.snapshotPrefixOwners
 	}
 	return pv
 }
 
 // Start begins the periodic full-resync loop. Per-neighbor sessions
-// themselves are driven by OnLinkUp/OnLinkDown (wired to each Peer's
+// themselves are driven by OnLinkUp/OnLinkDown (wired to each Link's
 // LinkMonitor in main.go), not by anything started here.
 func (pv *PathVector) Start() {
 	pv.stopCh = make(chan struct{})
-	pv.dev.router.StartReconciler(pv.stopCh, &pv.wg)
+	pv.node.router.StartReconciler(pv.stopCh, &pv.wg)
 	pv.wg.Add(1)
 	go pv.fullSyncLoop()
 }
@@ -321,7 +321,7 @@ func (pv *PathVector) syncKernel() {
 		routes[dest] = route.viaNeighbor()
 	}
 	pv.mu.Unlock()
-	pv.dev.router.SetRoutes(routes)
+	pv.node.router.SetRoutes(routes)
 }
 
 // snapshotPrefixOwners is the reconciler's source for which peerid owns
@@ -340,12 +340,12 @@ func (pv *PathVector) snapshotPrefixOwners() map[pvPrefix]uint32 {
 // for the Up transition: brings this neighbor into the protocol and
 // gives it a full initial table dump, mirroring BGP's own
 // session-established behavior.
-func (pv *PathVector) OnLinkUp(peer *Peer) {
+func (pv *PathVector) OnLinkUp(peer *Link) {
 	pv.mu.Lock()
 	pv.neighbors[peer.id] = peer
 	delete(pv.advertised, peer.id) // fresh session: the neighbor knows nothing of ours
 	pv.mu.Unlock()
-	pv.dev.log.Verbosef("pathvector: neighbor %v up, sending full table", peer)
+	pv.node.log.Verbosef("pathvector: neighbor %v up, sending full table", peer)
 	pv.fullSyncTo(peer)
 }
 
@@ -355,7 +355,7 @@ func (pv *PathVector) OnLinkUp(peer *Peer) {
 // withdrawals) to remaining neighbors right away rather than waiting
 // for a timeout. Also reconciles any prefixes that were claimed
 // through a dest that just became unreachable.
-func (pv *PathVector) OnLinkDown(peer *Peer) {
+func (pv *PathVector) OnLinkDown(peer *Link) {
 	pv.mu.Lock()
 	delete(pv.neighbors, peer.id)
 	delete(pv.advertised, peer.id) // it drops everything we told it on its own link-down
@@ -418,12 +418,12 @@ func (pv *PathVector) OnLinkDown(peer *Peer) {
 	}
 }
 
-// handlePacket is called from receive.go's proto=2 dispatch with the
+// handlePacket is called from punt.go's proto=2 dispatch with the
 // already Length-trimmed payload.
-func (pv *PathVector) handlePacket(from *Peer, payload []byte) {
+func (pv *PathVector) handlePacket(from *Link, payload []byte) {
 	announces, withdraws, ok := decodePVPacket(payload)
 	if !ok {
-		pv.dev.log.Verbosef("%v - pathvector: malformed packet, dropping", from)
+		pv.node.log.Verbosef("%v - pathvector: malformed packet, dropping", from)
 		return
 	}
 
@@ -571,9 +571,9 @@ func (pv *PathVector) setLocalPrefix(p pvPrefix, advertise bool) {
 	pv.mu.Unlock()
 
 	if advertise {
-		pv.dev.log.Verbosef("pathvector: now advertising %v", p)
+		pv.node.log.Verbosef("pathvector: now advertising %v", p)
 	} else {
-		pv.dev.log.Verbosef("pathvector: no longer advertising %v", p)
+		pv.node.log.Verbosef("pathvector: no longer advertising %v", p)
 	}
 	if len(prefixChanges) > 0 {
 		pv.syncKernel()
@@ -697,8 +697,8 @@ func (pv *PathVector) recomputeBestLocked(dest uint32) (pvRoute, bool) {
 	return best, found
 }
 
-func (pv *PathVector) neighborsSnapshotLocked() []*Peer {
-	out := make([]*Peer, 0, len(pv.neighbors))
+func (pv *PathVector) neighborsSnapshotLocked() []*Link {
+	out := make([]*Link, 0, len(pv.neighbors))
 	for _, p := range pv.neighbors {
 		out = append(out, p)
 	}
@@ -715,7 +715,7 @@ func (pv *PathVector) neighborsSnapshotLocked() []*Peer {
 // neighbor holding our older, now-wrong route as a stale alternative,
 // which it would happily fall back to on its own next failure and
 // forward straight back at us.
-func (pv *PathVector) propagateAnnounce(dest uint32, route pvRoute, neighbors []*Peer, skipSource *Peer) {
+func (pv *PathVector) propagateAnnounce(dest uint32, route pvRoute, neighbors []*Link, skipSource *Link) {
 	for _, n := range neighbors {
 		var fwd []uint32
 		suppress := (skipSource != nil && n.id == skipSource.id) || route.contains(n.id)
@@ -737,7 +737,7 @@ func (pv *PathVector) propagateAnnounce(dest uint32, route pvRoute, neighbors []
 // propagateWithdraw tells every neighbor we'd advertised dest to that it's
 // gone. That includes skipSource: if we had advertised dest to the
 // neighbor that just withdrew it from us, its copy is stale too.
-func (pv *PathVector) propagateWithdraw(dest uint32, neighbors []*Peer, skipSource *Peer) {
+func (pv *PathVector) propagateWithdraw(dest uint32, neighbors []*Link, skipSource *Link) {
 	for _, n := range neighbors {
 		if pv.clearAdvertised(n.id, dest) {
 			pv.sendTo(n, nil, []uint32{dest})
@@ -775,7 +775,7 @@ func (pv *PathVector) clearAdvertised(nid, dest uint32) bool {
 // that isn't in that set any more is withdrawn in the same packet, so
 // the periodic resync also heals a lost withdraw (proto=2 isn't
 // acked/retransmitted). sendTo chunks it to the MTU.
-func (pv *PathVector) fullSyncTo(peer *Peer) {
+func (pv *PathVector) fullSyncTo(peer *Link) {
 	pv.mu.Lock()
 	entries := make([]pvAnnouncement, 0, len(pv.best)+1)
 	sent := make(map[uint32]bool, len(pv.best)+1)
@@ -810,8 +810,8 @@ func (pv *PathVector) fullSyncTo(peer *Peer) {
 // than the tun MTU + routing header would just be IP-fragmented on the
 // wire -- fragile, and exactly what the MTU was sized to avoid.
 func (pv *PathVector) pvMaxPayload() int {
-	if pv.dev.mtu > 0 {
-		return pv.dev.mtu
+	if mtu := int(pv.node.mtu.Load()); mtu > 0 {
+		return mtu
 	}
 	return defaultMTU
 }
@@ -824,7 +824,7 @@ func pvEntrySize(a pvAnnouncement) int { return 2 + len(a.path) + 1 + len(a.pref
 // independent (one dest each; the receiver replaces its per-neighbor
 // route for a dest wholesale), so chunks need no ordering or atomicity,
 // and the periodic full sync repairs any lost chunk.
-func (pv *PathVector) sendTo(peer *Peer, announces []pvAnnouncement, withdraws []uint32) {
+func (pv *PathVector) sendTo(peer *Link, announces []pvAnnouncement, withdraws []uint32) {
 	max := pv.pvMaxPayload()
 	var (
 		chunkA []pvAnnouncement
@@ -841,14 +841,14 @@ func (pv *PathVector) sendTo(peer *Peer, announces []pvAnnouncement, withdraws [
 		// PathLen and NumPrefix are single bytes on the wire; refuse
 		// rather than wrap (which would corrupt every entry after it).
 		if len(a.path) > pvMaxPathLen || len(a.prefixes) > 255 {
-			pv.dev.log.Errorf("pathvector: not advertising dest %d to %v: path length %d / %d prefixes exceeds the wire format's 255 limit", a.dest, peer, len(a.path), len(a.prefixes))
+			pv.node.log.Errorf("pathvector: not advertising dest %d to %v: path length %d / %d prefixes exceeds the wire format's 255 limit", a.dest, peer, len(a.path), len(a.prefixes))
 			continue
 		}
 		es := pvEntrySize(a)
 		if pvHeaderSize+es > max {
 			// One dest's entry alone doesn't fit. Can't be split: the
 			// receiver keeps only the last entry per dest.
-			pv.dev.log.Errorf("pathvector: not advertising dest %d to %v: single entry is %d bytes, over the %d-byte packet limit (too many prefixes?)", a.dest, peer, pvHeaderSize+es, max)
+			pv.node.log.Errorf("pathvector: not advertising dest %d to %v: single entry is %d bytes, over the %d-byte packet limit (too many prefixes?)", a.dest, peer, pvHeaderSize+es, max)
 			continue
 		}
 		if size+es > max {
@@ -868,37 +868,13 @@ func (pv *PathVector) sendTo(peer *Peer, announces []pvAnnouncement, withdraws [
 }
 
 // sendPacket sends one already-sized proto=2 packet.
-func (pv *PathVector) sendPacket(peer *Peer, announces []pvAnnouncement, withdraws []uint32) {
+func (pv *PathVector) sendPacket(peer *Link, announces []pvAnnouncement, withdraws []uint32) {
 	if pv.sendHook != nil {
 		pv.sendHook(peer, announces, withdraws)
 		return
 	}
-	payload := encodePVPacket(announces, withdraws)
-
-	device := pv.dev
-	elem := device.NewOutboundElement()
-	buf := elem.buffer[:]
-	offset := MessageTransportHeaderSize + headerSize
-	copy(buf[offset:offset+len(payload)], payload)
-
-	buf[offset-headerSize+0] = pvProto
-	buf[offset-headerSize+1] = byte(device.localID)
-	buf[offset-headerSize+2] = byte(peer.id)
-	buf[offset-headerSize+hdrOffTTL] = linkLocalTTL
-	elem.packet = buf[offset-headerSize : offset+len(payload)]
-
-	container := device.GetOutboundElementsContainer()
-	container.isControl = true // path-vector -- see send.go's StagePackets/drainStaged and PROJECT_STATE.md's backpressure section
-	container.elems = append(container.elems, elem)
-
-	if !peer.isRunning.Load() {
-		device.PutMessageBuffer(elem.buffer)
-		device.PutOutboundElement(elem)
-		device.PutOutboundElementsContainer(container)
-		return
-	}
-	peer.StagePackets(container)
-	peer.SendStagedPackets()
+	// path-vector is link-local: sent to the neighbor on this link, never forwarded.
+	peer.send(pvProto, linkLocalTTL, encodePVPacket(announces, withdraws))
 }
 
 // forwardPath appends our own id to a learned path before re-advertising
@@ -921,7 +897,7 @@ func (pv *PathVector) sendPacket(peer *Peer, announces []pvAnnouncement, withdra
 // per PROJECT_STATE.md's discussion of why (a plain distance-vector
 // hop count can otherwise prefer a low-hop long-haul link over a
 // cheaper multi-hop in-DC path).
-func (pv *PathVector) forwardPath(path []uint32, via *Peer) []uint32 {
+func (pv *PathVector) forwardPath(path []uint32, via *Link) []uint32 {
 	n := 1 + int(via.prependCount)
 	out := make([]uint32, len(path)+n)
 	copy(out, path)

@@ -27,11 +27,11 @@ func (r *Router) runTunHook(kind, bin string, peerID uint32, ifname string) {
 	cmd := exec.CommandContext(ctx, bin, strconv.FormatUint(uint64(peerID), 10), ifname)
 	out, err := cmd.CombinedOutput()
 	if o := strings.TrimSpace(string(out)); o != "" {
-		r.dev.log.Verbosef("router: tun %s hook %q (peerid %d, %s) output: %s", kind, bin, peerID, ifname, o)
+		r.node.log.Verbosef("router: tun %s hook %q (peerid %d, %s) output: %s", kind, bin, peerID, ifname, o)
 	}
 	if err != nil {
-		r.dev.log.Errorf("router: tun %s hook %q (peerid %d, %s) failed: %v", kind, bin, peerID, ifname, err)
+		r.node.log.Errorf("router: tun %s hook %q (peerid %d, %s) failed: %v", kind, bin, peerID, ifname, err)
 		return
 	}
-	r.dev.log.Verbosef("router: tun %s hook %q (peerid %d, %s) ok", kind, bin, peerID, ifname)
+	r.node.log.Verbosef("router: tun %s hook %q (peerid %d, %s) ok", kind, bin, peerID, ifname)
 }

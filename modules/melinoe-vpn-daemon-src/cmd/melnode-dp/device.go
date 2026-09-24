@@ -9,13 +9,15 @@ import (
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/ratelimiter"
+
+	"melnode/dpproto"
 )
 
 var errNoKnownEndpoint = errors.New("no known remote address yet (listen-only peer, haven't heard from it)")
 
-// Device is the process-wide state: our identity, the UDP socket, every
-// configured peer, and the pools/queues the ported wireguard-go pipeline
-// needs. This keeps wireguard-go's own field shape for staticIdentity/
+// Device is the process-wide state of the data plane: our identity, the UDP
+// socket, every configured peer, and the pools/queues the ported wireguard-go
+// pipeline needs. This keeps wireguard-go's own field shape for staticIdentity/
 // peers/indexTable/cookieChecker/rate/pool/queue (send.go, receive.go,
 // noise-protocol.go, cookie.go all reach into these directly per
 // PROJECT_STATE.md) but drops what melnode doesn't need: allowedips (we
@@ -95,7 +97,7 @@ type Device struct {
 
 	router *Router // set once, after both Device and Router are constructed in main.go
 
-	pathVector *PathVector // set once, after Router is constructed in main.go -- see pathvector.go
+	ctl *dpproto.Server // the control plane's side of the socket (ctl.go); set once in main.go
 
 	closedFlag atomic.Bool
 	closed     chan struct{}
@@ -159,8 +161,8 @@ func (device *Device) Close() {
 		peer.Stop()
 	}
 	device.peers.RUnlock()
-	if device.pathVector != nil {
-		device.pathVector.Stop()
+	if device.ctl != nil {
+		device.ctl.Close()
 	}
 	if device.router != nil {
 		device.router.closeAllTuns()
@@ -197,6 +199,16 @@ func (device *Device) addPeer(p *Peer) {
 	device.peers.keyMap[p.handshake.remoteStatic] = p
 	device.peers.Unlock()
 	device.peersByID.Store(p.id, p)
+}
+
+// removePeer forgets a link. The caller must have Stop()ped it first.
+func (device *Device) removePeer(p *Peer) {
+	device.peers.Lock()
+	if device.peers.keyMap[p.handshake.remoteStatic] == p {
+		delete(device.peers.keyMap, p.handshake.remoteStatic)
+	}
+	device.peers.Unlock()
+	device.peersByID.CompareAndDelete(p.id, p)
 }
 
 // IsUnderLoad reports whether the handshake queue is currently backed up

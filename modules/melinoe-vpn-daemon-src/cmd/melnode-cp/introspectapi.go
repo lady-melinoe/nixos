@@ -44,7 +44,7 @@ func newIntrospectAPI(pv *PathVector, addr string) (*introspectAPI, error) {
 func (a *introspectAPI) Start() {
 	go func() {
 		if err := a.server.Serve(a.listener); err != nil && err != http.ErrServerClosed {
-			a.pv.dev.log.Errorf("introspect API: Serve failed: %v", err)
+			a.pv.node.log.Errorf("introspect API: Serve failed: %v", err)
 		}
 	}()
 }
