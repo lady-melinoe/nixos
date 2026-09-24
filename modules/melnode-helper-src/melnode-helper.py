@@ -156,7 +156,9 @@ def ensure_rule(table: int, have: set[int] | None = None) -> None:
         have = parse_rules(run_json(["ip", "-4", "-j", "rule", "show"]))
     if table in have:
         return
-    run_ok(["ip", "-4", "rule", "add", "fwmark", str(table), "table", str(table)],
+    # pref 0: must be evaluated before `local` (uplink.nix moves local to pref 1
+    # to make room). Without an explicit pref the kernel picks ~32765, after it.
+    run_ok(["ip", "-4", "rule", "add", "pref", "0", "fwmark", str(table), "table", str(table)],
            f"add rule for table {table}")
 
 
