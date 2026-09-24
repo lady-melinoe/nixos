@@ -227,3 +227,26 @@ func TestChunking(t *testing.T) {
 		t.Errorf("expected several chunks from node 2, saw %d packets", sizes)
 	}
 }
+
+// TestResyncKernelRestoresRoutes checks the self-heal path: if a peerid
+// route (and its tun) ever goes missing while path-vector still considers
+// the dest reachable -- e.g. a tun that failed to come up -- the periodic
+// resync puts it back without needing another topology change.
+func TestResyncKernelRestoresRoutes(t *testing.T) {
+	n := newPVNet(t, 1, 2)
+	n.linkUp(1, 2)
+	r := n.nodes[1].dev.router
+	if _, ok := r.LookupRoute(2); !ok {
+		t.Fatal("no route to node 2 after link up")
+	}
+
+	r.RemoveRoute(2) // simulate the lost route/tun
+	if _, ok := r.LookupRoute(2); ok {
+		t.Fatal("route to node 2 still present after RemoveRoute")
+	}
+
+	n.nodes[1].resyncKernel()
+	if nh, ok := r.LookupRoute(2); !ok || nh != 2 {
+		t.Fatalf("resyncKernel did not restore the route to node 2 (nh=%d ok=%v)", nh, ok)
+	}
+}
