@@ -177,6 +177,7 @@
 
   melinoe.node.networking = {
     hostInternalPortAllNet.tcp = [ 5201 ]; # iperf3
+    hostInternalPortAllNet.udp = [ 5201 ]; # iperf3
   };
   melinoe.cluster.virtualMachines = [
     {
