@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """mnctl: read-only CLI for melnode's introspection API.
 
-    mnctl <links|routes> [<ip or hostname>[:port]]
+    mnctl <links|routes> [-a] [<ip or hostname>[:port]]
 
   links   one line per melnode link, akin to `vtysh -c 'show bfd peers brief'`
-  routes  the path-vector table, akin to `vtysh -c 'show ip bgp'`
+  routes  one row per prefix (winning owner + best path), akin to `vtysh -c 'show ip bgp'`;
+          -a also lists alternate paths
 
 With no target, talks to the local node over its control socket
 (/run/melnode/control.sock). With a target, talks to that node's read-only
@@ -182,54 +183,90 @@ def prefix_key(p):
         return (1, 0, 0)
 
 
-def cmd_routes(client):
+def cmd_routes(client, show_all):
     summary = client.get("/summary")
     local = summary["local_id"]
     routes = client.get("/routes")
     prefixes = client.get("/prefixes")
 
-    # network -> list of (best, via, path)
-    table_by_net = {}
+    # dest node -> its paths (best first, as the daemon sorts them)
+    paths_to = {r["dest"]: r["paths"] for r in routes}
 
-    # Locally-originated prefixes: no neighbor, empty path (BGP shows next hop 0.0.0.0).
-    for p in prefixes:
-        if p.get("locally_advertised") or p.get("owner_is_local"):
-            table_by_net.setdefault(p["prefix"], []).append((True, None, []))
-
-    # Learned paths: every prefix the path's origin claims.
-    for r in routes:
-        for path in r["paths"]:
-            nets = path["prefixes"] or [f"node {r['dest']}"]
-            for net in nets:
-                table_by_net.setdefault(net, []).append(
-                    (path["best"], path["via"], path["path"])
-                )
-
-    total_paths = sum(len(v) for v in table_by_net.values())
-    print(f"melnode path-vector table, local node {local}  ({client.describe()})")
-    print("Status codes: * valid, > best")
-    print("Next hop / Path are melnode node ids; path is nearest neighbor first, origin last.")
-    print()
+    def path_row(net, owner, path, is_best, also=""):
+        """One table row. Owner is the node originating this path."""
+        return [
+            "*>" if is_best else "* ",
+            net,
+            owner,
+            "-" if path is None else path["via"],
+            "-" if path is None else len(path["path"]),
+            "-" if path is None else " ".join(map(str, path["path"])),
+            "",
+            also,
+        ]
 
     rows = []
-    for net in sorted(table_by_net, key=prefix_key):
-        first = True
-        for best, via, path in sorted(
-            table_by_net[net], key=lambda t: (not t[0], len(t[2]), t[1] or 0)
-        ):
-            rows.append(
-                [
-                    ("*>" if best else "* "),
-                    net if first else "",
-                    "local" if via is None else via,
-                    len(path),
-                    " ".join(map(str, path)) if path else "i",
-                ]
-            )
-            first = False
-    print(table(rows, ["", "Network", "Next Hop", "Metric", "Path"], ["<", "<", "<", ">", "<"]))
+    n_prefixes = 0
+    n_paths = 0
+    claimed_dests = set()
+
+    for p in sorted(prefixes, key=lambda p: prefix_key(p["prefix"])):
+        n_prefixes += 1
+        net = p["prefix"]
+        owner = p.get("owner")
+        claimants = p.get("claimants", [])
+        claimed_dests.update(claimants)
+        others = [str(c) for c in claimants if c != owner]
+        also = " ".join(others)
+
+        if owner is None:
+            rows.append(["  ", net, "-", "-", "-", "-", "", also])
+            continue
+
+        if p.get("owner_is_local"):
+            rows.append(["*>", net, "local", "-", 0, "i", "", also])
+            n_paths += 1
+            alts = []
+        else:
+            best = next((x for x in paths_to.get(owner, []) if x["best"]), None)
+            rows.append(path_row(net, owner, best, True, also))
+            n_paths += 1
+            alts = [x for x in paths_to.get(owner, []) if x is not best]
+
+        if show_all:
+            # Every other path we know to the winner, then paths to the other
+            # claimants (valid, but not what we forward on).
+            extra = [(owner, x) for x in alts]
+            for c in claimants:
+                if c != owner and c != local:
+                    extra += [(c, x) for x in paths_to.get(c, [])]
+            extra.sort(key=lambda t: (t[0] != owner, len(t[1]["path"]), t[1]["via"]))
+            for c, x in extra:
+                rows.append(path_row("", c, x, False))
+                n_paths += 1
+        elif alts:
+            rows[-1][6] = f"+{len(alts)}"
+
+    # Reachable nodes that own no advertised prefix at all.
+    for dest in sorted(paths_to):
+        if dest not in claimed_dests and paths_to[dest]:
+            best = next((x for x in paths_to[dest] if x["best"]), paths_to[dest][0])
+            rows.append(path_row(f"node {dest}", dest, best, True))
+            n_paths += 1
+
+    print(f"melnode routes, node {local}  ({client.describe()})")
+    print("Owner / Next Hop / Path are node ids. Path: nearest neighbor first, origin last; i = local.")
+    print("*> = forwarded via the prefix's winning owner." + ("" if show_all else "  Use -a for alternate paths."))
     print()
-    print(f"Displayed {len(table_by_net)} network entries and {total_paths} paths")
+    headers = ["", "Network", "Owner", "Next Hop", "Hops", "Path", "Alts", "Also claimed by"]
+    aligns = ["<", "<", "<", "<", ">", "<", ">", "<"]
+    if show_all:  # alternates are listed inline instead of counted
+        rows = [r[:6] + r[7:] for r in rows]
+        headers = headers[:6] + headers[7:]
+        aligns = aligns[:6] + aligns[7:]
+    print(table(rows, headers, aligns))
+    print()
+    print(f"{n_prefixes} prefixes, {n_paths} paths shown")
 
 
 # ---- main -------------------------------------------------------------------
@@ -246,12 +283,18 @@ def main():
         nargs="?",
         help=f"node to query: ip or hostname, optionally :port (default port {DEFAULT_PORT}); omit for this node",
     )
+    ap.add_argument(
+        "-a", "--all", action="store_true", help="routes: also list alternate paths, not just the best per prefix"
+    )
     ap.add_argument("--socket", default=DEFAULT_SOCKET, help=argparse.SUPPRESS)
-    args = ap.parse_args()
+    args = ap.parse_intermixed_args()
 
     client = Client(args.target, args.socket)
     try:
-        {"links": cmd_links, "routes": cmd_routes}[args.command](client)
+        if args.command == "links":
+            cmd_links(client)
+        else:
+            cmd_routes(client, args.all)
     except (OSError, http.client.HTTPException, RuntimeError, ValueError) as e:
         print(f"mnctl: {client.describe()}: {e}", file=sys.stderr)
         return 1
