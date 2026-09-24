@@ -27,6 +27,14 @@ struct melnode_link {
 	u8 endpoint_len;
 	atomic64_t tx_bytes;
 	atomic64_t rx_bytes;
+	/* Wall-clock (ktime_get_real_ns()) timestamp of the last completed
+	 * handshake, for MELNODE_A_LAST_HANDSHAKE ("unix ns" per API.md) - a
+	 * separate field from the keypairs' own birthdate, which is
+	 * boottime-relative (ktime_get_coarse_boottime_ns(), matching
+	 * WireGuard's noise.c) and used for rekey/expiry math, not reporting.
+	 * Set in melnode_core.c right after a successful begin_session().
+	 */
+	u64 last_handshake_unix_ns;
 
 	struct melnode_handshake handshake;
 	struct melnode_keypairs keypairs;
@@ -35,15 +43,7 @@ struct melnode_link {
 
 static inline u64 melnode_link_last_handshake_ns(const struct melnode_link *link)
 {
-	/* Reported to LINK_GET; 0 if no session has ever completed. Whichever
-	 * keypair slot is current was derived most recently, but we don't
-	 * track *when* separately from the symmetric key's own birthdate.
-	 */
-	if (link->keypairs.current_kp.valid)
-		return link->keypairs.current_kp.sending.is_valid ?
-			       link->keypairs.current_kp.sending.birthdate :
-			       link->keypairs.current_kp.receiving.birthdate;
-	return 0;
+	return link->last_handshake_unix_ns;
 }
 
 struct melnode_route {

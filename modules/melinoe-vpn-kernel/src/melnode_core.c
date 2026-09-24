@@ -53,6 +53,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/mutex.h>
+#include <linux/ktime.h>
 #include <linux/netlink.h>
 #include <linux/in.h>
 #include <linux/in6.h>
@@ -397,7 +398,17 @@ reply_pubkey:
 	return genlmsg_reply(reply, info);
 }
 
-static int melnode_nl_device_del(struct sk_buff *skb, struct genl_info *info)
+/* Tears down everything DEVICE_SET built: tuns, socket, keys. Shared
+ * between DEVICE_DEL and melnode_exit() - the kernel does NOT pin a module
+ * just because it has live net_devices registered (unlike, say, struct
+ * file_operations.owner for a char device), so unloading this module
+ * without first unregistering its tuns leaves live net_devices whose
+ * net_device_ops function pointers point into now-freed module memory:
+ * the next packet, or even just interface enumeration, touching one of
+ * them jumps to unmapped memory and panics. Confirmed live: this is
+ * exactly what happened testing on arke.
+ */
+static void melnode_teardown_device(void)
 {
 	LIST_HEAD(dead_tuns);
 	int i;
@@ -423,6 +434,11 @@ static int melnode_nl_device_del(struct sk_buff *skb, struct genl_info *info)
 	rtnl_unlock();
 
 	melnode_socket_close(&melnode_dev);
+}
+
+static int melnode_nl_device_del(struct sk_buff *skb, struct genl_info *info)
+{
+	melnode_teardown_device();
 	return 0;
 }
 
@@ -1153,6 +1169,7 @@ static void melnode_handle_handshake_initiation(u8 *data, size_t len, const void
 	}
 	melnode_cookie_add_mac_to_packet(&resp, sizeof(resp), &link->cookie);
 	melnode_noise_handshake_begin_session(&link->handshake, &link->keypairs);
+	link->last_handshake_unix_ns = ktime_get_real_ns();
 	mutex_unlock(&melnode_dev.lock);
 	memzero_explicit(local_priv, sizeof(local_priv));
 
@@ -1207,6 +1224,7 @@ static void melnode_handle_handshake_response(u8 *data, size_t len, const void *
 	link->has_endpoint = true;
 
 	melnode_noise_handshake_begin_session(&link->handshake, &link->keypairs);
+	link->last_handshake_unix_ns = ktime_get_real_ns();
 	mutex_unlock(&melnode_dev.lock);
 
 	melnode_send_event_handshake(peer_id, from, from_len);
@@ -1324,14 +1342,21 @@ static void melnode_handle_data(u8 *data, size_t len)
 		mutex_unlock(&melnode_dev.lock);
 		return;
 	}
-	if (link->keypairs.current_kp.valid && link->keypairs.current_kp.remote_index ==
-	    msg->receiver_index) {
+	/* msg->receiver_index is what the *sender* put in message_data.key_idx,
+	 * which per WireGuard's own send-side convention is keypair->
+	 * remote_index (the index the recipient - us - gave the sender during
+	 * the handshake). So from our side, that's our own local_index, not
+	 * remote_index - matching melnode_index_peer_id() above already
+	 * treating it as one of our own indices.
+	 */
+	if (link->keypairs.current_kp.valid &&
+	    link->keypairs.current_kp.local_index == msg->receiver_index) {
 		kp = &link->keypairs.current_kp;
 	} else if (link->keypairs.previous_kp.valid &&
-		   link->keypairs.previous_kp.remote_index == msg->receiver_index) {
+		   link->keypairs.previous_kp.local_index == msg->receiver_index) {
 		kp = &link->keypairs.previous_kp;
 	} else if (link->keypairs.next_kp.valid &&
-		   link->keypairs.next_kp.remote_index == msg->receiver_index) {
+		   link->keypairs.next_kp.local_index == msg->receiver_index) {
 		kp = &link->keypairs.next_kp;
 		is_next = true;
 	}
@@ -1557,12 +1582,14 @@ static void __exit melnode_exit(void)
 {
 	netlink_unregister_notifier(&melnode_netlink_notifier);
 	genl_unregister_family(&melnode_genl_family);
-	/* Idempotent (melnode_socket_close() no-ops on a NULL sock) - needed
-	 * here too, not just DEVICE_DEL: an admin can rmmod a configured
-	 * device directly, and a leaked bound UDP socket would otherwise
-	 * outlive the module with nothing left able to release it.
+	/* Idempotent (no-ops if DEVICE_DEL already ran) - needed here too, not
+	 * just DEVICE_DEL: an admin can rmmod a configured device directly,
+	 * and both a leaked bound UDP socket and (far worse - see
+	 * melnode_teardown_device()'s comment) dangling tun net_devices
+	 * would otherwise outlive the module with nothing left able to
+	 * release them.
 	 */
-	melnode_socket_close(&melnode_dev);
+	melnode_teardown_device();
 	melnode_ratelimiter_uninit();
 	pr_info("melnode: unloaded\n");
 }
