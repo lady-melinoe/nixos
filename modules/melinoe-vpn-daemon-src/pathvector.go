@@ -198,6 +198,12 @@ type PathVector struct {
 	dev     *Device
 	localID uint32
 
+	// tblMu serializes "snapshot pv.best, push it to the router" so the
+	// newest snapshot is always the last one written (see syncKernel).
+	// Lock order: tblMu, then mu, then the router's locks. Only ever held
+	// for in-memory work.
+	tblMu sync.Mutex
+
 	mu sync.Mutex
 	// learned[dest][neighborPeerID] = that neighbor's currently
 	// advertised route to dest. Kept per-neighbor (not just the winner)
@@ -235,9 +241,8 @@ type PathVector struct {
 	// best route changing, not on every raw learned update).
 	prefixClaims map[pvPrefix]map[uint32]bool
 	// prefixOwner[p] = the peerid this node last resolved as p's owner
-	// and (if not localID) installed a kernel route for -- kept so
-	// InstallPrefixRoute/RemovePrefixRoute are only called on an actual
-	// change, not every time something merely touches p's claim set.
+	// (the desired prefix -> owner mapping the reconciler installs
+	// kernel routes from, see reconcile.go).
 	prefixOwner map[pvPrefix]uint32
 
 	stopCh chan struct{}
@@ -250,7 +255,7 @@ type PathVector struct {
 }
 
 func newPathVector(dev *Device, localID uint32) *PathVector {
-	return &PathVector{
+	pv := &PathVector{
 		dev:           dev,
 		localID:       localID,
 		learned:       make(map[uint32]map[uint32]pvRoute),
@@ -261,6 +266,10 @@ func newPathVector(dev *Device, localID uint32) *PathVector {
 		prefixClaims:  make(map[pvPrefix]map[uint32]bool),
 		prefixOwner:   make(map[pvPrefix]uint32),
 	}
+	if dev.router != nil {
+		dev.router.desiredPrefixes = pv.snapshotPrefixOwners
+	}
+	return pv
 }
 
 // Start begins the periodic full-resync loop. Per-neighbor sessions
@@ -268,6 +277,7 @@ func newPathVector(dev *Device, localID uint32) *PathVector {
 // LinkMonitor in main.go), not by anything started here.
 func (pv *PathVector) Start() {
 	pv.stopCh = make(chan struct{})
+	pv.dev.router.StartReconciler(pv.stopCh, &pv.wg)
 	pv.wg.Add(1)
 	go pv.fullSyncLoop()
 }
@@ -292,8 +302,38 @@ func (pv *PathVector) fullSyncLoop() {
 			for _, p := range neighbors {
 				pv.fullSyncTo(p)
 			}
+			pv.syncKernel() // safety net: heal drift the event paths missed
 		}
 	}
+}
+
+// syncKernel pushes path-vector's current view to the router and kicks
+// the reconciler (reconcile.go), which does the actual tun/route work off
+// this goroutine. The dest -> next-hop table is rebuilt from a fresh
+// snapshot of pv.best each call, under tblMu, so however callers interleave
+// the last write always reflects the newest state; nothing here does I/O.
+func (pv *PathVector) syncKernel() {
+	pv.tblMu.Lock()
+	defer pv.tblMu.Unlock()
+	pv.mu.Lock()
+	routes := make(map[uint32]uint32, len(pv.best))
+	for dest, route := range pv.best {
+		routes[dest] = route.viaNeighbor()
+	}
+	pv.mu.Unlock()
+	pv.dev.router.SetRoutes(routes)
+}
+
+// snapshotPrefixOwners is the reconciler's source for which peerid owns
+// each advertised prefix right now.
+func (pv *PathVector) snapshotPrefixOwners() map[pvPrefix]uint32 {
+	pv.mu.Lock()
+	defer pv.mu.Unlock()
+	out := make(map[pvPrefix]uint32, len(pv.prefixOwner))
+	for p, o := range pv.prefixOwner {
+		out[p] = o
+	}
+	return out
 }
 
 // OnLinkUp is wired as the onStateChange callback (see linkmonitor.go)
@@ -363,25 +403,19 @@ func (pv *PathVector) OnLinkDown(peer *Peer) {
 	neighbors := pv.neighborsSnapshotLocked()
 	pv.mu.Unlock()
 
-	// Peerid routes (and the tuns they create) must be installed
-	// before prefix routes are reconciled -- a prefix's route points
-	// at a peerid's tun, which InstallPrefixRoute needs to already
-	// exist. Apply order fixed after an earlier version of this
-	// reconciled prefixes first and hit "no tun for peerid" on every
-	// startup -- see PROJECT_STATE.md.
 	for _, c := range changes {
 		if !c.wasChanged {
 			continue
 		}
 		if !c.reachable {
-			pv.dev.router.RemoveRoute(c.dest)
 			pv.propagateWithdraw(c.dest, neighbors, nil)
 		} else {
-			pv.dev.router.AddOrUpdateRoute(c.dest, c.newBest.viaNeighbor())
 			pv.propagateAnnounce(c.dest, c.newBest, neighbors, nil)
 		}
 	}
-	pv.applyPrefixChanges(prefixChanges)
+	if len(changes) > 0 || len(prefixChanges) > 0 {
+		pv.syncKernel()
+	}
 }
 
 // handlePacket is called from receive.go's proto=2 dispatch with the
@@ -496,22 +530,19 @@ func (pv *PathVector) handlePacket(from *Peer, payload []byte) {
 	neighbors := pv.neighborsSnapshotLocked()
 	pv.mu.Unlock()
 
-	// Order matters here too -- see OnLinkDown's comment on the same
-	// pattern.
 	for _, c := range announceChanges {
-		pv.dev.router.AddOrUpdateRoute(c.dest, c.route.viaNeighbor())
 		pv.propagateAnnounce(c.dest, c.route, neighbors, from)
 	}
 	for _, c := range withdrawChanges {
 		if c.reachable {
-			pv.dev.router.AddOrUpdateRoute(c.dest, c.newBest.viaNeighbor())
 			pv.propagateAnnounce(c.dest, c.newBest, neighbors, from)
 		} else {
-			pv.dev.router.RemoveRoute(c.dest)
 			pv.propagateWithdraw(c.dest, neighbors, from)
 		}
 	}
-	pv.applyPrefixChanges(prefixChanges)
+	if len(announceChanges) > 0 || len(withdrawChanges) > 0 || len(prefixChanges) > 0 {
+		pv.syncKernel()
+	}
 }
 
 // AdvertisePrefix and WithdrawPrefix are the control API's (controlapi.go)
@@ -544,7 +575,9 @@ func (pv *PathVector) setLocalPrefix(p pvPrefix, advertise bool) {
 	} else {
 		pv.dev.log.Verbosef("pathvector: no longer advertising %v", p)
 	}
-	pv.applyPrefixChanges(prefixChanges)
+	if len(prefixChanges) > 0 {
+		pv.syncKernel()
+	}
 	pv.propagateAnnounce(pv.localID, route, neighbors, nil)
 }
 
@@ -622,10 +655,9 @@ func (pv *PathVector) recomputePrefixOwnerLocked(p pvPrefix) (uint32, bool) {
 }
 
 // reconcilePrefixesLocked recomputes ownership for every prefix in
-// affected and compares against the last-applied pv.prefixOwner,
-// returning only the ones that actually changed (for the caller to
-// apply -- installing/removing kernel routes -- once pv.mu is
-// released). Caller holds pv.mu.
+// affected and updates pv.prefixOwner, returning the ones that actually
+// changed (the caller kicks the reconciler if any did, see reconcile.go).
+// Caller holds pv.mu.
 func (pv *PathVector) reconcilePrefixesLocked(affected map[pvPrefix]bool) []prefixOwnerChange {
 	var changes []prefixOwnerChange
 	for p := range affected {
@@ -644,21 +676,6 @@ func (pv *PathVector) reconcilePrefixesLocked(affected map[pvPrefix]bool) []pref
 		}
 	}
 	return changes
-}
-
-// applyPrefixChanges is the not-holding-pv.mu half of prefix
-// reconciliation: actually installing/removing the kernel routes (see
-// kernelroutes.go). Kept as a separate step, same as every other
-// "compute changes locked, apply unlocked" pattern in this file, since
-// netlink calls are I/O and shouldn't happen with pv.mu held.
-func (pv *PathVector) applyPrefixChanges(changes []prefixOwnerChange) {
-	for _, c := range changes {
-		if c.ok {
-			pv.dev.router.InstallPrefixRoute(c.prefix, c.owner)
-		} else {
-			pv.dev.router.RemovePrefixRoute(c.prefix)
-		}
-	}
 }
 
 // recomputeBestLocked picks the shortest known path to dest across all

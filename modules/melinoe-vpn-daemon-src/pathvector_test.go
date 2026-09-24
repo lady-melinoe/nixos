@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"fmt"
+	"sort"
+	"sync"
+	"testing"
+)
 
 // pvNet is an in-memory mesh of real PathVector instances. Messages go
 // through encodePVPacket/decodePVPacket (so the wire codec is exercised
@@ -33,7 +38,7 @@ func newPVNet(t *testing.T, ids ...uint32) *pvNet {
 		id := id
 		dev := &Device{localID: id, mtu: defaultMTU, log: &Logger{DiscardLogf, DiscardLogf}}
 		dev.router = newRouter(dev, id, "t-", nil, "", "")
-		dev.router.noTuns = true
+		dev.router.host = newFakeHost()
 		pv := newPathVector(dev, id)
 		pv.sendHook = func(peer *Peer, a []pvAnnouncement, w []uint32) {
 			n.queue = append(n.queue, pvMsg{from: id, to: peer.id, announces: a, withdraws: w})
@@ -82,6 +87,15 @@ func (n *pvNet) drain() {
 			n.t.Fatalf("codec round-trip failed for %d->%d", m.from, m.to)
 		}
 		n.nodes[m.to].handlePacket(n.peer(m.to, m.from), wire)
+	}
+	n.reconcileAll()
+}
+
+// reconcileAll runs one reconcile pass on every node (there's no background
+// loop in tests since Start isn't called).
+func (n *pvNet) reconcileAll() {
+	for _, pv := range n.nodes {
+		pv.dev.router.reconcileOnce()
 	}
 }
 
@@ -225,5 +239,220 @@ func TestChunking(t *testing.T) {
 	}
 	if sizes < 3 {
 		t.Errorf("expected several chunks from node 2, saw %d packets", sizes)
+	}
+}
+
+// fakeHost is an in-memory hostOps: tuns and proto-198 routes as plain maps.
+type fakeHost struct {
+	mu         sync.Mutex
+	tuns       map[uint32]bool
+	routes     map[pvPrefix]string
+	failCreate map[uint32]int // remaining EnsureTun failures per peerid
+	ops        []string       // ordered log of mutating calls
+}
+
+func newFakeHost() *fakeHost {
+	return &fakeHost{tuns: map[uint32]bool{}, routes: map[pvPrefix]string{}, failCreate: map[uint32]int{}}
+}
+
+func (f *fakeHost) Tuns() []uint32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []uint32
+	for id := range f.tuns {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func (f *fakeHost) TunName(id uint32) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.tuns[id] {
+		return "", false
+	}
+	return fmt.Sprintf("t-%d", id), true
+}
+
+func (f *fakeHost) EnsureTun(id uint32) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failCreate[id] > 0 {
+		f.failCreate[id]--
+		return fmt.Errorf("injected tun create failure")
+	}
+	f.tuns[id] = true
+	f.ops = append(f.ops, fmt.Sprintf("tun+%d", id))
+	return nil
+}
+
+func (f *fakeHost) DestroyTun(id uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.tuns, id)
+	// like the kernel: routes on a deleted device vanish with it
+	for p, dev := range f.routes {
+		if dev == fmt.Sprintf("t-%d", id) {
+			delete(f.routes, p)
+		}
+	}
+	f.ops = append(f.ops, fmt.Sprintf("tun-%d", id))
+}
+
+func (f *fakeHost) ListRoutes() (map[pvPrefix]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[pvPrefix]string, len(f.routes))
+	for p, d := range f.routes {
+		out[p] = d
+	}
+	return out, nil
+}
+
+func (f *fakeHost) ReplaceRoute(p pvPrefix, dev string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.routes[p] = dev
+	f.ops = append(f.ops, fmt.Sprintf("route+%v", p))
+	return nil
+}
+
+func (f *fakeHost) DelRoute(p pvPrefix) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.routes, p)
+	f.ops = append(f.ops, fmt.Sprintf("route-%v", p))
+	return nil
+}
+
+func (n *pvNet) host(node uint32) *fakeHost {
+	return n.nodes[node].dev.router.host.(*fakeHost)
+}
+
+func mustPrefix(t *testing.T, s string) pvPrefix {
+	p, ok := parsePrefix(s)
+	if !ok {
+		t.Fatalf("bad prefix %q", s)
+	}
+	return p
+}
+
+// A dest's tun and a route for a prefix it owns appear once it's reachable,
+// and go away again when the link drops.
+func TestReconcileInstallsAndRemoves(t *testing.T) {
+	n := newPVNet(t, 1, 2)
+	p := mustPrefix(t, "10.9.0.5/32")
+	n.nodes[2].AdvertisePrefix(p)
+	n.linkUp(1, 2)
+
+	h := n.host(1)
+	if !h.tuns[2] {
+		t.Fatal("no tun for node 2 after link up")
+	}
+	if h.routes[p] != "t-2" {
+		t.Fatalf("route for %v = %q, want t-2", p, h.routes[p])
+	}
+	// the owner itself installs nothing for its own prefix
+	if len(n.host(2).routes) != 0 {
+		t.Fatalf("owner installed routes for its own prefix: %v", n.host(2).routes)
+	}
+
+	n.linkDown(1, 2)
+	if h.tuns[2] || len(h.routes) != 0 {
+		t.Fatalf("after link down: tuns=%v routes=%v, want none", h.tuns, h.routes)
+	}
+}
+
+// The original bug: a tun that failed to come up left prefix routes
+// permanently missing. Now the pass reports it, and the next one fixes it
+// with no new path-vector event needed.
+func TestReconcileRetriesFailedTun(t *testing.T) {
+	n := newPVNet(t, 1, 2)
+	p := mustPrefix(t, "10.9.0.5/32")
+	n.nodes[2].AdvertisePrefix(p)
+	n.host(1).failCreate[2] = 2
+	n.linkUp(1, 2)
+
+	h := n.host(1)
+	if h.tuns[2] || len(h.routes) != 0 {
+		t.Fatal("tun/route present despite injected create failure")
+	}
+	r := n.nodes[1].dev.router
+	if !r.reconcileOnce() {
+		t.Fatal("pass with a still-failing tun should ask for a retry")
+	}
+	if r.reconcileOnce() {
+		t.Fatal("pass that fixed everything should not ask for a retry")
+	}
+	if !h.tuns[2] || h.routes[p] != "t-2" {
+		t.Fatalf("not healed: tuns=%v routes=%v", h.tuns, h.routes)
+	}
+}
+
+// Routes are only installed after the owner's tun exists (tun+ before route+).
+func TestReconcileOrdersTunBeforeRoute(t *testing.T) {
+	n := newPVNet(t, 1, 2)
+	p := mustPrefix(t, "10.9.0.5/32")
+	n.nodes[2].AdvertisePrefix(p)
+	n.linkUp(1, 2)
+	ops := n.host(1).ops
+	ti, ri := -1, -1
+	for i, o := range ops {
+		if o == "tun+2" && ti < 0 {
+			ti = i
+		}
+		if o == "route+"+p.String() && ri < 0 {
+			ri = i
+		}
+	}
+	if ti < 0 || ri < 0 || ti > ri {
+		t.Fatalf("bad ordering: %v", ops)
+	}
+}
+
+// Drift is healed: a route someone flushed, a stray proto-198 route nobody
+// wants, and a tun that vanished all get put right on the next pass.
+func TestReconcileHealsDrift(t *testing.T) {
+	n := newPVNet(t, 1, 2)
+	p := mustPrefix(t, "10.9.0.5/32")
+	stray := mustPrefix(t, "10.9.9.9/32")
+	n.nodes[2].AdvertisePrefix(p)
+	n.linkUp(1, 2)
+
+	h := n.host(1)
+	delete(h.routes, p)
+	h.routes[stray] = "t-2"
+	r := n.nodes[1].dev.router
+	r.reconcileOnce()
+	if h.routes[p] != "t-2" {
+		t.Fatal("flushed route not restored")
+	}
+	if _, ok := h.routes[stray]; ok {
+		t.Fatal("stray route not removed")
+	}
+
+	delete(h.tuns, 2)
+	delete(h.routes, p)
+	r.reconcileOnce()
+	if !h.tuns[2] || h.routes[p] != "t-2" {
+		t.Fatalf("vanished tun not restored: tuns=%v routes=%v", h.tuns, h.routes)
+	}
+}
+
+// A prefix that becomes ours drops the route installed for its old owner.
+func TestReconcileDropsRouteWhenPrefixBecomesLocal(t *testing.T) {
+	n := newPVNet(t, 1, 2)
+	p := mustPrefix(t, "10.9.0.5/32")
+	n.nodes[2].AdvertisePrefix(p)
+	n.linkUp(1, 2)
+	h := n.host(1)
+	if h.routes[p] == "" {
+		t.Fatal("precondition: route via node 2")
+	}
+	n.nodes[1].AdvertisePrefix(p) // node 1 is now the shorter-path owner
+	n.drain()
+	if _, ok := h.routes[p]; ok {
+		t.Fatalf("stale route kept after prefix became local: %v", h.routes)
 	}
 }
