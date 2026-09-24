@@ -64,7 +64,7 @@ let
   helper = pkgs.writers.writePython3Bin "melnode-helper" {
     # Style linting shouldn't be able to break a deployment build.
     doCheck = false;
-  } (builtins.readFile ./melnode-helper.py);
+  } (builtins.readFile ./melnode-helper-src/melnode-helper.py);
 
   helperConfig = pkgs.writeText "melnode-helper.json" (
     builtins.toJSON {
