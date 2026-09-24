@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // CallTimeout bounds how long a request waits for its reply. The data plane
@@ -72,13 +74,23 @@ type Quitter interface {
 	Quit() error
 }
 
-// conn is one end of the seqpacket socket.
+// rawConn is what conn needs from its underlying socket: a unixpacket
+// *net.UnixConn (the userspace data plane) or a raw AF_NETLINK socket
+// wrapped as an *os.File (the kernel module, see DialKernel) both satisfy
+// it.
+type rawConn interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	Close() error
+}
+
+// conn is one end of the socket.
 type conn struct {
-	c   *net.UnixConn
+	c   rawConn
 	buf []byte // receive buffer; only the single reader goroutine touches it
 }
 
-func newConn(c *net.UnixConn) *conn { return &conn{c: c, buf: make([]byte, MaxMessage)} }
+func newConn(c rawConn) *conn { return &conn{c: c, buf: make([]byte, MaxMessage)} }
 
 func (c *conn) send(msg []byte) error {
 	_, err := c.c.Write(msg)
@@ -109,13 +121,16 @@ type call struct {
 	ch    chan result
 }
 
-// Client is the userspace Datapath. It is safe for concurrent use.
+// Client is a Datapath - the userspace data plane (Dial) or the kernel
+// module (DialKernel). It is safe for concurrent use.
 type Client struct {
-	c       *conn
-	family  uint16 // the melnode family's message type, resolved on Dial
-	nextSeq atomic.Uint32
-	onPunt  func(Punt)
-	onEvent func(Event)
+	c             *conn
+	family        uint16 // the melnode family's message type, resolved on Dial
+	eventsGroupID uint32 // resolved alongside family; 0 if the reply had none
+	isKernel      bool   // dialed via DialKernel - see Quit()
+	nextSeq       atomic.Uint32
+	onPunt        func(Punt)
+	onEvent       func(Event)
 
 	mu      sync.Mutex
 	pending map[uint32]*call
@@ -148,9 +163,53 @@ func Dial(path string, onPunt func(Punt), onEvent func(Event)) (*Client, error) 
 	return cl, nil
 }
 
+// DialKernel connects to the melnode kernel module (modules/melinoe-vpn-
+// kernel) over a real AF_NETLINK/NETLINK_GENERIC socket, instead of a
+// userspace data plane's unix socket. Otherwise identical to Dial: the same
+// Client, the same Datapath interface, the control plane can't tell which
+// kind it's talking to.
+func DialKernel(onPunt func(Punt), onEvent func(Event)) (*Client, error) {
+	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_GENERIC)
+	if err != nil {
+		return nil, fmt.Errorf("dpproto: netlink socket: %w", err)
+	}
+	// A non-blocking fd is what lets os.NewFile hand it to the Go
+	// runtime's netpoller instead of treating it as a blocking file (the
+	// same trick raw-netlink libraries like mdlayher/netlink use).
+	if err := unix.SetNonblock(fd, true); err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("dpproto: netlink setnonblock: %w", err)
+	}
+	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("dpproto: netlink bind: %w", err)
+	}
+	f := os.NewFile(uintptr(fd), "melnode-genl")
+
+	cl := &Client{c: newConn(f), isKernel: true, onPunt: onPunt, onEvent: onEvent, pending: make(map[uint32]*call), done: make(chan struct{})}
+	go cl.readLoop()
+	if err := cl.resolveFamily(); err != nil {
+		cl.Close()
+		return nil, err
+	}
+	if cl.eventsGroupID != 0 {
+		// Setsockopt on the raw fd is safe alongside the os.File wrapper
+		// already in use for Read/Write above: it only touches socket
+		// options, not the read/write path or its buffering.
+		if err := unix.SetsockoptInt(fd, unix.SOL_NETLINK, unix.NETLINK_ADD_MEMBERSHIP, int(cl.eventsGroupID)); err != nil {
+			cl.Close()
+			return nil, fmt.Errorf("dpproto: joining %q multicast group: %w", eventsGroupName, err)
+		}
+	}
+	return cl, nil
+}
+
 // resolveFamily asks the genetlink controller for the melnode family's id
 // (and checks its version), as a client of the kernel module has to. The
-// userspace data plane answers this itself so both look the same.
+// userspace data plane answers this itself so both look the same. It also
+// resolves the "events" multicast group's id, needed by DialKernel to join
+// it (a unixpacket connection from Dial has no such concept: punts and
+// events just arrive on the same connected socket regardless).
 func (cl *Client) resolveFamily() error {
 	parts, err := cl.request(genlIDCtrl, ctrlCmdGetFamily, ctrlVersion, false, func(b *nlb) error {
 		b.str(ctrlAttrFamilyName, FamilyName)
@@ -162,10 +221,28 @@ func (cl *Client) resolveFamily() error {
 	if len(parts) != 1 || !parts[0].has(ctrlAttrFamilyID) {
 		return fmt.Errorf("resolving netlink family %q: malformed reply", FamilyName)
 	}
-	if v := parts[0].u32(ctrlAttrVersion); v != uint32(Version) {
+	a := parts[0]
+	if v := a.u32(ctrlAttrVersion); v != uint32(Version) {
 		return fmt.Errorf("data plane implements %s API v%d, control plane v%d", FamilyName, v, Version)
 	}
-	cl.family = parts[0].u16(ctrlAttrFamilyID)
+	cl.family = a.u16(ctrlAttrFamilyID)
+
+	if raw, ok := a.get(ctrlAttrMcastGroups); ok {
+		entries, err := parseAttrs(raw)
+		if err != nil {
+			return fmt.Errorf("resolving netlink family %q: bad multicast group list: %w", FamilyName, err)
+		}
+		for _, e := range entries {
+			g, err := parseAttrs(e.data)
+			if err != nil {
+				continue
+			}
+			if g.str(ctrlAttrMcastGrpName) == eventsGroupName {
+				cl.eventsGroupID = g.u32(ctrlAttrMcastGrpID)
+				break
+			}
+		}
+	}
 	return nil
 }
 
@@ -358,8 +435,18 @@ func (cl *Client) DeviceSet(m DeviceSet) (DeviceSetReply, error) {
 func (cl *Client) DeviceDel() error { return cl.ack(CmdDeviceDel, nil) }
 
 // Quit asks the data plane process to exit. It replies first, then goes away,
-// so expect the session to end shortly after a successful return.
-func (cl *Client) Quit() error { return cl.ack(CmdXQuit, nil) }
+// so expect the session to end shortly after a successful return. A no-op
+// for a kernel-dialed Client: it has no process to exit (API.md), and
+// X_QUIT isn't even a command the kernel module registers - callers that do
+// `if q, ok := cl.(Quitter); ok { q.Quit() }` (this always succeeds, since
+// *Client always implements Quitter regardless of transport) should see
+// this as "there was nothing to do", not an error.
+func (cl *Client) Quit() error {
+	if cl.isKernel {
+		return nil
+	}
+	return cl.ack(CmdXQuit, nil)
+}
 
 func (cl *Client) Stats() ([]Stat, error) {
 	parts, err := cl.do(CmdStatsGet, true, nil)
