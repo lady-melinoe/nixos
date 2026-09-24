@@ -34,12 +34,6 @@ in
       description = "Unique node ID used for addressing and routing.";
     };
 
-    regions = mkOption {
-      type = types.listOf types.str;
-      default = [ ];
-      description = "Region tags for this node.";
-    };
-
     isVMHost = mkOption {
       type = types.bool;
       default = true;
@@ -197,7 +191,7 @@ in
               endpoint = mkOption {
                 type = types.nullOr types.str;
                 default = null;
-                description = "Override endpoint IP for this peer (melnode takes an IP literal, no hostnames); if null, nodePublicInfo.<id>.defaultEndpoint is used.";
+                description = "Override endpoint IP for this peer (melnode takes an IP literal, no hostnames); if null, nodePublicInfo.<id>.defaultEndpoint is used. If that is null too, the link is listen-only: this node never dials the peer and waits for it to connect in.";
               };
               prependCount = mkOption {
                 type = types.ints.unsigned;

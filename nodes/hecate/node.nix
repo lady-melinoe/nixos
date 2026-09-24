@@ -13,11 +13,6 @@
   ];
   melinoe.node.id = 2;
   networking.hostName = "hecate";
-  melinoe.node.regions = [
-    "UCC"
-    "PERTH"
-    "AUSTRALIA"
-  ];
   melinoe.node.networking.uplinks = [
     {
       ip = "130.95.13.237/32";
@@ -45,9 +40,11 @@
     }
     {
       id = 6;
+      prependCount = 2;
     }
     {
       id = 7;
+      prependCount = 2;
     }
     {
       id = 3;
@@ -57,6 +54,7 @@
     }
     {
       id = 1;
+      prependCount = 1;
     }
   ];
   melinoe.node.isBuildServer = true;

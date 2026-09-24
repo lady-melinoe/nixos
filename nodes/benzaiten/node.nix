@@ -12,11 +12,6 @@
     ./disk-config.nix
   ];
   melinoe.node.id = 4;
-  melinoe.node.regions = [
-    "UCC"
-    "PERTH"
-    "AUSTRALIA"
-  ];
   melinoe.extraSerial = [
     1
   ];
@@ -51,15 +46,18 @@
     }
     {
       id = 6;
+      prependCount = 2;
     }
     {
       id = 7;
+      prependCount = 2;
     }
     {
       id = 3;
     }
     {
       id = 1;
+      prependCount = 1;
     }
   ];
   melinoe.node.isBuildServer = true;

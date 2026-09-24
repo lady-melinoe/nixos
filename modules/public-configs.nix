@@ -28,7 +28,7 @@ in
           defaultEndpoint = mkOption {
             type = types.nullOr types.str;
             default = null;
-            description = "Optional default endpoint hostname/IP published by this node.";
+            description = "Optional default endpoint IP published by this node. Leave null for nodes that only dial out and accept no inbound connections.";
           };
         };
       }
