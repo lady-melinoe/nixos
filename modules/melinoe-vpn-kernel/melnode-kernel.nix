@@ -2,6 +2,7 @@
   lib,
   stdenv,
   kernel,
+  kernelModuleMakeFlags,
 }:
 let
   # melnode_genl.h is the wire contract between melnode-cp and any data
@@ -38,7 +39,14 @@ stdenv.mkDerivation {
   KDIR = "${kernel.dev}/lib/modules/${kernel.modDirVersion}/build";
   KERNELRELEASE = kernel.modDirVersion;
 
-  kernelMakeFlags = kernel.makeFlags;
+  # kernel.makeFlags (as opposed to kernelModuleMakeFlags) includes
+  # "O=$(buildRoot)", a make-syntax reference to an env var that only exists
+  # while building the kernel itself (see nixpkgs
+  # pkgs/os-specific/linux/kernel/build.nix); make chokes on it here with
+  # "empty variable name". kernelModuleMakeFlags is nixpkgs' own flag set for
+  # exactly this case (see v4l2loopback's derivation for precedent): the same
+  # toolchain (ARCH/CC/LD/...) without that landmine.
+  kernelMakeFlags = kernelModuleMakeFlags;
 
   buildPhase = ''
     runHook preBuild
