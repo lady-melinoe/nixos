@@ -14,7 +14,8 @@ import (
 // was last given if we die or restart, and we reconcile against whatever we
 // find when we (re)attach. A session is therefore:
 //
-//	dial -> Hello -> sync links -> start liveness monitors -> reconcile
+//	dial (starting it if it is ours) -> Hello -> DeviceSet -> sync links
+//	  -> start liveness monitors -> reconcile
 //
 // and ends when the socket drops (data plane went away) or we are told to
 // stop. Everything path-vector learned rides on link liveness, so ending a
@@ -44,6 +45,14 @@ func (s *dpSession) onPunt(p dpproto.Punt) {
 	select {
 	case s.punts <- p:
 	default: // full: drop
+	}
+}
+
+// onEvent handles data plane notifications. Events are lossy hints, never
+// the source of truth (a dump is), so this only logs.
+func (n *Node) onEvent(e dpproto.Event) {
+	if e.Kind == dpproto.EventLinkHandshake {
+		n.log.Verbosef("link(%d) - handshake complete (peer at %s)", e.PeerID, e.Endpoint)
 	}
 }
 
@@ -102,10 +111,11 @@ func (n *Node) runSessions(socket string, stop <-chan struct{}) {
 	}
 }
 
-// attach dials the data plane and brings the control plane up against it.
+// attach connects to the data plane (starting it first if that's ours to do),
+// configures it, and brings the control plane up against it.
 func (n *Node) attach(socket string) (*dpSession, error) {
 	sess := &dpSession{punts: make(chan dpproto.Punt, puntQueueSize), done: make(chan struct{})}
-	cl, err := dpproto.Dial(socket, sess.onPunt)
+	cl, err := n.dialDataplane(socket, sess.onPunt, n.onEvent)
 	if err != nil {
 		return nil, err
 	}
@@ -119,11 +129,21 @@ func (n *Node) attach(socket string) (*dpSession, error) {
 	if err != nil {
 		return fail(fmt.Errorf("hello: %w", err))
 	}
-	if hr.LocalID != n.localID {
-		return fail(fmt.Errorf("data plane is node %d but this control plane is configured as node %d", hr.LocalID, n.localID))
+	if n.wrongBinary(hr.PID) {
+		return nil, n.replaceDataplane(cl, fmt.Sprintf("pid %d is not running %s", hr.PID, n.dpCommand[0]))
 	}
-	n.mtu.Store(int32(hr.MTU))
-	n.hello.Store(&hr)
+
+	// Configure the data plane. Idempotent for an adopted data plane that is
+	// already set up the same way; a different setup can't be applied live.
+	dsr, err := cl.DeviceSet(n.device)
+	if dpproto.IsCode(err, dpproto.CodeExists) {
+		return nil, n.replaceDataplane(cl, "it was configured differently ("+err.Error()+")")
+	}
+	if err != nil {
+		return fail(fmt.Errorf("configuring the data plane: %w", err))
+	}
+	pub := dsr.PubKey
+	n.pubkey.Store(&pub)
 
 	// Declarative link sync: every configured link is (re-)added, which also
 	// re-applies its endpoint on a data plane that survived us; anything
@@ -161,7 +181,7 @@ func (n *Node) attach(socket string) (*dpSession, error) {
 	for _, l := range n.sortedLinks() {
 		l.monitor.Start()
 	}
-	n.log.Verbosef("attached to data plane (node %d, mtu %d, udp port %d)", hr.LocalID, hr.MTU, hr.Port)
+	n.log.Verbosef("attached to data plane (pid %d, node %d, mtu %d, udp port %d)", hr.PID, n.device.LocalID, n.device.MTU, n.device.ListenPort)
 	return sess, nil
 }
 

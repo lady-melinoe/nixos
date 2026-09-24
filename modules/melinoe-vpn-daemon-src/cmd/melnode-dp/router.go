@@ -27,8 +27,7 @@ import (
 type Router struct {
 	dev *Device
 
-	localID   uint32
-	tunPrefix string
+	localID uint32
 
 	// peerLocks[peerid] serializes that peer's tun lifecycle (create, start,
 	// destroy), so two racing requests for the same peerid can't both create
@@ -53,11 +52,10 @@ type tunEntry struct {
 	writer  *tunWriter // set once started, see runTunWriter
 }
 
-func newRouter(dev *Device, localID uint32, tunPrefix string) *Router {
+func newRouter(dev *Device, localID uint32) *Router {
 	return &Router{
 		dev:        dev,
 		localID:    localID,
-		tunPrefix:  tunPrefix,
 		peerLocks:  make(map[uint32]*sync.Mutex),
 		tuns:       make(map[uint32]*tunEntry),
 		routeTable: make(map[uint32]uint32),
@@ -161,7 +159,7 @@ func (r *Router) Tuns() []dpproto.TunInfo {
 // CreateTun creates dstPeerID's tun if it doesn't have one, WITHOUT starting
 // it (see tunEntry). Idempotent: an existing tun's name and state are
 // returned unchanged.
-func (r *Router) CreateTun(dstPeerID uint32) (name string, started bool, err error) {
+func (r *Router) CreateTun(dstPeerID uint32, ifname string) (name string, started bool, err error) {
 	pl := r.peerLock(dstPeerID)
 	pl.Lock()
 	defer pl.Unlock()
@@ -176,7 +174,7 @@ func (r *Router) CreateTun(dstPeerID uint32) (name string, started bool, err err
 		return name, started, nil
 	}
 
-	d, err := createPeerTun(r.tunPrefix, dstPeerID, r.dev.mtu)
+	d, err := createPeerTun(ifname, dstPeerID, r.dev.mtu)
 	if err != nil {
 		return "", false, fmt.Errorf("creating tun: %w", err)
 	}
@@ -310,12 +308,12 @@ func (r *Router) closeAllTuns() {
 func (r *Router) resolveNextHop(dstPeerID uint32) *Peer {
 	nhid, ok := r.LookupRoute(dstPeerID)
 	if !ok {
-		log.Printf("router: no route to peerid %d -- dropping forwarded packet", dstPeerID)
+		r.dev.log.Verbosef("router: no route to peerid %d -- dropping forwarded packet", dstPeerID)
 		return nil
 	}
 	nextHop := r.dev.lookupPeerByID(nhid)
 	if nextHop == nil {
-		log.Printf("router: no such link nhid %d -- dropping forwarded packet", nhid)
+		r.dev.log.Verbosef("router: no such link nhid %d -- dropping forwarded packet", nhid)
 		return nil
 	}
 	return nextHop
@@ -351,10 +349,9 @@ const (
 	defaultTTL = 64
 )
 
-// createPeerTun creates and returns the TUN device for one discovered
-// destination peerid, named "<tunPrefix><peerid>" (e.g. "node-4").
-func createPeerTun(namePrefix string, peerID uint32, mtu int) (tun.Device, error) {
-	name := namePrefix + itoa(peerID)
+// createPeerTun creates and returns the TUN device for one destination
+// peerid, with the interface name the control plane chose.
+func createPeerTun(name string, peerID uint32, mtu int) (tun.Device, error) {
 	dev, err := tun.CreateTUN(name, mtu)
 	if err != nil {
 		return nil, err

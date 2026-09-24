@@ -8,6 +8,7 @@
 package main
 
 import (
+	"melnode/dpproto"
 	"sync"
 	"time"
 	_ "unsafe"
@@ -180,7 +181,19 @@ func (peer *Peer) timersHandshakeComplete() {
 	}
 	peer.timers.handshakeAttempts.Store(0)
 	peer.timers.sentLastMinuteHandshake.Store(false)
-	peer.lastHandshakeNano.Store(time.Now().UnixNano())
+	now := time.Now()
+	peer.lastHandshakeNano.Store(now.UnixNano())
+	// Tell the control plane (lossy, non-blocking: see dpproto.Event). The
+	// endpoint rides along so a roamed listen-only link is visible.
+	if ctl := peer.device.ctl; ctl != nil {
+		ev := dpproto.Event{Kind: dpproto.EventLinkHandshake, PeerID: peer.id, UnixNano: now.UnixNano()}
+		peer.endpoint.Lock()
+		if peer.endpoint.val != nil {
+			ev.Endpoint = peer.endpoint.val.DstToString()
+		}
+		peer.endpoint.Unlock()
+		ctl.Event(ev)
+	}
 }
 
 /* Should be called after an ephemeral key is created, which is before sending a handshake response or after receiving a handshake response. */

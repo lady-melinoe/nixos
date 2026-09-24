@@ -97,6 +97,14 @@ type Device struct {
 
 	router *Router // set once, after both Device and Router are constructed in main.go
 
+	// stats are the datapath's drop/traffic counters, dumped by Stats (ctl.go).
+	// Only ever bumped on drop paths, so they cost nothing on the fast path.
+	stats struct {
+		rxNoRoute, rxTTL, rxNoTun, rxTunFull, rxBad, rxQueueFull atomic.Uint64
+		txNoRoute, txQueueFull                                   atomic.Uint64
+		injectSent, injectDropped                                atomic.Uint64
+	}
+
 	ctl *dpproto.Server // the control plane's side of the socket (ctl.go); set once in main.go
 
 	closedFlag atomic.Bool

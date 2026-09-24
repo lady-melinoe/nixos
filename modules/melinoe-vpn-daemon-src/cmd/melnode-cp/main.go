@@ -10,14 +10,17 @@
 //   - the local control and read-only introspection APIs.
 //
 // It puppets the data plane (melnode-dp) over a unix socket (see dpproto):
-// it tells it which links exist and where to dial them, creates and destroys
-// tuns, and installs or repoints next-hop routes; the data plane hands it
+// it configures the device (identity, key, port, MTU -- the data plane has no
+// config of its own), tells it which links exist and where to dial them,
+// creates and destroys tuns, and installs or repoints next-hop routes; the data plane hands it
 // every non-proto-0 packet it receives, and sends whatever this process
 // injects. Think ovs-vswitchd talking to the kernel datapath.
 //
-// If this process restarts, the data plane keeps forwarding; on attach it is
-// re-synced to the configuration. If the data plane restarts, this process
-// re-attaches and re-programs it.
+// This process can also own starting the data plane (config:
+// dataplaneCommand): it adopts one that's running, or starts one detached from
+// itself. If this process restarts, the data plane keeps forwarding; on attach
+// it is re-synced to the configuration. If the data plane restarts, this
+// process re-attaches and re-programs it.
 //
 // Build:
 //
@@ -39,6 +42,7 @@ import (
 func main() {
 	configPath := flag.String("config", "", "path to the control plane's TOML config")
 	verbose := flag.Bool("verbose", false, "log link and route events and other per-event detail (default: errors only)")
+	stopDP := flag.Bool("stop-dataplane", false, "ask the running data plane to exit, then exit (stopping the control plane on its own deliberately leaves the data plane forwarding)")
 	flag.Parse()
 
 	if *configPath == "" {
@@ -49,7 +53,18 @@ func main() {
 		log.Fatalf("config error: %v", err)
 	}
 
-	node := newNode(cfg, *verbose)
+	if *stopDP {
+		if err := stopDataplane(cfg.DataplaneSocket); err != nil {
+			log.Fatalf("stop-dataplane: %v", err)
+		}
+		log.Print("data plane stopped")
+		return
+	}
+
+	node, err := newNode(cfg, *verbose)
+	if err != nil {
+		log.Fatalf("config error: %v", err)
+	}
 
 	// Every link's liveness transitions drive path-vector. Wired before any
 	// monitor can start: otherwise an early Down->Init->Up (the other side

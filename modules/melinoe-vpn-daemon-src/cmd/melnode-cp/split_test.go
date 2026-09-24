@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -161,6 +162,9 @@ type fakeDP struct {
 	injects chan dpproto.Inject
 	adds    []dpproto.LinkAdd
 	dels    []uint32
+	dev     *dpproto.DeviceSet
+	// shutdowns counts Shutdown requests.
+	shutdowns int
 }
 
 func newFakeDP(id uint32) *fakeDP {
@@ -168,7 +172,22 @@ func newFakeDP(id uint32) *fakeDP {
 }
 
 func (f *fakeDP) Hello(dpproto.Hello) (dpproto.HelloReply, error) {
-	return dpproto.HelloReply{Version: dpproto.Version, LocalID: f.id, MTU: 1300, Port: 60198}, nil
+	return dpproto.HelloReply{Version: dpproto.Version, PID: uint32(os.Getpid()), Configured: f.dev != nil}, nil
+}
+func (f *fakeDP) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.dev != nil && *f.dev != m {
+		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeExists, "configured differently")
+	}
+	f.dev = &m
+	return dpproto.DeviceSetReply{PubKey: [32]byte{0xaa}}, nil
+}
+func (f *fakeDP) Stats() ([]dpproto.Stat, error) { return nil, nil }
+func (f *fakeDP) Shutdown() {
+	f.mu.Lock()
+	f.shutdowns++
+	f.mu.Unlock()
 }
 func (f *fakeDP) LinkAdd(m dpproto.LinkAdd) error {
 	f.mu.Lock()
@@ -199,7 +218,7 @@ func (f *fakeDP) LinkList() ([]dpproto.LinkInfo, error) {
 	}
 	return out, nil
 }
-func (f *fakeDP) TunCreate(uint32) (dpproto.TunCreateReply, error) {
+func (f *fakeDP) TunCreate(dpproto.TunCreate) (dpproto.TunCreateReply, error) {
 	return dpproto.TunCreateReply{}, dpproto.Errorf(dpproto.CodeUnsupported, "fake")
 }
 func (f *fakeDP) TunStart(uint32) error               { return nil }
@@ -241,6 +260,7 @@ func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 	go srv.Run()
 
 	n := newTestNode(t)
+	n.device = dpproto.DeviceSet{LocalID: 1, MTU: 1300, ListenPort: 60198}
 	n.links[2] = newLink(n, 2, [32]byte{2}, "10.0.0.2:60198", 0)
 	n.links[3] = newLink(n, 3, [32]byte{3}, "", 0)
 	stop := make(chan struct{})
@@ -248,8 +268,8 @@ func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 	go func() { defer close(done); n.runSessions(sock, stop) }()
 
 	waitFor(t, "attach", func() bool { return n.dp() != nil })
-	if got := n.mtu.Load(); got != 1300 {
-		t.Fatalf("mtu = %d, want the data plane's 1300", got)
+	if p := n.pubkey.Load(); p == nil || *p != [32]byte{0xaa} {
+		t.Fatalf("pubkey = %v, want the one DeviceSet returned", p)
 	}
 	waitFor(t, "links pushed", func() bool {
 		dp.mu.Lock()
@@ -350,4 +370,44 @@ func TestSessionSurvivesDataPlaneRestart(t *testing.T) {
 	srv2 := start()
 	defer srv2.Close()
 	waitFor(t, "re-attach", func() bool { c := n.dp(); return c != nil && c != first })
+}
+
+// A data plane configured differently than we want can't be changed live: the
+// attach fails and asks it to exit so the next attempt starts a right one.
+func TestAttachReplacesMisconfiguredDataplane(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "dp.sock")
+	dp := newFakeDP(1)
+	dp.dev = &dpproto.DeviceSet{LocalID: 1, MTU: 1200}
+	srv, err := dpproto.NewServer(sock, dp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	go srv.Run()
+
+	n := newTestNode(t)
+	n.device = dpproto.DeviceSet{LocalID: 1, MTU: 1416}
+	if _, err := n.attach(sock); err == nil {
+		t.Fatal("attach to a differently-configured data plane succeeded")
+	}
+	waitFor(t, "shutdown request", func() bool {
+		dp.mu.Lock()
+		defer dp.mu.Unlock()
+		return dp.shutdowns == 1
+	})
+}
+
+func TestWrongBinary(t *testing.T) {
+	n := &Node{}
+	if n.wrongBinary(uint32(os.Getpid())) {
+		t.Fatal("no dpCommand: nothing is wrong")
+	}
+	n.dpCommand = []string{os.Args[0]}
+	if n.wrongBinary(uint32(os.Getpid())) {
+		t.Fatal("same binary flagged as wrong")
+	}
+	n.dpCommand = []string{"/bin/sh"}
+	if !n.wrongBinary(uint32(os.Getpid())) {
+		t.Fatal("different binary not flagged")
+	}
 }

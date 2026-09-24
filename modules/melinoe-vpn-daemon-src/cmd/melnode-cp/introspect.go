@@ -23,6 +23,7 @@ import (
 //	GET /routes      path-vector table: every candidate path per destination
 //	GET /prefixes    advertised prefixes: claimants and the winning owner
 //	GET /tuns        the per-destination tun interfaces
+//	GET /dataplane   the data plane's own counters (drops by cause, punts, injects)
 //
 // (Try: curl --unix-socket /run/melnode/control.sock http://x/links)
 
@@ -302,8 +303,8 @@ func (pv *PathVector) summarySnapshot() summaryInfo {
 		UptimeSeconds: time.Since(processStart).Seconds(),
 		MTU:           int(n.mtu.Load()),
 	}
-	if hr := n.hello.Load(); hr != nil {
-		s.PublicKey = keyToBase64(hr.PubKey[:])
+	if pk := n.pubkey.Load(); pk != nil {
+		s.PublicKey = keyToBase64(pk[:])
 	}
 	s.DataplaneAttached = n.dp() != nil
 	if n.router != nil && n.router.identityPrefix != nil {
@@ -322,6 +323,37 @@ func (pv *PathVector) summarySnapshot() summaryInfo {
 	s.Prefixes = len(pv.prefixClaims)
 	pv.mu.Unlock()
 	return s
+}
+
+// ---- data plane -------------------------------------------------------------
+
+type dataplaneInfo struct {
+	Attached bool              `json:"attached"`
+	Stats    map[string]uint64 `json:"stats,omitempty"` // the data plane's own counters, by name
+}
+
+// dataplaneSnapshot dumps the data plane's counters (drops by cause, control
+// packets punted/injected). Empty while no data plane is attached.
+func (n *Node) dataplaneSnapshot() dataplaneInfo {
+	info := dataplaneInfo{}
+	cl := n.dp()
+	if cl == nil {
+		return info
+	}
+	info.Attached = true
+	stats, err := cl.Stats()
+	if err != nil {
+		return info
+	}
+	info.Stats = make(map[string]uint64, len(stats))
+	for _, s := range stats {
+		name, ok := dpproto.StatName[s.ID]
+		if !ok {
+			name = "stat_" + itoa(uint32(s.ID)) // a counter newer than this control plane
+		}
+		info.Stats[name] = s.Value
+	}
+	return info
 }
 
 // ---- HTTP -----------------------------------------------------------------
@@ -358,6 +390,7 @@ func registerReadEndpoints(mux *http.ServeMux, pv *PathVector, withWrite bool) {
 	mux.HandleFunc("/links", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.node.linksSnapshot()) }))
 	mux.HandleFunc("/routes", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.routesSnapshot()) }))
 	mux.HandleFunc("/prefixes", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.prefixesSnapshot()) }))
+	mux.HandleFunc("/dataplane", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.node.dataplaneSnapshot()) }))
 	mux.HandleFunc("/tuns", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.node.router.tunsSnapshot()) }))
 	mux.HandleFunc("/", getOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -365,7 +398,7 @@ func registerReadEndpoints(mux *http.ServeMux, pv *PathVector, withWrite bool) {
 			return
 		}
 		index := map[string]any{
-			"read": []string{"/summary", "/links", "/routes", "/prefixes", "/tuns"},
+			"read": []string{"/summary", "/links", "/routes", "/prefixes", "/tuns", "/dataplane"},
 		}
 		if withWrite {
 			index["write"] = map[string]string{

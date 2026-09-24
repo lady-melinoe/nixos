@@ -292,6 +292,7 @@ func (device *Device) RoutineReadFromTUN(peerID uint32, devTun tun.Device) {
 				peer.StagePackets(elemsForPeer)
 				peer.SendStagedPackets()
 			} else {
+				device.stats.txNoRoute.Add(uint64(len(elemsForPeer.elems)))
 				for _, elem := range elemsForPeer.elems {
 					device.PutMessageBuffer(elem.buffer)
 					device.PutOutboundElement(elem)
@@ -347,6 +348,7 @@ func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {
 	}
 
 	n := len(elems.elems)
+	peer.device.stats.txQueueFull.Add(uint64(n))
 	for _, elem := range elems.elems {
 		peer.device.PutMessageBuffer(elem.buffer)
 		peer.device.PutOutboundElement(elem)
@@ -436,6 +438,7 @@ func (peer *Peer) submit(elemsContainer *QueueOutboundElementsContainer, isContr
 	if len(outboundQ.c) >= cap(outboundQ.c) || len(encQ.c) >= cap(encQ.c) {
 		mu.Unlock()
 		n := len(elemsContainer.elems)
+		peer.device.stats.txQueueFull.Add(uint64(n))
 		for _, elem := range elemsContainer.elems {
 			peer.device.PutMessageBuffer(elem.buffer)
 			peer.device.PutOutboundElement(elem)

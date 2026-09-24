@@ -13,9 +13,16 @@
 //     control packet. The data plane never interprets it: it "punts" it up
 //     to the control plane (Punt), and sends whatever the control plane
 //     hands it (Inject).
-//   - The control plane puppets the data plane: it adds/removes links, asks
-//     for tuns to be created/started/destroyed, and installs/changes/removes
-//     next-hop routes. All of that is request/reply (Call).
+//   - The control plane puppets the data plane: it configures the device
+//     (identity, key, port, MTU: DeviceSet), adds/removes links, asks for
+//     tuns to be created/started/destroyed, and installs/changes/removes
+//     next-hop routes. All of that is request/reply (Call). A freshly started
+//     data plane knows nothing but its socket path and refuses everything
+//     except Hello, DeviceSet, Stats and Shutdown until it has been given a
+//     device -- the same way `wg set` gives a WireGuard interface its key.
+//   - The data plane tells the control plane about the few things it cannot
+//     infer (Event, currently just "a handshake completed"). Events are lossy
+//     by design; anything that matters is recoverable with a dump.
 //
 // Transport is one SOCK_SEQPACKET unix socket: message boundaries are
 // preserved (so no length framing is needed), delivery is reliable and
@@ -38,7 +45,7 @@ import (
 
 // Version is bumped on any incompatible change to this protocol. The control
 // plane sends it in Hello and the data plane refuses a mismatch.
-const Version = 1
+const Version = 2
 
 const (
 	// HeaderLen is the fixed message header: type u8 + id u32.
@@ -64,6 +71,9 @@ const (
 	TypeRouteSet   Type = 9
 	TypeRouteDel   Type = 10
 	TypeRouteList  Type = 11
+	TypeDeviceSet  Type = 12
+	TypeStats      Type = 13
+	TypeShutdown   Type = 14
 
 	// Replies, data plane -> control plane.
 	TypeReply    Type = 0x80
@@ -72,6 +82,7 @@ const (
 	// Asynchronous, no reply.
 	TypePunt   Type = 0x90 // data plane -> control plane
 	TypeInject Type = 0x91 // control plane -> data plane
+	TypeEvent  Type = 0x92 // data plane -> control plane
 )
 
 // Error codes carried in ReplyErr.
@@ -81,6 +92,7 @@ const (
 	CodeExists      uint16 = 3
 	CodeInternal    uint16 = 4
 	CodeUnsupported uint16 = 5 // unknown message type / version mismatch
+	CodeNotReady    uint16 = 6 // the data plane has not been given a device yet (DeviceSet)
 )
 
 // Error is a failure reported by the data plane for one request.
@@ -113,11 +125,31 @@ type Hello struct {
 
 // HelloReply describes the data plane the control plane just attached to.
 type HelloReply struct {
-	Version uint16
-	LocalID uint32
-	PubKey  [32]byte // this node's static public key
-	MTU     uint32   // MTU of every tun; also the largest payload the control plane should Inject
-	Port    uint16   // UDP port the data plane listens on
+	Version    uint16
+	PID        uint32 // lets the control plane check which binary it is talking to
+	Configured bool   // whether a DeviceSet has already been applied
+}
+
+// DeviceSet gives the data plane its identity and how it reaches the network.
+// It is the data plane's entire configuration: it starts knowing only its
+// socket path. Applying it opens the UDP socket and starts the crypto
+// workers.
+//
+// It is configure-once: repeating the same DeviceSet is a no-op (so a
+// control plane can safely send it on every attach), but a *different* one
+// fails with CodeExists -- the data plane would have to be restarted to take
+// it, which is the control plane's call (Shutdown).
+type DeviceSet struct {
+	LocalID    uint32
+	PrivateKey [32]byte
+	ListenPort uint16
+	Fwmark     uint32 // SO_MARK on the UDP socket; 0 = unset
+	MTU        uint32 // of every tun; also bounds control packet size
+}
+
+// DeviceSetReply carries what the data plane derived from the DeviceSet.
+type DeviceSetReply struct {
+	PubKey [32]byte // this node's static public key
 }
 
 // LinkAdd configures one directly-connected neighbor (a Noise tunnel). It is
@@ -141,6 +173,13 @@ type LinkInfo struct {
 	RxBytes               uint64
 }
 
+// TunCreate asks for the tun leading to destination PeerID, with this
+// interface name (the control plane owns naming).
+type TunCreate struct {
+	PeerID uint32
+	Name   string
+}
+
 // TunCreateReply is returned by TunCreate. Started tells the control plane
 // whether the tun already existed and is carrying traffic (so it need not be
 // set up again).
@@ -161,6 +200,68 @@ type TunInfo struct {
 type Route struct {
 	Dst     uint32
 	NextHop uint32
+}
+
+// Stat ids. The stats dump is a list of (id, value) pairs so a data plane can
+// gain counters without a protocol change: unknown ids are ignored by the
+// control plane, and counters a data plane doesn't have are simply absent.
+const (
+	StatPuntSent      uint16 = 1  // control packets handed up to the control plane
+	StatPuntDropped   uint16 = 2  // ... dropped: no control plane attached, or its queue was full
+	StatInjectSent    uint16 = 3  // control packets accepted for transmission
+	StatInjectDropped uint16 = 4  // ... dropped: unknown/stopped link, oversize, or queues full
+	StatRxNoRoute     uint16 = 5  // forwarded packets dropped: no route or no such next-hop link
+	StatRxTTLExpired  uint16 = 6  // forwarded packets dropped: TTL ran out
+	StatRxNoTun       uint16 = 7  // packets for this node dropped: no started tun for the sender
+	StatRxTunFull     uint16 = 8  // packets for this node dropped: tun writer queue full
+	StatRxBadPacket   uint16 = 9  // decrypted packets dropped: short header or invalid inner IP
+	StatTxNoRoute     uint16 = 10 // packets read from a tun dropped: no route or link not running
+	StatTxQueueFull   uint16 = 11 // outbound batches tail-dropped: staged or encryption queue full
+	StatEventsDropped uint16 = 12 // events dropped: no control plane attached, or its queue was full
+	StatRxQueueFull   uint16 = 13 // received batches tail-dropped: decryption queue full
+)
+
+// StatName gives a stat its stable, human-readable name (for introspection).
+var StatName = map[uint16]string{
+	StatPuntSent:      "punt_sent",
+	StatPuntDropped:   "punt_dropped",
+	StatInjectSent:    "inject_sent",
+	StatInjectDropped: "inject_dropped",
+	StatRxNoRoute:     "rx_no_route",
+	StatRxTTLExpired:  "rx_ttl_expired",
+	StatRxNoTun:       "rx_no_tun",
+	StatRxTunFull:     "rx_tun_queue_full",
+	StatRxBadPacket:   "rx_bad_packet",
+	StatTxNoRoute:     "tx_no_route",
+	StatTxQueueFull:   "tx_queue_full",
+	StatEventsDropped: "events_dropped",
+	StatRxQueueFull:   "rx_queue_full",
+}
+
+// Stat is one datapath counter.
+type Stat struct {
+	ID    uint16
+	Value uint64
+}
+
+// Event kinds.
+const (
+	// EventLinkHandshake: a Noise handshake completed on a link. Endpoint is
+	// where the peer currently is, so a roamed listen-only link shows up here
+	// (at rekey granularity, which is plenty for operations and costs nothing
+	// on the packet path).
+	EventLinkHandshake uint8 = 1
+)
+
+// Event is an asynchronous notification from the data plane. Lossy: when the
+// control plane isn't attached or falls behind, events are dropped (and
+// counted in StatEventsDropped), never queued without bound. Like netlink's
+// ENOBUFS, a control plane that cares about state resyncs with a dump.
+type Event struct {
+	Kind     uint8
+	PeerID   uint32 // link peerid
+	UnixNano int64
+	Endpoint string
 }
 
 // Punt is a control packet the data plane received and did not handle.
@@ -196,6 +297,13 @@ func (e *enc) u16(v uint16) { e.b = binary.BigEndian.AppendUint16(e.b, v) }
 func (e *enc) u32(v uint32) { e.b = binary.BigEndian.AppendUint32(e.b, v) }
 func (e *enc) u64(v uint64) { e.b = binary.BigEndian.AppendUint64(e.b, v) }
 func (e *enc) raw(v []byte) { e.b = append(e.b, v...) }
+func (e *enc) boolean(v bool) {
+	if v {
+		e.u8(1)
+	} else {
+		e.u8(0)
+	}
+}
 func (e *enc) str(s string) {
 	if len(s) > 0xffff {
 		s = s[:0xffff]
@@ -287,19 +395,88 @@ func UnmarshalHello(b []byte) (m Hello, err error) {
 func (m HelloReply) Marshal() []byte {
 	e := enc{}
 	e.u16(m.Version)
-	e.u32(m.LocalID)
-	e.raw(m.PubKey[:])
-	e.u32(m.MTU)
-	e.u16(m.Port)
+	e.u32(m.PID)
+	e.boolean(m.Configured)
 	return e.b
 }
 func UnmarshalHelloReply(b []byte) (m HelloReply, err error) {
 	d := dec{b: b}
 	m.Version = d.u16()
+	m.PID = d.u32()
+	m.Configured = d.u8() != 0
+	return m, d.done()
+}
+
+func (m DeviceSet) Marshal() []byte {
+	e := enc{}
+	e.u32(m.LocalID)
+	e.raw(m.PrivateKey[:])
+	e.u16(m.ListenPort)
+	e.u32(m.Fwmark)
+	e.u32(m.MTU)
+	return e.b
+}
+func UnmarshalDeviceSet(b []byte) (m DeviceSet, err error) {
+	d := dec{b: b}
 	m.LocalID = d.u32()
-	m.PubKey = d.key()
+	m.PrivateKey = d.key()
+	m.ListenPort = d.u16()
+	m.Fwmark = d.u32()
 	m.MTU = d.u32()
-	m.Port = d.u16()
+	return m, d.done()
+}
+
+func (m DeviceSetReply) Marshal() []byte { e := enc{}; e.raw(m.PubKey[:]); return e.b }
+func UnmarshalDeviceSetReply(b []byte) (m DeviceSetReply, err error) {
+	d := dec{b: b}
+	m.PubKey = d.key()
+	return m, d.done()
+}
+
+func (m TunCreate) Marshal() []byte { e := enc{}; e.u32(m.PeerID); e.str(m.Name); return e.b }
+func UnmarshalTunCreate(b []byte) (m TunCreate, err error) {
+	d := dec{b: b}
+	m.PeerID = d.u32()
+	m.Name = d.str()
+	return m, d.done()
+}
+
+func MarshalStats(l []Stat) []byte {
+	e := enc{}
+	e.u32(uint32(len(l)))
+	for _, s := range l {
+		e.u16(s.ID)
+		e.u64(s.Value)
+	}
+	return e.b
+}
+func UnmarshalStats(b []byte) ([]Stat, error) {
+	d := dec{b: b}
+	n := d.u32()
+	var out []Stat
+	for i := uint32(0); i < n && d.err == nil; i++ {
+		out = append(out, Stat{ID: d.u16(), Value: d.u64()})
+	}
+	return out, d.done()
+}
+
+// MarshalMessage is the full wire form of an Event (header included).
+func (m Event) MarshalMessage() []byte {
+	e := enc{}
+	e.u8(uint8(TypeEvent))
+	e.u32(0)
+	e.u8(m.Kind)
+	e.u32(m.PeerID)
+	e.u64(uint64(m.UnixNano))
+	e.str(m.Endpoint)
+	return e.b
+}
+func UnmarshalEvent(b []byte) (m Event, err error) {
+	d := dec{b: b}
+	m.Kind = d.u8()
+	m.PeerID = d.u32()
+	m.UnixNano = int64(d.u64())
+	m.Endpoint = d.str()
 	return m, d.done()
 }
 

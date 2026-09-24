@@ -17,9 +17,32 @@ func TestCodecRoundTrip(t *testing.T) {
 	if got, err := UnmarshalLinkAdd(la.Marshal()); err != nil || got != la {
 		t.Fatalf("LinkAdd: %v %+v", err, got)
 	}
-	hr := HelloReply{Version: 1, LocalID: 3, PubKey: k, MTU: 1416, Port: 60198}
+	hr := HelloReply{Version: Version, PID: 4242, Configured: true}
 	if got, err := UnmarshalHelloReply(hr.Marshal()); err != nil || got != hr {
 		t.Fatalf("HelloReply: %v %+v", err, got)
+	}
+	ds := DeviceSet{LocalID: 3, PrivateKey: k, ListenPort: 60198, Fwmark: 0x1234, MTU: 1416}
+	if got, err := UnmarshalDeviceSet(ds.Marshal()); err != nil || got != ds {
+		t.Fatalf("DeviceSet: %v %+v", err, got)
+	}
+	if got, err := UnmarshalDeviceSetReply(DeviceSetReply{PubKey: k}.Marshal()); err != nil || got.PubKey != k {
+		t.Fatalf("DeviceSetReply: %v %+v", err, got)
+	}
+	tc := TunCreate{PeerID: 4, Name: "node-4"}
+	if got, err := UnmarshalTunCreate(tc.Marshal()); err != nil || got != tc {
+		t.Fatalf("TunCreate: %v %+v", err, got)
+	}
+	sl := []Stat{{StatPuntSent, 7}, {StatRxNoRoute, 1 << 40}, {999, 1}}
+	if got, err := UnmarshalStats(MarshalStats(sl)); err != nil || !reflect.DeepEqual(got, sl) {
+		t.Fatalf("Stats: %v %+v", err, got)
+	}
+	ev := Event{Kind: EventLinkHandshake, PeerID: 2, UnixNano: 123456789, Endpoint: "[::1]:60198"}
+	em := ev.MarshalMessage()
+	if Type(em[0]) != TypeEvent {
+		t.Fatalf("event type %d", em[0])
+	}
+	if got, err := UnmarshalEvent(em[HeaderLen:]); err != nil || got != ev {
+		t.Fatalf("Event: %v %+v", err, got)
 	}
 	ll := []LinkInfo{{PeerID: 1, PubKey: k, Endpoint: "1.2.3.4:5", LastHandshakeUnixNano: 99, TxBytes: 1, RxBytes: 2}, {PeerID: 2}}
 	if got, err := UnmarshalLinkList(MarshalLinkList(ll)); err != nil || !reflect.DeepEqual(got, ll) {
@@ -65,20 +88,33 @@ func TestCodecRejectsGarbage(t *testing.T) {
 
 // fakeDP is an in-memory Handler.
 type fakeDP struct {
-	mu      sync.Mutex
-	links   map[uint32]LinkAdd
-	tuns    map[uint32]*TunInfo
-	routes  map[uint32]uint32
-	injects chan Inject
+	mu       sync.Mutex
+	links    map[uint32]LinkAdd
+	tuns     map[uint32]*TunInfo
+	routes   map[uint32]uint32
+	injects  chan Inject
+	dev      *DeviceSet
+	shutdown chan struct{}
 }
 
 func newFakeDP() *fakeDP {
-	return &fakeDP{links: map[uint32]LinkAdd{}, tuns: map[uint32]*TunInfo{}, routes: map[uint32]uint32{}, injects: make(chan Inject, 16)}
+	return &fakeDP{links: map[uint32]LinkAdd{}, tuns: map[uint32]*TunInfo{}, routes: map[uint32]uint32{}, injects: make(chan Inject, 16), shutdown: make(chan struct{})}
 }
 
 func (f *fakeDP) Hello(Hello) (HelloReply, error) {
-	return HelloReply{Version: Version, LocalID: 1, MTU: 1416}, nil
+	return HelloReply{Version: Version, PID: 99}, nil
 }
+func (f *fakeDP) DeviceSet(m DeviceSet) (DeviceSetReply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.dev != nil && *f.dev != m {
+		return DeviceSetReply{}, Errorf(CodeExists, "configured differently")
+	}
+	f.dev = &m
+	return DeviceSetReply{PubKey: [32]byte{0xaa}}, nil
+}
+func (f *fakeDP) Stats() ([]Stat, error) { return []Stat{{StatPuntSent, 5}}, nil }
+func (f *fakeDP) Shutdown()              { close(f.shutdown) }
 func (f *fakeDP) LinkAdd(m LinkAdd) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -106,14 +142,14 @@ func (f *fakeDP) LinkList() ([]LinkInfo, error) {
 	}
 	return out, nil
 }
-func (f *fakeDP) TunCreate(id uint32) (TunCreateReply, error) {
+func (f *fakeDP) TunCreate(m TunCreate) (TunCreateReply, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if t, ok := f.tuns[id]; ok {
+	if t, ok := f.tuns[m.PeerID]; ok {
 		return TunCreateReply{Name: t.Name, Started: t.Started}, nil
 	}
-	f.tuns[id] = &TunInfo{PeerID: id, Name: "node-x"}
-	return TunCreateReply{Name: "node-x"}, nil
+	f.tuns[m.PeerID] = &TunInfo{PeerID: m.PeerID, Name: m.Name}
+	return TunCreateReply{Name: m.Name}, nil
 }
 func (f *fakeDP) TunStart(id uint32) error {
 	f.mu.Lock()
@@ -174,15 +210,32 @@ func TestClientServer(t *testing.T) {
 	go srv.Run()
 
 	punts := make(chan Punt, 4)
-	cl, err := Dial(sock, func(p Punt) { punts <- p })
+	events := make(chan Event, 4)
+	cl, err := Dial(sock, func(p Punt) { punts <- p }, func(e Event) { events <- e })
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cl.Close()
 
 	hr, err := cl.Hello()
-	if err != nil || hr.LocalID != 1 || hr.MTU != 1416 {
+	if err != nil || hr.PID != 99 || hr.Configured {
 		t.Fatalf("hello: %v %+v", err, hr)
+	}
+
+	// Device configuration: idempotent when identical, CodeExists when different.
+	ds := DeviceSet{LocalID: 1, ListenPort: 60198, MTU: 1416}
+	if r, err := cl.DeviceSet(ds); err != nil || r.PubKey != [32]byte{0xaa} {
+		t.Fatalf("DeviceSet: %v %+v", err, r)
+	}
+	if _, err := cl.DeviceSet(ds); err != nil {
+		t.Fatalf("repeating an identical DeviceSet must succeed: %v", err)
+	}
+	ds.MTU = 1400
+	if _, err := cl.DeviceSet(ds); !IsCode(err, CodeExists) {
+		t.Fatalf("different DeviceSet: want CodeExists, got %v", err)
+	}
+	if st, err := cl.Stats(); err != nil || len(st) != 1 || st[0] != (Stat{StatPuntSent, 5}) {
+		t.Fatalf("Stats: %v %+v", err, st)
 	}
 
 	var k1, k2 [32]byte
@@ -200,13 +253,13 @@ func TestClientServer(t *testing.T) {
 		t.Fatalf("LinkList: %v %+v", err, l)
 	}
 
-	if r, err := cl.TunCreate(4); err != nil || r.Name != "node-x" || r.Started {
+	if r, err := cl.TunCreate(4, "node-4"); err != nil || r.Name != "node-4" || r.Started {
 		t.Fatalf("TunCreate: %v %+v", err, r)
 	}
 	if err := cl.TunStart(4); err != nil {
 		t.Fatal(err)
 	}
-	if r, _ := cl.TunCreate(4); !r.Started {
+	if r, _ := cl.TunCreate(4, "node-4"); !r.Started {
 		t.Fatal("TunCreate on existing started tun should report Started")
 	}
 	if err := cl.RouteSet(Route{Dst: 4, NextHop: 5}); err != nil {
@@ -240,6 +293,17 @@ func TestClientServer(t *testing.T) {
 		t.Fatal("inject not delivered")
 	}
 
+	// Event: data plane -> client, ordered with punts.
+	srv.Event(Event{Kind: EventLinkHandshake, PeerID: 5, UnixNano: 42, Endpoint: "1.2.3.4:5"})
+	select {
+	case e := <-events:
+		if e.PeerID != 5 || e.Endpoint != "1.2.3.4:5" {
+			t.Fatalf("event: %+v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("event not delivered")
+	}
+
 	// Punt: data plane -> client.
 	srv.Punt(Punt{Ingress: 5, Proto: 2, Src: 5, Dst: 1, TTL: 1, Payload: []byte("pv")})
 	select {
@@ -249,6 +313,44 @@ func TestClientServer(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("punt not delivered")
+	}
+}
+
+func TestShutdownRepliesThenCallsHandler(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "dp.sock")
+	h := newFakeDP()
+	srv, err := NewServer(sock, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	go srv.Run()
+	cl, err := Dial(sock, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	if err := cl.Shutdown(); err != nil {
+		t.Fatalf("Shutdown must be acknowledged before the data plane exits: %v", err)
+	}
+	select {
+	case <-h.shutdown:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler's Shutdown not called")
+	}
+}
+
+// Events and punts with no session attached are counted, not queued.
+func TestEventsWithoutSessionAreCounted(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "dp.sock")
+	srv, err := NewServer(sock, newFakeDP())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	srv.Event(Event{Kind: EventLinkHandshake})
+	if srv.EventsDropped() != 1 {
+		t.Fatalf("EventsDropped = %d", srv.EventsDropped())
 	}
 }
 
@@ -266,14 +368,14 @@ func TestSessionReplacementAndLoss(t *testing.T) {
 		t.Fatalf("dropped = %d", srv.PuntDropped())
 	}
 
-	a, err := Dial(sock, nil)
+	a, err := Dial(sock, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Hello(); err != nil {
 		t.Fatal(err)
 	}
-	b, err := Dial(sock, nil)
+	b, err := Dial(sock, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

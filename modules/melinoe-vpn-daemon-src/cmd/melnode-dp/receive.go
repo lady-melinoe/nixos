@@ -110,6 +110,7 @@ func (device *Device) submitInbound(peer *Peer, elemsContainer *QueueInboundElem
 			device.PutInboundElement(elem)
 		}
 		device.PutInboundElementsContainer(elemsContainer)
+		device.stats.rxQueueFull.Add(uint64(n))
 		device.log.Verbosef("%v - inbound/decryption queue full, dropping newest batch (%d packets)", peer, n)
 		return
 	}
@@ -532,6 +533,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			// allowed-ips-style "this peer may only claim these
 			// addresses" concept, deliberately not invented here.
 			if len(elem.packet) < headerSize {
+				device.stats.rxBad.Add(1)
 				device.log.Verbosef("Packet too short for header from %v", peer)
 				continue
 			}
@@ -546,16 +548,19 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				case len(ip) >= 20 && ip[0]>>4 == 4:
 					length := binary.BigEndian.Uint16(ip[IPv4offsetTotalLength : IPv4offsetTotalLength+2])
 					if int(length) > len(ip) || int(length) < 20 {
+						device.stats.rxBad.Add(1)
 						continue
 					}
 					elem.packet = elem.packet[:headerSize+int(length)]
 				case len(ip) >= 40 && ip[0]>>4 == 6:
 					length := binary.BigEndian.Uint16(ip[IPv6offsetPayloadLength:IPv6offsetPayloadLength+2]) + 40
 					if int(length) > len(ip) {
+						device.stats.rxBad.Add(1)
 						continue
 					}
 					elem.packet = elem.packet[:headerSize+int(length)]
 				default:
+					device.stats.rxBad.Add(1)
 					device.log.Verbosef("proto-0 packet with invalid inner IP version from %v", peer)
 					continue
 				}
@@ -581,6 +586,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			if uint32(dst) == device.localID {
 				w, ok := device.router.LookupTunWriter(uint32(src))
 				if !ok {
+					device.stats.rxNoTun.Add(1)
 					device.log.Verbosef("router: packet destined for us from peerid %d, but no tun interface exists for that peer -- dropping", src)
 					continue
 				}
@@ -609,11 +615,13 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				// least one hop left. Decrement in place -- the header
 				// is plaintext here and gets re-encrypted on the way out.
 				if elem.packet[hdrOffTTL] <= 1 {
+					device.stats.rxTTL.Add(1)
 					device.log.Verbosef("router: ttl expired forwarding peerid %d -> %d from %v -- dropping", src, dst, peer)
 					continue
 				}
 				nextHop := device.router.resolveNextHop(uint32(dst))
 				if nextHop == nil {
+					device.stats.rxNoRoute.Add(1)
 					continue // already logged by resolveNextHop
 				}
 				elem.packet[hdrOffTTL]--
@@ -656,6 +664,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				// delaying its *next* round, including any
 				// liveness/path-vector packets in it) waiting for
 				// room.
+				device.stats.rxTunFull.Add(uint64(len(items)))
 				device.log.Verbosef("tun writer for peerid %d full, dropping %d packets", w.peerID, len(items))
 				for _, it := range items {
 					device.PutMessageBuffer(it.buffer)
