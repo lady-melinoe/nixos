@@ -60,6 +60,10 @@ type Router struct {
 	tunByPeerID map[uint32]tun.Device
 	tunWriters  map[uint32]*tunWriter // see LookupTunWriter / runTunWriter below
 	routeTable  map[uint32]uint32     // dst peerid -> nhid (a link peerid)
+
+	// noTuns skips tun creation in AddOrUpdateRoute -- test seam only, so
+	// path-vector logic can be exercised without privileges or /dev/net/tun.
+	noTuns bool
 }
 
 func newRouter(dev *Device, localID uint32, tunPrefix string, identityPrefix *pvPrefix, tunCreateHookBin, tunDestroyHookBin string) *Router {
@@ -137,7 +141,7 @@ func (r *Router) AddOrUpdateRoute(dstPeerID, nhid uint32) {
 		r.dev.log.Verbosef("router: new route to peerid %d via nhid %d", dstPeerID, nhid)
 	}
 
-	if !hasTun {
+	if !hasTun && !r.noTuns {
 		r.createAndStartTun(dstPeerID)
 	}
 }
@@ -340,6 +344,22 @@ func (r *Router) resolveNextHop(dstPeerID uint32) *Peer {
 const (
 	headerSize      = 4
 	maxIPPacketSize = 65535
+
+	// Routing header layout (headerSize bytes, in front of every payload):
+	//   0: proto
+	//   1: src peerid
+	//   2: dst peerid
+	//   3: ttl -- decremented by each forwarding hop; a packet that would
+	//      reach 0 is dropped instead of forwarded (IP-style: the final
+	//      destination delivers regardless of ttl, only forwarding checks it).
+	hdrOffTTL = 3
+
+	// defaultTTL is stamped on every freshly originated proto=0 packet.
+	// Comfortably above any sane mesh diameter (see pvMaxPathLen's note),
+	// low enough that a transient routing loop burns out quickly.
+	defaultTTL = 64
+	// linkLocalTTL is stamped on proto=1/2, which are never forwarded.
+	linkLocalTTL = 1
 )
 
 // createPeerTun creates and returns the TUN device for one discovered
@@ -368,7 +388,7 @@ const defaultMTU = 1416
 // decrypted elem.buffer already has exactly this much in front of the
 // IP payload for free: MessageTransportHeaderSize (16, wasted -- it held
 // the now-consumed transport header) plus headerSize (4, our own
-// proto/src/dst/reserved header, also already consumed by this point).
+// proto/src/dst/ttl header, also already consumed by this point).
 // That's what makes writeTunBatched below zero-copy: elem.buffer doesn't
 // need to be reshaped at all, just resliced.
 const localDeliveryOffset = MessageTransportHeaderSize + headerSize

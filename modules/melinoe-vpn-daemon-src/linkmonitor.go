@@ -331,7 +331,7 @@ func (m *LinkMonitor) sendPacket() {
 	buf[offset-headerSize+0] = livenessProto
 	buf[offset-headerSize+1] = byte(device.localID)
 	buf[offset-headerSize+2] = byte(m.peer.id)
-	buf[offset-headerSize+3] = 0
+	buf[offset-headerSize+hdrOffTTL] = linkLocalTTL
 	elem.packet = buf[offset-headerSize : offset+len(payload)]
 
 	container := device.GetOutboundElementsContainer()
