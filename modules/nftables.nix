@@ -169,6 +169,10 @@ in
             table inet raw {
               chain prerouting {
                 type filter hook prerouting priority raw; policy accept;
+      # The container/mesh range is internal only: nothing legitimate arrives
+      # on an uplink claiming a source inside it (mesh traffic comes in on
+      # node-* tuns). Dropped here in raw so it never reaches INPUT/FORWARD/NAT.
+      iifname $uplink_ifs ip saddr ${addr.containerCidr} drop
       ${renderVmSaddrRules}
               }
             }

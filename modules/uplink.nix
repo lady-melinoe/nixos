@@ -8,6 +8,8 @@
 let
   hostAddr = melinoeNodeIntraIP config.melinoe.node.id;
   netCfg = config.melinoe.node.networking;
+  # Container/mesh range (198.18.0.0/16): must never be routed out an uplink.
+  meshCidr = config.melinoe.cluster.networking.containerCidr;
   table = toString netCfg.uplinkFwMark;
   uplinkIface =
     idx: uplink:
@@ -97,6 +99,12 @@ in
           ip rule del pref 0 from all lookup local >/dev/null 2>&1 || true
           ip addr del ${hostAddr}/32 dev lo >/dev/null 2>&1 || true
           ip addr add ${hostAddr}/32 dev lo
+          # Unknown mesh addresses must fail, not fall through to the default
+          # route and leak out an uplink. Mesh /32s and VM routes are more
+          # specific, so they still win. Also in the uplink table, which has
+          # its own default route.
+          ip route replace unreachable ${meshCidr}
+          ip route replace unreachable ${meshCidr} table ${table}
           sysctl -w net.ipv4.conf.default.rp_filter=0
           sysctl -w net.ipv4.conf.all.rp_filter=0
           ${lib.concatStringsSep "\n" (lib.imap0 mkUplinkScript netCfg.uplinks)}
