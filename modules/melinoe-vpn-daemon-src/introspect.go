@@ -334,7 +334,15 @@ func getOnly(h http.HandlerFunc) http.HandlerFunc {
 
 // registerIntrospection mounts the read-only endpoints on the control API's mux.
 func (c *controlAPI) registerIntrospection(mux *http.ServeMux) {
-	pv := c.pv
+	registerReadEndpoints(mux, c.pv, true)
+}
+
+// registerReadEndpoints mounts the read-only "show ..." endpoints on mux.
+// withWrite only controls whether the index at "/" advertises the
+// /advertise and /withdraw endpoints; it does NOT mount them. The TCP
+// introspection listener (introspectapi.go) passes false, so it never
+// serves anything but GETs of the snapshots below.
+func registerReadEndpoints(mux *http.ServeMux, pv *PathVector, withWrite bool) {
 	mux.HandleFunc("/summary", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.summarySnapshot()) }))
 	mux.HandleFunc("/links", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.dev.linksSnapshot()) }))
 	mux.HandleFunc("/routes", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.routesSnapshot()) }))
@@ -345,12 +353,15 @@ func (c *controlAPI) registerIntrospection(mux *http.ServeMux) {
 			http.NotFound(w, r)
 			return
 		}
-		writeJSON(w, map[string]any{
+		index := map[string]any{
 			"read": []string{"/summary", "/links", "/routes", "/prefixes", "/tuns"},
-			"write": map[string]string{
+		}
+		if withWrite {
+			index["write"] = map[string]string{
 				"/advertise": `POST {"prefix": "a.b.c.d/n"}`,
 				"/withdraw":  `POST {"prefix": "a.b.c.d/n"}`,
-			},
-		})
+			}
+		}
+		writeJSON(w, index)
 	}))
 }

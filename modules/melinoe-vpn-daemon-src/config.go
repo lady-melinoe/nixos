@@ -53,6 +53,13 @@ type Config struct {
 	// IdentityPrefix (if any) and the mesh-discovered peerid routes.
 	ControlSocket string `toml:"controlSocket"`
 
+	// IntrospectListen, if set, is a TCP listen address (e.g. ":60198")
+	// for a READ-ONLY HTTP API (introspectapi.go): the same "show ..."
+	// endpoints as the control socket, but never /advertise or /withdraw.
+	// Unauthenticated -- restrict reachability with the host firewall.
+	// "" (default) disables it.
+	IntrospectListen string `toml:"introspectListen"`
+
 	Links []LinkConfig `toml:"link"`
 }
 

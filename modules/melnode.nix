@@ -108,6 +108,9 @@ let
     fwmark = netCfg.uplinkFwMark;
     identityPrefix = "${hostAddr}/32";
     controlSocket = controlSocket;
+    # Read-only introspection over TCP (no advertise/withdraw); firewalled to
+    # the host range via specialHostAccess below.
+    introspectListen = ":${toString mCfg.introspectPort}";
     tunCreateHookBin = "${mkHook "create"}";
     tunDestroyHookBin = "${mkHook "destroy"}";
     link = map mkLink netCfg.peers;
@@ -132,6 +135,17 @@ in
       description = ''
         UDP port every node listens on, and every link dials. All nodes use
         the same port; no per-peer ports.
+      '';
+    };
+
+    introspectPort = mkOption {
+      type = types.port;
+      default = 60198;
+      description = ''
+        TCP port for melnode's read-only introspection API (/summary, /links,
+        /routes, /prefixes, /tuns; never the write endpoints). Reachable only
+        from the host range (melinoe.node.networking.specialHostAccess), so any
+        node can view any other node's state.
       '';
     };
 
@@ -202,6 +216,7 @@ in
     );
 
     melinoe.node.networking.openPorts.udp = lib.mkIf mCfg.enabled [ mCfg.port ];
+    melinoe.node.networking.specialHostAccess.tcp = lib.mkIf mCfg.enabled [ mCfg.introspectPort ];
 
     systemd.services.melnode = lib.mkIf mCfg.enabled {
       description = "melnode mesh VPN daemon";
