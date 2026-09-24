@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -18,7 +20,19 @@ type Config struct {
 	LocalPort    int    `toml:"localPort"`
 	TunPrefix    string `toml:"tunPrefix"`
 	LocalPrivkey string `toml:"localPrivkey"`
-	Fwmark       int    `toml:"fwmark"` // 0 (default) means unset -- see conn.Bind.SetMark; SO_MARK, Linux-only
+	// LocalPrivkeyPath is an alternative to LocalPrivkey: a file holding
+	// the base64 private key (surrounding whitespace ignored), so the
+	// secret needn't live in the config itself. Exactly one of the two
+	// must be set.
+	LocalPrivkeyPath string `toml:"localPrivkeyPath"`
+
+	// TunCreateHookBin / TunDestroyHookBin, if set, are executables run as
+	// `<bin> <peerid> <ifname>` after a peer tun is created and brought
+	// up, and after it is closed/deleted (incl. at shutdown). "" disables.
+	// Hook failures are logged but never fatal.
+	TunCreateHookBin  string `toml:"tunCreateHookBin"`
+	TunDestroyHookBin string `toml:"tunDestroyHookBin"`
+	Fwmark            int    `toml:"fwmark"` // 0 (default) means unset -- see conn.Bind.SetMark; SO_MARK, Linux-only
 
 	// IdentityPrefix is this node's own always-advertised prefix (a
 	// single /32 identity address, e.g. the node's own loopback --
@@ -56,6 +70,19 @@ func loadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// privateKey returns the configured static private key, reading it from
+// localPrivkeyPath if that is what was configured.
+func (c *Config) privateKey() (NoisePrivateKey, error) {
+	if c.LocalPrivkeyPath == "" {
+		return parseKeyBase64(c.LocalPrivkey)
+	}
+	raw, err := os.ReadFile(c.LocalPrivkeyPath)
+	if err != nil {
+		return NoisePrivateKey{}, fmt.Errorf("reading localPrivkeyPath: %w", err)
+	}
+	return parseKeyBase64(strings.TrimSpace(string(raw)))
+}
+
 func (c *Config) validate() error {
 	if c.LocalID < 0 || c.LocalID > 255 {
 		return fmt.Errorf("localID must be 0-255, got %d", c.LocalID)
@@ -63,8 +90,11 @@ func (c *Config) validate() error {
 	if c.LocalPort <= 0 || c.LocalPort > 65535 {
 		return fmt.Errorf("localPort must be a valid port, got %d", c.LocalPort)
 	}
-	if c.LocalPrivkey == "" {
-		return fmt.Errorf("localPrivkey is required")
+	if c.LocalPrivkey == "" && c.LocalPrivkeyPath == "" {
+		return fmt.Errorf("one of localPrivkey or localPrivkeyPath is required")
+	}
+	if c.LocalPrivkey != "" && c.LocalPrivkeyPath != "" {
+		return fmt.Errorf("localPrivkey and localPrivkeyPath are mutually exclusive")
 	}
 	if c.Fwmark < 0 || c.Fwmark > 0xffffffff {
 		return fmt.Errorf("fwmark must fit in a uint32, got %d", c.Fwmark)

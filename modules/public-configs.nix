@@ -23,7 +23,7 @@ in
         options = {
           wgPubkey = mkOption {
             type = types.str;
-            description = "Public WireGuard key for the node.";
+            description = "Node public key (base64 Curve25519; used as the melnode peer public key, same format as a WireGuard key).";
           };
           defaultEndpoint = mkOption {
             type = types.nullOr types.str;

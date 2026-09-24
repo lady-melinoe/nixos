@@ -113,8 +113,6 @@
           "198.18.0.*"
           "198.19.0.*"
           "198.19.1.*"
-          "198.19.3.*"
-          "198.51.100.*"
         ];
         certAuthority = true;
         publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPbv4PWCmELT4XxevCL+k8RnjrwgOfULXGgWQsVJUg9T";
@@ -152,7 +150,7 @@
     "intra.melinoe.xyz"
     "ucc.asn.au"
   ];
-  melinoe.services.melinoe-route.enabled = true;
+  melinoe.services.melnode.enabled = true;
   melinoe.services.haproxy = {
     backendNodes = [
       {
@@ -178,7 +176,6 @@
   };
 
   melinoe.node.networking = {
-    wireguardBasePort = 64512;
     hostInternalPortAllNet.tcp = [ 5201 ]; # iperf3
   };
   melinoe.cluster.virtualMachines = [

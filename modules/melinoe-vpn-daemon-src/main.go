@@ -98,9 +98,9 @@ func main() {
 		log.Fatalf("config error: %v", err)
 	}
 
-	staticPrivate, err := parseKeyBase64(cfg.LocalPrivkey)
+	staticPrivate, err := cfg.privateKey()
 	if err != nil {
-		log.Fatalf("invalid localPrivkey: %v", err)
+		log.Fatalf("invalid private key: %v", err)
 	}
 
 	dev := newDevice(uint32(cfg.LocalID), staticPrivate)
@@ -162,7 +162,7 @@ func main() {
 		parsed, _ := parsePrefix(cfg.IdentityPrefix) // already validated in Config.validate
 		identityPrefix = &parsed
 	}
-	router := newRouter(dev, uint32(cfg.LocalID), cfg.TunPrefix, identityPrefix)
+	router := newRouter(dev, uint32(cfg.LocalID), cfg.TunPrefix, identityPrefix, cfg.TunCreateHookBin, cfg.TunDestroyHookBin)
 	dev.router = router
 
 	pathVector := newPathVector(dev, uint32(cfg.LocalID))

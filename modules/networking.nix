@@ -5,7 +5,7 @@
 }:
 let
   cfg = config.melinoe;
-  routeCfg = config.melinoe.services.melinoe-route;
+  melnodeCfg = config.melinoe.services.melnode;
   addr = config.melinoe.cluster.networking;
   nodeID = cfg.node.id;
 
@@ -56,28 +56,20 @@ let
       int4ToIp (net.network + id);
 
   nodeIntraIP = nodeAddress addr.hostCidr;
-  nodeWgIP = nodeAddress addr.wireguardCidr;
-  nodeLoopbackIP = nodeAddress addr.bgpCidr;
 in
 {
   config = {
     assertions = [
       {
-        assertion = routeCfg.enabled;
-        message = "melinoe.services.melinoe-route.enabled must be true for modules/networking.nix.";
+        assertion = melnodeCfg.enabled;
+        message = "melinoe.services.melnode.enabled must be true for modules/networking.nix.";
       }
     ];
 
     _module.args.melinoeNodeIntraIP = nodeIntraIP;
-    _module.args.melinoeNodeWgIP = nodeWgIP;
-    _module.args.melinoeNodeLoopbackIP = nodeLoopbackIP;
 
     networking.useDHCP = false;
     networking.interfaces.lo.ipv4.addresses = [
-      {
-        address = nodeLoopbackIP nodeID;
-        prefixLength = 32;
-      }
       {
         address = nodeIntraIP nodeID;
         prefixLength = 32;

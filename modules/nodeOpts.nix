@@ -46,12 +46,11 @@ in
       description = ''
         Whether this node runs Incus and hosts local containers/VMs.
 
-        Disable for cluster nodes that should still be full mesh/BGP members
-        (still get gre_ctmark routing, still receive routes to other nodes'
-        VMs, still advertise their own pub_ips/extraRoutes via melinoe-route)
-        but never run any containers themselves - melinoe-route.nix passes
-        --noLocalVMs to the route daemon in that case so it doesn't bother
-        scanning for local vm- interfaces that will never exist.
+        Disable for cluster nodes that should still be full mesh members
+        (still receive routes to other nodes' VMs, still advertise their own
+        pub_ips/extraRoutes via melnode) but never run any containers
+        themselves - melnode.nix doesn't bother scanning for local vm-
+        interfaces in that case, since they will never exist.
       '';
     };
 
@@ -110,8 +109,9 @@ in
           fwmark value - and, since uplink.nix also uses it as
           the policy-routing table id, table number - used to route return
           traffic for the internet uplink(s) back out via the uplink
-          interfaces instead of over the WireGuard mesh. Consumed by
-          wireguard.nix, uplink.nix, and nftables.nix; kept as a single
+          interfaces instead of over the mesh. Also set as melnode's socket
+          fwmark so its own UDP traffic stays on the uplink. Consumed by
+          melnode.nix, uplink.nix, and nftables.nix; kept as a single
           option so those three stay in sync.
         '';
       };
@@ -120,26 +120,15 @@ in
         type = types.ints.u32;
         default = 1000;
         description = ''
-          Base fwmark/route-table id for "route this VM's (or ipip tunnel's)
+          Base fwmark/route-table id for "route this VM's (or mesh tun's)
           traffic via node N" - node N gets mark/table vmOutboundMarkBase + N.
           nftables.nix derives its ct-mark matching range from this plus
           cluster.networking.nodeIdRange.max.
 
-          melinoe-route.nix's embedded Go daemon uses this same numbering for
-          its own ipip route-table allocation, passed through via table_base
-          in its JSON config, so changing this option propagates there
-          automatically.
-        '';
-      };
-
-      wireguardBasePort = mkOption {
-        type = types.port;
-        default = 64512;
-        description = ''
-          Base UDP port for WireGuard mesh listeners; node N listens on
-          wireguardBasePort + N. Equals BGP's ASN base by coincidence, not by any
-          actual relationship between the two - free to change independently if
-          it ever collides with an upstream firewall or another service.
+          melnode.nix passes this to melnode-helper (table_base in its JSON
+          config), which sets up the per-node tables and nft entries from
+          melnode's tun create/destroy hooks, so changing this option
+          propagates there automatically.
         '';
       };
 
@@ -147,13 +136,7 @@ in
         accessRuleType "TCP/UDP ports or IP protocols to accept from any source on the host's own INPUT chain, e.g. ssh/haproxy/incus."
       );
       specialHostAccess = mkOption (
-        accessRuleType "TCP/UDP ports or IP protocols to accept from the host range on the host's own INPUT chain, e.g. the melinoe-route protocol."
-      );
-      specialLoopbackAccess = mkOption (
-        accessRuleType "TCP/UDP ports or IP protocols to accept over a WireGuard interface from the node loopback range, e.g. ipip."
-      );
-      specialWgAccess = mkOption (
-        accessRuleType "TCP/UDP ports or IP protocols to accept over a WireGuard interface from the WireGuard subnet, e.g. BGP."
+        accessRuleType "TCP/UDP ports or IP protocols to accept from the host range on the host's own INPUT chain, e.g. the Incus cluster port."
       );
       hostInternalPortAllNet = mkOption (
         accessRuleType "TCP/UDP ports or IP protocols to accept from any of the internal subnets, e.g. iperf3."
@@ -209,31 +192,29 @@ in
             options = {
               id = mkOption {
                 type = types.int;
-                description = "Peer node ID (matches wg-keys mapping).";
+                description = "Peer node ID (must have a melinoe.nodePublicInfo entry).";
               };
               endpoint = mkOption {
                 type = types.nullOr types.str;
                 default = null;
-                description = "Override endpoint hostname/IP for this peer; if null, nodePublicInfo.<id>.defaultEndpoint is used.";
+                description = "Override endpoint IP for this peer (melnode takes an IP literal, no hostnames); if null, nodePublicInfo.<id>.defaultEndpoint is used.";
               };
-              allowedIPs = mkOption {
-                type = types.listOf types.str;
-                default = [
-                  config.melinoe.cluster.networking.wireguardCidr
-                  config.melinoe.cluster.networking.bgpCidr
-                ];
-                description = "Allowed IPs to route via this peer.";
-              };
-              persistentKeepalive = mkOption {
-                type = types.int;
-                default = 25;
-                description = "Persistent keepalive in seconds.";
+              prependCount = mkOption {
+                type = types.ints.unsigned;
+                default = 0;
+                description = ''
+                  Path-vector AS-prepending for routes relayed out over this
+                  link (melnode [[link]] prependCount). Raises the path length
+                  anyone downstream sees for routes relayed this way, making
+                  this link less preferred: the traffic-engineering lever that
+                  replaces region preference. 0 is plain shortest-path.
+                '';
               };
             };
           }
         );
         default = [ ];
-        description = "WireGuard peers; used to render interfaces and derive BGP neighbors.";
+        description = "melnode links: one Noise tunnel per entry, all on melinoe.services.melnode.port.";
       };
     };
   };
