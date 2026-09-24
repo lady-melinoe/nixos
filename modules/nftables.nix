@@ -61,7 +61,6 @@ let
     ) natMappings;
   nftIfaceSet =
     names: if names == [ ] then "{ }" else "{ ${lib.concatStringsSep ", " (map (n: "\"${n}\"") names)} }";
-  wgIfaceNames = map (peer: "wg-${toString peer.id}") netCfg.peers;
   vmOutboundMarkBase = netCfg.vmOutboundMarkBase;
   vmOutboundRules = lib.filter (v: v != null) (
     map (
@@ -112,9 +111,7 @@ let
     + lib.optionalString (access.ipProtocols != [ ]) (line "ip protocol ${portSet access.ipProtocols}");
 
   hostRangeCidr = addr.hostCidr;
-  loopbackCidr = addr.bgpCidr;
-  wgCidr = addr.wireguardCidr;
-  internalSubnetsSet = "{ ${addr.containerCidr}, ${wgCidr}, ${loopbackCidr} }";
+  internalSubnetsSet = "{ ${addr.containerCidr} }";
 
   renderVmSpecialHostAccess = lib.concatMapStrings (
     vm: renderAccessRule { saddr = vmSaddr vm; } vm.specialHostAccess
@@ -144,7 +141,6 @@ in
     networking.nftables.enable = true;
     networking.nftables.ruleset = ''
             flush ruleset
-            define wg_ifs = ${nftIfaceSet wgIfaceNames}
             define uplink_ifs = ${nftIfaceSet uplinkIfaceNames}
         ${lib.optionalString (pubIps != [ ]) ''
           define pubroutefix = { ${builtins.concatStringsSep ", " pubIps} }
@@ -159,8 +155,6 @@ in
                 iif "lo" accept
       ${renderAccessRule { } netCfg.openPorts}
       ${renderAccessRule { saddr = internalSubnetsSet; } netCfg.hostInternalPortAllNet}
-      ${renderAccessRule { iface = "$wg_ifs"; saddr = wgCidr; } netCfg.specialWgAccess}
-      ${renderAccessRule { iface = "$wg_ifs"; saddr = loopbackCidr; } netCfg.specialLoopbackAccess}
       ${renderAccessRule { saddr = hostRangeCidr; } netCfg.specialHostAccess}
       ${renderVmSpecialHostAccess}
               }
@@ -199,7 +193,7 @@ in
               }
             }
             table inet mangle {
-              # populated at runtime by melinoe-route (nftAddPeer/nftRemovePeer)
+              # populated at runtime by melnode-helper (melnode tun create/destroy hooks)
               set melinoe_peer_marks {
                 type mark
               }

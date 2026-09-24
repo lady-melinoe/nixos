@@ -40,8 +40,6 @@ let
   smallestBlockSize = lib.foldl' lib.min (1 * 256 * 256 * 256) (
     map (cidr: (parseCidr cidr).blockSize) [
       addr.hostCidr
-      addr.wireguardCidr
-      addr.bgpCidr
     ]
   );
 
@@ -128,7 +126,7 @@ in
         max = mkOption {
           type = types.int;
           default = smallestBlockSize - 2;
-          description = "Highest valid melinoe.node.id. Defaults to the capacity of the smallest of hostCidr/wireguardCidr/bgpCidr, minus the two ends reserved for network/broadcast-shaped special addresses.";
+          description = "Highest valid melinoe.node.id. Defaults to the capacity of hostCidr, minus the two ends reserved for network/broadcast-shaped special addresses.";
         };
       };
 
@@ -161,21 +159,6 @@ in
           Not yet wired up to anything - reserved here so containerCidr's
           documented exclusions (hostCidr, this address) stay accurate as
           that lands.
-        '';
-      };
-
-      wireguardCidr = mkOption {
-        type = types.str;
-        default = "198.19.3.0/24";
-        description = "The WireGuard mesh subnet. Node N's WireGuard address is given by melinoeNodeWgIP N.";
-      };
-
-      bgpCidr = mkOption {
-        type = types.str;
-        default = "198.51.100.0/24";
-        description = ''
-          Node loopback range, used as BGP router-ids and ipip tunnel endpoints.
-          Node N's loopback address is given by melinoeNodeLoopbackIP N.
         '';
       };
     };

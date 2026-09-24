@@ -38,7 +38,7 @@
       gateway = null;
     }
   ];
-  melinoe.services.melinoe-route.extraRoutes = [ "130.95.13.0/24" ];
+  melinoe.services.melnode.extraRoutes = [ "130.95.13.0/24" ];
   melinoe.node.networking.peers = [
     {
       id = 5;

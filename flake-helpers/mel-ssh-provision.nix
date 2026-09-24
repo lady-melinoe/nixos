@@ -40,7 +40,6 @@ let
         ]
         ++ map stripCidr internetIps
         ++ [
-          "198.19.3.${nodeId}"
           "198.18.0.${nodeId}"
         ]
       );

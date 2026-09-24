@@ -37,21 +37,30 @@ type Router struct {
 	// interface rather than a different address per link.
 	identityPrefix *pvPrefix
 
+	// tunCreateHookBin / tunDestroyHookBin (config: tunCreateHookBin,
+	// tunDestroyHookBin), if non-empty, are run as `<bin> <peerid>
+	// <ifname>` after a tun is created and configured / after it is
+	// closed and deleted. See hooks.go.
+	tunCreateHookBin  string
+	tunDestroyHookBin string
+
 	mu          sync.RWMutex
 	tunByPeerID map[uint32]tun.Device
 	tunWriters  map[uint32]*tunWriter // see LookupTunWriter / runTunWriter below
 	routeTable  map[uint32]uint32     // dst peerid -> nhid (a link peerid)
 }
 
-func newRouter(dev *Device, localID uint32, tunPrefix string, identityPrefix *pvPrefix) *Router {
+func newRouter(dev *Device, localID uint32, tunPrefix string, identityPrefix *pvPrefix, tunCreateHookBin, tunDestroyHookBin string) *Router {
 	return &Router{
-		dev:            dev,
-		localID:        localID,
-		tunPrefix:      tunPrefix,
-		identityPrefix: identityPrefix,
-		tunByPeerID:    make(map[uint32]tun.Device),
-		tunWriters:     make(map[uint32]*tunWriter),
-		routeTable:     make(map[uint32]uint32),
+		dev:               dev,
+		localID:           localID,
+		tunPrefix:         tunPrefix,
+		identityPrefix:    identityPrefix,
+		tunCreateHookBin:  tunCreateHookBin,
+		tunDestroyHookBin: tunDestroyHookBin,
+		tunByPeerID:       make(map[uint32]tun.Device),
+		tunWriters:        make(map[uint32]*tunWriter),
+		routeTable:        make(map[uint32]uint32),
 	}
 }
 
@@ -149,8 +158,14 @@ func (r *Router) RemoveRoute(dstPeerID uint32) {
 		}
 	drained:
 	}
+	// Grab the name before Close (Name() is unusable afterwards); the
+	// destroy hook runs after the interface is gone.
+	name, nameErr := t.Name()
 	if err := t.Close(); err != nil {
 		r.dev.log.Errorf("router: closing tun for no-longer-routable peerid %d: %v", dstPeerID, err)
+	}
+	if nameErr == nil {
+		r.runTunHook("destroy", r.tunDestroyHookBin, dstPeerID, name)
 	}
 	r.dev.log.Verbosef("router: route to peerid %d withdrawn, tun removed", dstPeerID)
 }
@@ -177,8 +192,12 @@ func (r *Router) closeAllTuns() {
 	r.tunByPeerID = make(map[uint32]tun.Device)
 	r.mu.Unlock()
 	for peerID, t := range tuns {
+		name, nameErr := t.Name()
 		if err := t.Close(); err != nil {
 			r.dev.log.Errorf("closing tun for peerid %d: %v", peerID, err)
+		}
+		if nameErr == nil {
+			r.runTunHook("destroy", r.tunDestroyHookBin, peerID, name)
 		}
 	}
 }
@@ -232,6 +251,12 @@ func (r *Router) createAndStartTun(peerID uint32) {
 		} else {
 			r.dev.log.Errorf("router: netlink lookup for tun %q failed: %v", name, err)
 		}
+	}
+
+	// Create hook runs once the tun is up and has its identity address,
+	// but before traffic can flow (readers/writer not started yet).
+	if name, err := t.Name(); err == nil {
+		r.runTunHook("create", r.tunCreateHookBin, peerID, name)
 	}
 
 	w := newTunWriter(peerID)
