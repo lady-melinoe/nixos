@@ -12,9 +12,7 @@ let
   pow2 = n: if n == 0 then 1 else 2 * pow2 (n - 1);
   mod = a: b: a - (a / b) * b;
 
-  ip4ToInt =
-    ip:
-    lib.foldl' (acc: octet: acc * 256 + lib.toInt octet) 0 (lib.splitString "." ip);
+  ip4ToInt = ip: lib.foldl' (acc: octet: acc * 256 + lib.toInt octet) 0 (lib.splitString "." ip);
 
   int4ToIp =
     n:

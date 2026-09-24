@@ -9,14 +9,10 @@ let
 
   nodeNames = builtins.attrNames nixosConfigurations;
 
-  knownNodesStr =
-    lib.concatStringsSep ", " nodeNames;
+  knownNodesStr = lib.concatStringsSep ", " nodeNames;
 
   deployNodesJson = builtins.toJSON (
-    lib.mapAttrs (
-      name: _:
-      "${name}.${deployDomain}"
-    ) nixosConfigurations
+    lib.mapAttrs (name: _: "${name}.${deployDomain}") nixosConfigurations
   );
 in
 pkgs.writeShellApplication {

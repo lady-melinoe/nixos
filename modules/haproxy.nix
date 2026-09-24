@@ -13,8 +13,12 @@ let
   serverLine =
     port: node:
     "          server ${node.name} ${node.address}:${toString port} send-proxy check check-send-proxy";
-  httpServers = lib.concatMapStringsSep "\n" (serverLine cfg.frontendPorts.fe_proxy_http) cfg.backendNodes;
-  httpsServers = lib.concatMapStringsSep "\n" (serverLine cfg.frontendPorts.fe_proxy_https) cfg.backendNodes;
+  httpServers =
+    lib.concatMapStringsSep "\n" (serverLine cfg.frontendPorts.fe_proxy_http)
+      cfg.backendNodes;
+  httpsServers =
+    lib.concatMapStringsSep "\n" (serverLine cfg.frontendPorts.fe_proxy_https)
+      cfg.backendNodes;
 
   proxyAllowedSrc = lib.concatStringsSep " " cfg.proxyProtocolAllowedSources;
 
@@ -40,21 +44,20 @@ let
       tls,
     }:
     let
-      lines =
-        [
-          "frontend ${name}"
-          "    bind *:${toString port}"
-          "    tcp-request connection reject if !{ src ${proxyAllowedSrc} }"
-          "    tcp-request connection expect-proxy layer4 if { src ${proxyAllowedSrc} }"
-        ]
-        ++ lib.optional (
-          cfg.proxyProtocolAllowedSources != [ ]
-        ) "    tcp-request content set-log-level silent if { src ${proxyAllowedSrc} }"
-        ++ lib.optionals tls [
-          "    tcp-request inspect-delay 5s"
-          "    tcp-request content accept if { req_ssl_hello_type 1 }"
-        ]
-        ++ [ "    default_backend ${backend}" ];
+      lines = [
+        "frontend ${name}"
+        "    bind *:${toString port}"
+        "    tcp-request connection reject if !{ src ${proxyAllowedSrc} }"
+        "    tcp-request connection expect-proxy layer4 if { src ${proxyAllowedSrc} }"
+      ]
+      ++ lib.optional (
+        cfg.proxyProtocolAllowedSources != [ ]
+      ) "    tcp-request content set-log-level silent if { src ${proxyAllowedSrc} }"
+      ++ lib.optionals tls [
+        "    tcp-request inspect-delay 5s"
+        "    tcp-request content accept if { req_ssl_hello_type 1 }"
+      ]
+      ++ [ "    default_backend ${backend}" ];
     in
     lib.concatStringsSep "\n" lines + "\n";
 in

@@ -9,9 +9,7 @@ let
 
   knownHostLine =
     entry:
-    "${lib.optionalString entry.certAuthority "@cert-authority "}${
-      lib.concatStringsSep "," entry.hosts
-    } ${entry.publicKey}";
+    "${lib.optionalString entry.certAuthority "@cert-authority "}${lib.concatStringsSep "," entry.hosts} ${entry.publicKey}";
 in
 {
   options.melinoe.services.ssh = {

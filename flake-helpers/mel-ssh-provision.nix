@@ -14,9 +14,7 @@ let
       nodeId = toString c.melinoe.node.id;
 
       internetIps = lib.concatMap (
-        uplink:
-        [ uplink.ip ]
-        ++ lib.optional (uplink.pub_ip != null) uplink.pub_ip
+        uplink: [ uplink.ip ] ++ lib.optional (uplink.pub_ip != null) uplink.pub_ip
       ) c.melinoe.node.networking.uplinks;
     in
     {

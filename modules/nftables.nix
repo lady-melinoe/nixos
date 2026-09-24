@@ -60,7 +60,8 @@ let
       + (renderProtoRule "udp" mapping.udp "ip daddr ${destExpr}" mapping.dst)
     ) natMappings;
   nftIfaceSet =
-    names: if names == [ ] then "{ }" else "{ ${lib.concatStringsSep ", " (map (n: "\"${n}\"") names)} }";
+    names:
+    if names == [ ] then "{ }" else "{ ${lib.concatStringsSep ", " (map (n: "\"${n}\"") names)} }";
   vmOutboundMarkBase = netCfg.vmOutboundMarkBase;
   vmOutboundRules = lib.filter (v: v != null) (
     map (
@@ -81,14 +82,8 @@ let
 
   renderVmHairpinSnatRules =
     let
-      vmVmMap = builtins.concatStringsSep ", " (
-        map (vm: "${vmIpAddr vm} . ${vmIpAddr vm}") vms
-      );
-      hairpinDests =
-        if pubIps != [ ] then
-          "{ ${hostAddr}, $pubroutefix }"
-        else
-          "{ ${hostAddr} }";
+      vmVmMap = builtins.concatStringsSep ", " (map (vm: "${vmIpAddr vm} . ${vmIpAddr vm}") vms);
+      hairpinDests = if pubIps != [ ] then "{ ${hostAddr}, $pubroutefix }" else "{ ${hostAddr} }";
     in
     ''
       ct original ip daddr ${hairpinDests} ip saddr . ip daddr { ${vmVmMap} } snat to 198.18.255.254

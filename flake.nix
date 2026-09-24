@@ -25,15 +25,10 @@
           dirEntries = builtins.readDir nodeDir;
 
           nodeNames = lib.filterAttrs (
-            name: type:
-            type == "directory"
-            && builtins.pathExists (nodeDir + "/${name}/node.nix")
+            name: type: type == "directory" && builtins.pathExists (nodeDir + "/${name}/node.nix")
           ) dirEntries;
         in
-        lib.mapAttrs (
-          name: _:
-          nodeDir + "/${name}/node.nix"
-        ) nodeNames;
+        lib.mapAttrs (name: _: nodeDir + "/${name}/node.nix") nodeNames;
 
       mkNixosConfiguration =
         _: module:
@@ -51,8 +46,7 @@
           ];
         };
 
-      nixosConfigurations =
-        lib.mapAttrs mkNixosConfiguration nodes;
+      nixosConfigurations = lib.mapAttrs mkNixosConfiguration nodes;
 
       mel-ssh-provision = import ./flake-helpers/mel-ssh-provision.nix {
         inherit pkgs lib nixosConfigurations;
