@@ -83,7 +83,6 @@ func (peer *Peer) SendKeepalive() {
 		elemsContainer.elems = append(elemsContainer.elems, elem)
 		select {
 		case peer.queue.staged <- elemsContainer:
-			peer.device.log.Verbosef("%v - Sending keepalive packet", peer)
 		default:
 			peer.device.PutMessageBuffer(elem.buffer)
 			peer.device.PutOutboundElement(elem)
@@ -113,8 +112,6 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	peer.handshake.lastSentHandshake = time.Now()
 	peer.handshake.mutex.Unlock()
 
-	peer.device.log.Verbosef("%v - Sending handshake initiation", peer)
-
 	msg, err := peer.device.CreateMessageInitiation(peer)
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to create initiation message: %v", peer, err)
@@ -141,8 +138,6 @@ func (peer *Peer) SendHandshakeResponse() error {
 	peer.handshake.mutex.Lock()
 	peer.handshake.lastSentHandshake = time.Now()
 	peer.handshake.mutex.Unlock()
-
-	peer.device.log.Verbosef("%v - Sending handshake response", peer)
 
 	response, err := peer.device.CreateMessageResponse(peer)
 	if err != nil {
@@ -173,7 +168,6 @@ func (peer *Peer) SendHandshakeResponse() error {
 }
 
 func (device *Device) SendHandshakeCookie(initiatingElem *QueueHandshakeElement) error {
-	device.log.Verbosef("Sending cookie response for denied handshake message for %v", initiatingElem.endpoint.DstToString())
 
 	sender := binary.LittleEndian.Uint32(initiatingElem.packet[4:8])
 	reply, err := device.cookieChecker.CreateReply(initiatingElem.packet, sender, initiatingElem.endpoint.DstToBytes())
@@ -215,11 +209,8 @@ func (peer *Peer) keepKeyFreshSending() {
 // resolving peerID's next hop and stamping our header on.
 func (device *Device) RoutineReadFromTUN(peerID uint32, devTun tun.Device) {
 	defer func() {
-		device.log.Verbosef("Routine: TUN reader (peerid %d) - stopped", peerID)
 		device.queue.encryption.wg.Done()
 	}()
-
-	device.log.Verbosef("Routine: TUN reader (peerid %d) - started", peerID)
 
 	var (
 		batchSize = devTun.BatchSize()
@@ -306,7 +297,6 @@ func (device *Device) RoutineReadFromTUN(peerID uint32, devTun tun.Device) {
 				// TODO: record stat for this
 				// This will happen if MSS is surprisingly small (< 576)
 				// coincident with reasonably high throughput.
-				device.log.Verbosef("Dropped some packets from multi-segment read: %v", readErr)
 				continue
 			}
 			if !device.isClosed() {
@@ -335,10 +325,8 @@ func (device *Device) RoutineReadFromTUN(peerID uint32, devTun tun.Device) {
 // was asked for here).
 func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {
 	ch := peer.queue.staged
-	class := "data"
 	if elems.isControl {
 		ch = peer.queue.stagedControl
-		class = "control"
 	}
 
 	select {
@@ -354,7 +342,6 @@ func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {
 		peer.device.PutOutboundElement(elem)
 	}
 	peer.device.PutOutboundElementsContainer(elems)
-	peer.device.log.Verbosef("%v - staged %s queue full, dropping newest batch (%d packets)", peer, class, n)
 }
 
 // submit hands a container off to this peer's ordered UDP-send queue
@@ -426,12 +413,10 @@ func (peer *Peer) submit(elemsContainer *QueueOutboundElementsContainer, isContr
 	outboundQ := peer.queue.outbound
 	encQ := peer.device.queue.encryption
 	mu := &peer.device.queue.dataSubmitMu
-	class := "data"
 	if isControl {
 		outboundQ = peer.queue.controlOutbound
 		encQ = peer.device.queue.controlEncryption
 		mu = &peer.device.queue.controlSubmitMu
-		class = "control"
 	}
 
 	mu.Lock()
@@ -444,7 +429,6 @@ func (peer *Peer) submit(elemsContainer *QueueOutboundElementsContainer, isContr
 			peer.device.PutOutboundElement(elem)
 		}
 		peer.device.PutOutboundElementsContainer(elemsContainer)
-		peer.device.log.Verbosef("%v - %s outbound/encryption queue full, dropping newest batch (%d packets)", peer, class, n)
 		return
 	}
 	// Neither send below can actually block in steady-state operation:
@@ -590,9 +574,6 @@ func (device *Device) RoutineEncryption(id int) {
 	var paddingZeros [PaddingMultiple]byte
 	var nonce [chacha20poly1305.NonceSize]byte
 
-	defer device.log.Verbosef("Routine: encryption worker %d - stopped", id)
-	device.log.Verbosef("Routine: encryption worker %d - started", id)
-
 	process := func(elemsContainer *QueueOutboundElementsContainer) {
 		for _, elem := range elemsContainer.elems {
 			// populate header fields
@@ -662,10 +643,8 @@ func (device *Device) RoutineEncryption(id int) {
 func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 	device := peer.device
 	defer func() {
-		defer device.log.Verbosef("%v - Routine: sequential sender - stopped", peer)
 		peer.stopping.Done()
 	}()
-	device.log.Verbosef("%v - Routine: sequential sender - started", peer)
 
 	bufs := make([][]byte, 0, maxBatchSize)
 
@@ -718,7 +697,6 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 		if err != nil {
 			var errGSO conn.ErrUDPGSODisabled
 			if errors.As(err, &errGSO) {
-				device.log.Verbosef(err.Error())
 				err = errGSO.RetryErr
 			}
 		}

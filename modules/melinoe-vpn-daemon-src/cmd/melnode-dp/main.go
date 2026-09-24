@@ -36,9 +36,8 @@
 //
 //	sudo ./melnode-dp -socket /run/melnode/dp.sock
 //
-// Generate a keypair for a new node:
-//
-//	./melnode-dp -genkey
+// Keys are plain WireGuard keys: generate one with `wg genkey`, and the
+// matching public key with `wg pubkey`.
 //
 // Profile a running node:
 //
@@ -63,8 +62,6 @@ import (
 
 func main() {
 	socket := flag.String("socket", "", "path of the unix socket melnode-cp attaches to (required)")
-	genkey := flag.Bool("genkey", false, "generate a new private/public keypair (base64) and exit -- for populating the private key file / peerPubkey")
-	verbose := flag.Bool("verbose", false, "log handshakes, peer start/stop, and other per-event detail (default: errors only)")
 	pprofAddr := flag.String("pprof", "", "if set, serve net/http/pprof on this address (e.g. 127.0.0.1:16061) -- also enables block/mutex profiling, which has real overhead, so leave this unset for normal (non-profiling) runs")
 	flag.Parse()
 
@@ -80,12 +77,8 @@ func main() {
 		debug.SetGCPercent(400)
 	}
 
-	if *genkey {
-		genkeyAndExit()
-		return
-	}
 	if *socket == "" {
-		log.Fatal("-socket is required (or pass -genkey to generate a keypair)")
+		log.Fatal("-socket is required")
 	}
 
 	if *pprofAddr != "" {
@@ -101,7 +94,7 @@ func main() {
 
 	quit := make(chan struct{})
 	var quitOnce sync.Once
-	h := &ctlHandler{verbose: *verbose, quit: func() { quitOnce.Do(func() { close(quit) }) }}
+	h := &ctlHandler{quit: func() { quitOnce.Do(func() { close(quit) }) }}
 	srv, err := dpproto.NewServer(*socket, h)
 	if err != nil {
 		log.Fatalf("control socket: failed to listen on %s: %v", *socket, err)

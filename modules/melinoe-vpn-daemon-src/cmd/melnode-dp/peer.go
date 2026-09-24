@@ -148,7 +148,6 @@ func (peer *Peer) Start() {
 	}
 
 	device := peer.device
-	device.log.Verbosef("%v - Starting", peer)
 
 	peer.stopping.Wait()
 	peer.stopping.Add(2)
@@ -222,8 +221,6 @@ func (peer *Peer) Stop() {
 	if !peer.isRunning.Swap(false) {
 		return
 	}
-
-	peer.device.log.Verbosef("%v - Stopping", peer)
 
 	peer.timersStop()
 	peer.queue.inbound.c <- nil

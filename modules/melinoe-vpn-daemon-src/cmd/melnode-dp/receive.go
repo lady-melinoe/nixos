@@ -111,7 +111,6 @@ func (device *Device) submitInbound(peer *Peer, elemsContainer *QueueInboundElem
 		}
 		device.PutInboundElementsContainer(elemsContainer)
 		device.stats.rxQueueFull.Add(uint64(n))
-		device.log.Verbosef("%v - inbound/decryption queue full, dropping newest batch (%d packets)", peer, n)
 		return
 	}
 	// Neither send below can actually block: capacity on both channels
@@ -126,15 +125,11 @@ func (device *Device) submitInbound(peer *Peer, elemsContainer *QueueInboundElem
 }
 
 func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.ReceiveFunc) {
-	recvName := recv.PrettyName()
 	defer func() {
-		device.log.Verbosef("Routine: receive incoming %s - stopped", recvName)
 		device.queue.decryption.wg.Done()
 		device.queue.handshake.wg.Done()
 		device.net.stopping.Done()
 	}()
-
-	device.log.Verbosef("Routine: receive incoming %s - started", recvName)
 
 	// receive datagrams until conn is closed
 
@@ -168,7 +163,6 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			device.log.Verbosef("Failed to receive %s packet: %v", recvName, err)
 			if neterr, ok := err.(net.Error); ok && !neterr.Temporary() {
 				return
 			}
@@ -259,7 +253,6 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 				}
 
 			default:
-				device.log.Verbosef("Received message with unknown type")
 				continue
 			}
 
@@ -293,9 +286,6 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 func (device *Device) RoutineDecryption(id int) {
 	var nonce [chacha20poly1305.NonceSize]byte
 
-	defer device.log.Verbosef("Routine: decryption worker %d - stopped", id)
-	device.log.Verbosef("Routine: decryption worker %d - started", id)
-
 	for elemsContainer := range device.queue.decryption.c {
 		for _, elem := range elemsContainer.elems {
 			// split message into fields
@@ -325,10 +315,8 @@ func (device *Device) RoutineDecryption(id int) {
  */
 func (device *Device) RoutineHandshake(id int) {
 	defer func() {
-		device.log.Verbosef("Routine: handshake worker %d - stopped", id)
 		device.queue.encryption.wg.Done()
 	}()
-	device.log.Verbosef("Routine: handshake worker %d - started", id)
 
 	for elem := range device.queue.handshake.c {
 
@@ -343,7 +331,6 @@ func (device *Device) RoutineHandshake(id int) {
 			var reply MessageCookieReply
 			err := reply.unmarshal(elem.packet)
 			if err != nil {
-				device.log.Verbosef("Failed to decode cookie reply")
 				goto skip
 			}
 
@@ -358,9 +345,7 @@ func (device *Device) RoutineHandshake(id int) {
 			// consume reply
 
 			if peer := entry.peer; peer.isRunning.Load() {
-				device.log.Verbosef("Receiving cookie response from %s", elem.endpoint.DstToString())
 				if !peer.cookieGenerator.ConsumeReply(&reply) {
-					device.log.Verbosef("Could not decrypt invalid cookie response")
 				}
 			}
 
@@ -371,7 +356,6 @@ func (device *Device) RoutineHandshake(id int) {
 			// check mac fields and maybe ratelimit
 
 			if !device.cookieChecker.CheckMAC1(elem.packet) {
-				device.log.Verbosef("Received packet with invalid mac1")
 				goto skip
 			}
 
@@ -416,7 +400,6 @@ func (device *Device) RoutineHandshake(id int) {
 
 			peer := device.ConsumeMessageInitiation(&msg)
 			if peer == nil {
-				device.log.Verbosef("Received invalid initiation message from %s", elem.endpoint.DstToString())
 				goto skip
 			}
 
@@ -428,7 +411,6 @@ func (device *Device) RoutineHandshake(id int) {
 			// update endpoint
 			peer.SetEndpointFromPacket(elem.endpoint)
 
-			device.log.Verbosef("%v - Received handshake initiation", peer)
 			peer.rxBytes.Add(uint64(len(elem.packet)))
 
 			peer.SendHandshakeResponse()
@@ -448,14 +430,12 @@ func (device *Device) RoutineHandshake(id int) {
 
 			peer := device.ConsumeMessageResponse(&msg)
 			if peer == nil {
-				device.log.Verbosef("Received invalid response message from %s", elem.endpoint.DstToString())
 				goto skip
 			}
 
 			// update endpoint
 			peer.SetEndpointFromPacket(elem.endpoint)
 
-			device.log.Verbosef("%v - Received handshake response", peer)
 			peer.rxBytes.Add(uint64(len(elem.packet)))
 
 			// update timers
@@ -484,10 +464,8 @@ func (device *Device) RoutineHandshake(id int) {
 func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 	device := peer.device
 	defer func() {
-		device.log.Verbosef("%v - Routine: sequential receiver - stopped", peer)
 		peer.stopping.Done()
 	}()
-	device.log.Verbosef("%v - Routine: sequential receiver - started", peer)
 
 	localByPeer := make(map[*tunWriter][]tunWriteItem)
 	forwardsByNextHop := make(map[*Peer]*QueueOutboundElementsContainer)
@@ -519,7 +497,6 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			rxBytesLen += uint64(len(elem.packet) + MinMessageSize)
 
 			if len(elem.packet) == 0 {
-				device.log.Verbosef("%v - Receiving keepalive packet", peer)
 				continue
 			}
 			dataPacketReceived = true
@@ -534,7 +511,6 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			// addresses" concept, deliberately not invented here.
 			if len(elem.packet) < headerSize {
 				device.stats.rxBad.Add(1)
-				device.log.Verbosef("Packet too short for header from %v", peer)
 				continue
 			}
 			proto, src, dst := elem.packet[0], elem.packet[1], elem.packet[2]
@@ -561,7 +537,6 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 					elem.packet = elem.packet[:headerSize+int(length)]
 				default:
 					device.stats.rxBad.Add(1)
-					device.log.Verbosef("proto-0 packet with invalid inner IP version from %v", peer)
 					continue
 				}
 			default:
@@ -587,7 +562,6 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				w, ok := device.router.LookupTunWriter(uint32(src))
 				if !ok {
 					device.stats.rxNoTun.Add(1)
-					device.log.Verbosef("router: packet destined for us from peerid %d, but no tun interface exists for that peer -- dropping", src)
 					continue
 				}
 				localByPeer[w] = append(localByPeer[w], tunWriteItem{buffer: elem.buffer, packet: elem.packet})
@@ -616,7 +590,6 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				// is plaintext here and gets re-encrypted on the way out.
 				if elem.packet[hdrOffTTL] <= 1 {
 					device.stats.rxTTL.Add(1)
-					device.log.Verbosef("router: ttl expired forwarding peerid %d -> %d from %v -- dropping", src, dst, peer)
 					continue
 				}
 				nextHop := device.router.resolveNextHop(uint32(dst))
@@ -665,7 +638,6 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				// liveness/path-vector packets in it) waiting for
 				// room.
 				device.stats.rxTunFull.Add(uint64(len(items)))
-				device.log.Verbosef("tun writer for peerid %d full, dropping %d packets", w.peerID, len(items))
 				for _, it := range items {
 					device.PutMessageBuffer(it.buffer)
 				}
