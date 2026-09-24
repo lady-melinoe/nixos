@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"sync"
 
@@ -61,13 +62,11 @@ type Router struct {
 	tunWriters  map[uint32]*tunWriter // see LookupTunWriter / runTunWriter below
 	routeTable  map[uint32]uint32     // dst peerid -> nhid (a link peerid)
 
-	// noTuns skips tun creation in AddOrUpdateRoute -- test seam only, so
-	// path-vector logic can be exercised without privileges or /dev/net/tun.
-	noTuns bool
+	reconcilerState // see reconcile.go
 }
 
 func newRouter(dev *Device, localID uint32, tunPrefix string, identityPrefix *pvPrefix, tunCreateHookBin, tunDestroyHookBin string) *Router {
-	return &Router{
+	r := &Router{
 		dev:               dev,
 		localID:           localID,
 		tunPrefix:         tunPrefix,
@@ -79,6 +78,8 @@ func newRouter(dev *Device, localID uint32, tunPrefix string, identityPrefix *pv
 		tunWriters:        make(map[uint32]*tunWriter),
 		routeTable:        make(map[uint32]uint32),
 	}
+	r.reconcilerState.init(r)
+	return r
 }
 
 // peerLock returns the lifecycle lock for one peerid, see Router.peerLocks.
@@ -117,40 +118,29 @@ func (r *Router) LookupTunWriter(peerID uint32) (*tunWriter, bool) {
 	return w, ok
 }
 
-// AddOrUpdateRoute installs or repoints a route, creating (and starting
-// the reader goroutine for) a tun on first use for this dst -- called
-// by PathVector whenever it selects a new best path to some dst, per
-// the "create on first route learned" decision (PROJECT_STATE.md).
-// Repointing an existing route to a different nhid is just a table
-// update; the tun and its reader goroutine are untouched (LookupRoute's
-// per-round re-resolution is what makes that safe).
-func (r *Router) AddOrUpdateRoute(dstPeerID, nhid uint32) {
+// ensureTun creates (and starts the reader goroutine for) dstPeerID's tun if
+// it doesn't have one. Only the reconciler calls it (reconcile.go); the
+// route table itself is set separately via SetRoutes. Waits on the peer's
+// lifecycle lock, so it never races destroyTun.
+func (r *Router) ensureTun(dstPeerID uint32) error {
 	pl := r.peerLock(dstPeerID)
 	pl.Lock()
 	defer pl.Unlock()
 
-	r.mu.Lock()
-	_, hadRoute := r.routeTable[dstPeerID]
-	r.routeTable[dstPeerID] = nhid
+	r.mu.RLock()
 	_, hasTun := r.tunByPeerID[dstPeerID]
-	r.mu.Unlock()
-
-	if hadRoute {
-		r.dev.log.Verbosef("router: route to peerid %d updated, now via nhid %d", dstPeerID, nhid)
-	} else {
-		r.dev.log.Verbosef("router: new route to peerid %d via nhid %d", dstPeerID, nhid)
+	r.mu.RUnlock()
+	if hasTun {
+		return nil
 	}
-
-	if !hasTun && !r.noTuns {
-		r.createAndStartTun(dstPeerID)
-	}
+	return r.createAndStartTun(dstPeerID)
 }
 
-// RemoveRoute withdraws a route and tears down its tun immediately (per
-// the "withdraw immediately" decision), closing the tun causes its
-// RoutineReadFromTUN goroutine to exit on its next failed Read, same as
-// Device.Close() already relies on for shutdown.
-func (r *Router) RemoveRoute(dstPeerID uint32) {
+// destroyTun tears down dstPeerID's tun immediately (per the "withdraw
+// immediately" decision): closing it makes its RoutineReadFromTUN goroutine
+// exit on its next failed Read, same as Device.Close() already relies on for
+// shutdown. Only the reconciler calls it.
+func (r *Router) destroyTun(dstPeerID uint32) {
 	// Waits for an in-flight creation of this peer's tun to finish, so the
 	// destroy hook can never run before (or during) the create hook.
 	pl := r.peerLock(dstPeerID)
@@ -158,7 +148,6 @@ func (r *Router) RemoveRoute(dstPeerID uint32) {
 	defer pl.Unlock()
 
 	r.mu.Lock()
-	delete(r.routeTable, dstPeerID)
 	t, hadTun := r.tunByPeerID[dstPeerID]
 	if hadTun {
 		delete(r.tunByPeerID, dstPeerID)
@@ -207,7 +196,7 @@ func (r *Router) RemoveRoute(dstPeerID uint32) {
 	if nameErr == nil {
 		r.runTunHook("destroy", r.tunDestroyHookBin, dstPeerID, name)
 	}
-	r.dev.log.Verbosef("router: route to peerid %d withdrawn, tun removed", dstPeerID)
+	r.dev.log.Verbosef("router: tun for peerid %d removed", dstPeerID)
 }
 
 // maxTunBatchSize is the RLock'd read used by Device.batchSize().
@@ -242,11 +231,10 @@ func (r *Router) closeAllTuns() {
 	}
 }
 
-func (r *Router) createAndStartTun(peerID uint32) {
+func (r *Router) createAndStartTun(peerID uint32) error {
 	t, err := createPeerTun(r.tunPrefix, peerID, r.dev.mtu)
 	if err != nil {
-		r.dev.log.Errorf("router: failed to create tun for newly-routable peerid %d: %v", peerID, err)
-		return
+		return fmt.Errorf("creating tun: %w", err)
 	}
 
 	// Bring the interface administratively up ourselves -- this needs
@@ -309,6 +297,7 @@ func (r *Router) createAndStartTun(peerID uint32) {
 	go r.runTunWriter(peerID, t, w)
 	r.dev.queue.encryption.wg.Add(1) // matches RoutineReadFromTUN's own wg.Done() on exit
 	go r.dev.RoutineReadFromTUN(peerID, t)
+	return nil
 }
 
 // resolveNextHop is the multi-hop re-forward case's routing lookup:
