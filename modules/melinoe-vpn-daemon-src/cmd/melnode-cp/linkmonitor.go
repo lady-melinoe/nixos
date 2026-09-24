@@ -8,9 +8,9 @@ import (
 )
 
 // linkmonitor.go implements a scaled-down BFD (RFC 5880) for melnode's
-// [[link]] tunnels: one session per Peer (== one per directly-connected
+// [[link]] tunnels: one session per Link (== one per directly-connected
 // neighbor; see PROJECT_STATE.md -- multi-hop [[peer]]s are explicitly
-// out of scope, they're just routeTable entries, not a Peer). Runs
+// out of scope, they're just routeTable entries, not a Link). Runs
 // entirely inside the existing Noise-encrypted tunnel as proto=1, so a
 // liveness packet arriving at all is already proof the crypto session
 // itself is alive, not just that some UDP packet showed up.
@@ -80,7 +80,7 @@ const (
 	diagNone                 diag = iota
 	diagDetectTimeout             // detection timer expired
 	diagNeighborSignaledDown      // we went Down because the remote told us Down or AdminDown
-	diagAdminDown                 // WE are deliberately shutting this session down (peer.Stop())
+	diagAdminDown                 // WE are deliberately shutting this session down (the control plane stopping, or losing the data plane)
 )
 
 func (d diag) String() string {
@@ -111,7 +111,7 @@ const (
 	//   3: DetectMult       (uint8)
 	//   4:6: Length         (uint16, big-endian -- self-declared, same
 	//        idea as proto=0 trimming against the inner IP header's own
-	//        length field, see receive.go)
+	//        length field, see punt.go)
 	//   6:8: reserved/pad (uint16, zero)
 	//   8:12:  MyDiscriminator    (uint32)
 	//   12:16: YourDiscriminator  (uint32)
@@ -156,7 +156,7 @@ func (p *livenessPacket) encode() []byte {
 
 // decodeLivenessPacket assumes the caller has already used the Vers
 // byte to route here and the Length field to trim elem.packet to the
-// right size (see receive.go's proto=1 dispatch) -- payload is expected
+// right size (see punt.go's proto=1 dispatch) -- payload is expected
 // to be exactly livenessV1Size bytes.
 func decodeLivenessPacket(payload []byte) (livenessPacket, bool) {
 	if len(payload) < livenessV1Size {
@@ -173,12 +173,12 @@ func decodeLivenessPacket(payload []byte) (livenessPacket, bool) {
 	}, true
 }
 
-// LinkMonitor is one BFD-like session, owned by exactly one Peer (i.e.
+// LinkMonitor is one BFD-like session, owned by exactly one Link (i.e.
 // one [[link]]). State is guarded by a mutex rather than atomics since
 // transitions touch several fields together and happen rarely relative
 // to the data path (every txInterval, not per packet).
 type LinkMonitor struct {
-	peer *Peer
+	link *Link
 
 	mu                  sync.Mutex
 	state               linkState
@@ -197,15 +197,15 @@ type LinkMonitor struct {
 	// state transition. This is the push side of the query surface
 	// mentioned in the type doc -- path-vector routing (pathvector.go)
 	// is the intended (and, as of this doc, only) consumer, wired up in
-	// main.go before peers Start().
-	onStateChange func(peer *Peer, next linkState)
+	// main.go before any session starts.
+	onStateChange func(link *Link, next linkState)
 }
 
-func newLinkMonitor(peer *Peer) *LinkMonitor {
+func newLinkMonitor(link *Link) *LinkMonitor {
 	var discBuf [4]byte
 	_, _ = rand.Read(discBuf[:]) // non-zero with overwhelming probability; a collision just costs one extra Down->Init round trip
 	return &LinkMonitor{
-		peer:               peer,
+		link:               link,
 		state:              linkStateDown,
 		stateSince:         time.Now(),
 		localDiscriminator: binary.BigEndian.Uint32(discBuf[:]),
@@ -229,27 +229,31 @@ func (m *LinkMonitor) State() linkState {
 
 // SetOnStateChange wires the callback invoked on every transition. Must
 // be called before Start() to avoid missing an early transition -- see
-// main.go, which wires this for every peer before any peer.Start().
-func (m *LinkMonitor) SetOnStateChange(fn func(peer *Peer, next linkState)) {
+// main.go, which wires this for every link before any session starts.
+func (m *LinkMonitor) SetOnStateChange(fn func(link *Link, next linkState)) {
 	m.mu.Lock()
 	m.onStateChange = fn
 	m.mu.Unlock()
 }
 
 // Start begins sending periodic liveness packets and arms the
-// detection timer. Mirrors Peer.Start/Stop's own lifecycle -- call from
-// there, not standalone.
+// detection timer. Restartable: each data plane session Starts every
+// link's monitor afresh (in the Down state) and Stops it when the session ends.
 func (m *LinkMonitor) Start() {
 	m.mu.Lock()
 	m.state = linkStateDown
 	m.remoteDiscriminator = 0
-	m.stopCh = make(chan struct{})
-	m.detectTimer = time.NewTimer(defaultRequiredMinRX * defaultDetectMult)
+	stop := make(chan struct{})
+	timer := time.NewTimer(defaultRequiredMinRX * defaultDetectMult)
+	m.stopCh = stop
+	m.detectTimer = timer
 	m.mu.Unlock()
 
+	// The loops get their own copies: Stop() clears m.stopCh, and a nil
+	// channel in a select would never fire.
 	m.wg.Add(2)
-	go m.sendLoop()
-	go m.detectLoop()
+	go m.sendLoop(stop)
+	go m.detectLoop(stop, timer)
 }
 
 // AdminDown sends one final AdminDown-state packet before the session
@@ -271,18 +275,19 @@ func (m *LinkMonitor) Stop() {
 		return
 	}
 	close(m.stopCh)
+	m.stopCh = nil // so a second Stop is a no-op rather than a double close
 	m.detectTimer.Stop()
 	m.mu.Unlock()
 	m.wg.Wait()
 }
 
-func (m *LinkMonitor) sendLoop() {
+func (m *LinkMonitor) sendLoop(stop <-chan struct{}) {
 	defer m.wg.Done()
 	ticker := time.NewTicker(defaultDesiredMinTX)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-m.stopCh:
+		case <-stop:
 			return
 		case <-ticker.C:
 			m.sendPacket()
@@ -290,19 +295,19 @@ func (m *LinkMonitor) sendLoop() {
 	}
 }
 
-func (m *LinkMonitor) detectLoop() {
+func (m *LinkMonitor) detectLoop(stop <-chan struct{}, timer *time.Timer) {
 	defer m.wg.Done()
 	for {
 		select {
-		case <-m.stopCh:
+		case <-stop:
 			return
-		case <-m.detectTimer.C:
+		case <-timer.C:
 			m.transitionTo(linkStateDown, diagDetectTimeout)
 			// re-arm so a later packet can bring the session back up
 			// (transitionTo doesn't touch the timer itself -- see its
 			// comment).
 			m.mu.Lock()
-			m.detectTimer.Reset(defaultRequiredMinRX * defaultDetectMult)
+			timer.Reset(defaultRequiredMinRX * defaultDetectMult)
 			m.mu.Unlock()
 		}
 	}
@@ -321,44 +326,27 @@ func (m *LinkMonitor) sendPacket() {
 	}
 	m.mu.Unlock()
 
-	device := m.peer.device
-	elem := device.NewOutboundElement()
-	buf := elem.buffer[:]
-	offset := MessageTransportHeaderSize + headerSize
-	payload := pkt.encode()
-	copy(buf[offset:offset+len(payload)], payload)
-
-	buf[offset-headerSize+0] = livenessProto
-	buf[offset-headerSize+1] = byte(device.localID)
-	buf[offset-headerSize+2] = byte(m.peer.id)
-	buf[offset-headerSize+hdrOffTTL] = linkLocalTTL
-	elem.packet = buf[offset-headerSize : offset+len(payload)]
-
-	container := device.GetOutboundElementsContainer()
-	container.isControl = true // liveness -- see send.go's StagePackets/drainStaged and PROJECT_STATE.md's backpressure section
-	container.elems = append(container.elems, elem)
-
-	if !m.peer.isRunning.Load() {
-		device.PutMessageBuffer(elem.buffer)
-		device.PutOutboundElement(elem)
-		device.PutOutboundElementsContainer(container)
-		return
-	}
-	m.peer.StagePackets(container)
-	m.peer.SendStagedPackets()
+	// link-local: sent on this link only, never forwarded. If the data
+	// plane isn't attached the packet is simply lost, like any other.
+	m.link.send(livenessProto, linkLocalTTL, pkt.encode())
 }
 
 // handlePacket runs the receive side of the state machine. Called from
-// receive.go's proto=1 dispatch with the already Length-trimmed
-// payload.
+// punt.go's proto=1 dispatch with the already Length-trimmed payload.
 func (m *LinkMonitor) handlePacket(payload []byte) {
 	pkt, ok := decodeLivenessPacket(payload)
 	if !ok {
-		m.peer.device.log.Verbosef("%v - liveness: short/malformed packet, dropping", m.peer)
+		m.link.node.log.Verbosef("%v - liveness: short/malformed packet, dropping", m.link)
 		return
 	}
 
 	m.mu.Lock()
+	if m.stopCh == nil {
+		// Not running (no data plane session yet, or already torn down): a
+		// late punt from before/after must not touch the stopped timer.
+		m.mu.Unlock()
+		return
+	}
 	m.remoteDiscriminator = pkt.MyDiscriminator
 	m.remoteDesiredMinTX = pkt.DesiredMinTX
 	m.remoteRequiredMinRX = pkt.RequiredMinRX
@@ -443,9 +431,9 @@ func (m *LinkMonitor) transitionTo(next linkState, d diag) {
 	// the other half) -- per earlier discussion, this is deliberately
 	// the only consumer for now; path-vector routing wires up to
 	// IsAlive/onStateChange instead of this log line.
-	m.peer.device.log.Verbosef("%v - liveness: %v -> %v (diag=%d)", m.peer, prev, next, d)
+	m.link.node.log.Verbosef("%v - liveness: %v -> %v (diag=%d)", m.link, prev, next, d)
 
 	if cb != nil {
-		cb(m.peer, next)
+		cb(m.link, next)
 	}
 }

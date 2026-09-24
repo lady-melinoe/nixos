@@ -46,7 +46,7 @@ func newControlAPI(pv *PathVector, socketPath string) (*controlAPI, error) {
 func (c *controlAPI) Start() {
 	go func() {
 		if err := c.server.Serve(c.listener); err != nil && err != http.ErrServerClosed {
-			c.pv.dev.log.Errorf("control API: Serve failed: %v", err)
+			c.pv.node.log.Errorf("control API: Serve failed: %v", err)
 		}
 	}()
 }

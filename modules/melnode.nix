@@ -15,18 +15,42 @@ let
   # melnode replaces the old WireGuard + BGP (FRR) + IPIP (melinoe-route)
   # stack. The node's own "identity" is its host-range address, which melnode
   # assigns to every node-<id> tun and always advertises.
+  #
+  # It is split in two, like an OVS kernel datapath and its userspace daemon:
+  #
+  #   melnode-dp  the data plane. Owns the UDP socket, the Noise tunnels, the
+  #               tun devices and the dst -> next-hop table, and forwards
+  #               tunneled IP packets on its own. Everything else it receives
+  #               (proto != 0) it hands to melnode-cp. It only does what
+  #               melnode-cp tells it to, over dpSocket.
+  #   melnode-cp  the control plane. Link liveness, path-vector routing,
+  #               tun/route programming, interface addresses, hooks and the
+  #               control/introspection APIs. It pushes the configured links
+  #               down to melnode-dp when it attaches.
+  #
+  # melnode-dp keeps forwarding if melnode-cp restarts (a config change that
+  # only touches routing/links restarts just the control plane).
   hostAddr = melinoeNodeIntraIP nodeID;
 
   tunPrefix = "node-";
   controlSocket = "/run/melnode/control.sock";
+  dpSocket = "/run/melnode-dp/dp.sock";
 
   melnodeGoBinary = pkgs.buildGoModule {
     pname = "melnode";
-    version = "0.0.1";
+    version = "0.0.2";
 
     src = ./melinoe-vpn-daemon-src;
+    # Builds (and tests) both daemons: bin/melnode-dp and bin/melnode-cp.
+    subPackages = [
+      "cmd/melnode-dp"
+      "cmd/melnode-cp"
+    ];
     vendorHash = "sha256-qG9O8ed6bK0WpaQxof+pxsMa7IudmB0rnGTWYjuXm2g=";
   };
+
+  dpBin = "${mCfg.package}/bin/melnode-dp";
+  cpBin = "${mCfg.package}/bin/melnode-cp";
 
   # ---- links ------------------------------------------------------------
 
@@ -98,11 +122,13 @@ let
       exec ${helperCmd} hook-${kind} "$@"
     '';
 
-  # ---- melnode config -----------------------------------------------------
+  # ---- melnode configs -----------------------------------------------------
 
   tomlFormat = pkgs.formats.toml { };
 
-  melnodeConfig = tomlFormat.generate "melnode.toml" {
+  # Data plane: who it is and how it reaches the network. No links here -- the
+  # control plane programs those over dpSocket.
+  dpConfig = tomlFormat.generate "melnode-dp.toml" {
     localID = nodeID;
     localPort = mCfg.port;
     tunPrefix = tunPrefix;
@@ -111,6 +137,14 @@ let
     # Keep melnode's own UDP traffic on the uplink instead of routing it back
     # into the mesh (same job the WireGuard fwMark did).
     fwmark = netCfg.uplinkFwMark;
+    socket = dpSocket;
+  };
+
+  # Control plane: the links (pushed down to the data plane on attach), path
+  # vector, host integration and the APIs.
+  cpConfig = tomlFormat.generate "melnode-cp.toml" {
+    localID = nodeID;
+    dataplaneSocket = dpSocket;
     identityPrefix = "${hostAddr}/32";
     controlSocket = controlSocket;
     # Read-only introspection over TCP (no advertise/withdraw); firewalled to
@@ -131,7 +165,7 @@ in
     enabled = mkOption {
       type = types.bool;
       default = false;
-      description = "Enable the melnode mesh VPN (replaces WireGuard + BGP + IPIP).";
+      description = "Enable the melnode mesh VPN (replaces WireGuard + BGP + IPIP): the melnode-dp data plane and the melnode-cp control plane.";
     };
 
     port = mkOption {
@@ -180,7 +214,7 @@ in
       type = types.package;
       default = melnodeGoBinary;
       readOnly = true;
-      description = "The built melnode package.";
+      description = "The built melnode package (bin/melnode-dp and bin/melnode-cp).";
     };
   };
 
@@ -225,10 +259,33 @@ in
 
     environment.systemPackages = lib.mkIf mCfg.enabled [ mnctl ];
 
-    systemd.services.melnode = lib.mkIf mCfg.enabled {
-      description = "melnode mesh VPN daemon";
+    systemd.services.melnode-dp = lib.mkIf mCfg.enabled {
+      description = "melnode data plane (Noise tunnels, tuns, forwarding)";
       wantedBy = [ "multi-user.target" ];
       after = [
+        "network-online.target"
+        "melinoe-inet-setup.service"
+      ];
+      wants = [
+        "network-online.target"
+        "melinoe-inet-setup.service"
+      ];
+      stopIfChanged = false;
+      serviceConfig = {
+        ExecStart = "${dpBin} -config ${dpConfig}";
+        Restart = "always";
+        RestartSec = 1;
+        RuntimeDirectory = "melnode-dp";
+        AmbientCapabilities = [ "CAP_NET_ADMIN" ];
+        CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+      };
+    };
+
+    systemd.services.melnode-cp = lib.mkIf mCfg.enabled {
+      description = "melnode control plane (liveness, path-vector routing, host integration)";
+      wantedBy = [ "multi-user.target" ];
+      after = [
+        "melnode-dp.service"
         "network-online.target"
         "melinoe-inet-setup.service"
         "nftables.service"
@@ -238,15 +295,21 @@ in
         "melinoe-inet-setup.service"
         "nftables.service"
       ];
+      # If the data plane is stopped or restarted, so is the control plane
+      # (it would just re-attach and re-sync anyway; restarting it is the
+      # simplest way to guarantee a clean start against a fresh data plane).
+      # The reverse is NOT true: restarting only the control plane leaves the
+      # data plane forwarding.
+      requires = [ "melnode-dp.service" ];
       stopIfChanged = false;
       # `flush ruleset` on an nftables reload empties melinoe_peer_marks and
-      # melinoe_peer_ifaces; restarting melnode re-runs the tun create hooks
-      # which repopulate them.
+      # melinoe_peer_ifaces; restarting the control plane makes it re-adopt the
+      # data plane's tuns and re-run the tun create hooks, which repopulate them.
       restartTriggers = [ (builtins.hashString "sha256" config.networking.nftables.ruleset) ];
       # PATH for the tun hooks, which shell out to ip/nft.
       path = toolPath;
       serviceConfig = {
-        ExecStart = "${mCfg.package}/bin/melnode -config ${melnodeConfig}";
+        ExecStart = "${cpBin} -config ${cpConfig}";
         Restart = "always";
         RestartSec = 1;
         RuntimeDirectory = "melnode";
@@ -262,10 +325,10 @@ in
       description = "melnode helper (route advertisement, per-tun policy routing)";
       wantedBy = [ "multi-user.target" ];
       after = [
-        "melnode.service"
+        "melnode-cp.service"
         "nftables.service"
       ];
-      wants = [ "melnode.service" ];
+      wants = [ "melnode-cp.service" ];
       stopIfChanged = false;
       path = toolPath;
       serviceConfig = {

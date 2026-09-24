@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"sort"
 	"time"
+
+	"melnode/dpproto"
 )
 
 // introspect.go is melnode's read-only "show ..." surface -- the
@@ -46,8 +49,12 @@ type linkInfo struct {
 
 func ms(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
 
-func (peer *Peer) linkInfo() linkInfo {
-	m := peer.monitor
+// linkInfo combines what the control plane knows (liveness session, config)
+// with what the data plane knows (current endpoint, handshake time, byte
+// counters -- dp is that link's entry from LinkList, nil if the data plane
+// is detached or doesn't have it).
+func (l *Link) linkInfo(dp *dpproto.LinkInfo) linkInfo {
+	m := l.monitor
 	m.mu.Lock()
 	info := linkInfo{
 		State:                 m.state.String(),
@@ -60,41 +67,46 @@ func (peer *Peer) linkInfo() linkInfo {
 	}
 	m.mu.Unlock()
 
-	info.PeerID = peer.id
-	info.PrependCount = peer.prependCount
-	info.TxBytes = peer.txBytes.Load()
-	info.RxBytes = peer.rxBytes.Load()
-	pk := peer.handshake.remoteStatic
-	info.PublicKey = keyToBase64(pk[:])
-
-	peer.endpoint.Lock()
-	if peer.endpoint.val != nil {
-		info.Endpoint = peer.endpoint.val.DstToString()
-	}
-	peer.endpoint.Unlock()
-
-	if ns := peer.lastHandshakeNano.Load(); ns > 0 {
-		ago := time.Since(time.Unix(0, ns)).Seconds()
-		info.LastHandshakeSecAgo = &ago
+	info.PeerID = l.id
+	info.PrependCount = l.prependCount
+	info.PublicKey = keyToBase64(l.pubkey[:])
+	info.Endpoint = l.endpoint // the configured one, until the data plane says otherwise
+	if dp != nil {
+		info.TxBytes = dp.TxBytes
+		info.RxBytes = dp.RxBytes
+		if dp.Endpoint != "" {
+			info.Endpoint = dp.Endpoint
+		}
+		if dp.LastHandshakeUnixNano > 0 {
+			ago := time.Since(time.Unix(0, dp.LastHandshakeUnixNano)).Seconds()
+			info.LastHandshakeSecAgo = &ago
+		}
 	}
 	return info
 }
 
-func (d *Device) linksSnapshot() []linkInfo {
-	d.peers.RLock()
-	peers := make([]*Peer, 0, len(d.peers.keyMap))
-	for _, p := range d.peers.keyMap {
-		peers = append(peers, p)
+func (n *Node) linksSnapshot() []linkInfo {
+	byID := map[uint32]dpproto.LinkInfo{}
+	if cl := n.dp(); cl != nil {
+		if list, err := cl.LinkList(); err == nil {
+			for _, li := range list {
+				byID[li.PeerID] = li
+			}
+		}
 	}
-	d.peers.RUnlock()
-
-	out := make([]linkInfo, 0, len(peers))
-	for _, p := range peers {
-		out = append(out, p.linkInfo())
+	out := make([]linkInfo, 0, len(n.links))
+	for _, l := range n.links {
+		var dp *dpproto.LinkInfo
+		if li, ok := byID[l.id]; ok {
+			dp = &li
+		}
+		out = append(out, l.linkInfo(dp))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PeerID < out[j].PeerID })
 	return out
 }
+
+func keyToBase64(k []byte) string { return base64.StdEncoding.EncodeToString(k) }
 
 // ---- tuns -----------------------------------------------------------------
 
@@ -102,40 +114,37 @@ type tunInfo struct {
 	PeerID  uint32  `json:"peer_id"` // the destination this tun leads to
 	Name    string  `json:"name"`
 	MTU     int     `json:"mtu"`
-	NextHop *uint32 `json:"next_hop"` // link peerid the route currently resolves to; null if none
+	NextHop *uint32 `json:"next_hop"` // link peerid the data plane currently forwards this over; null if none
+	Started bool    `json:"started"`  // false only in the moment between the tun being created and configured
 }
 
+// tunsSnapshot lists the data plane's tuns with the next hop we want for
+// each. Empty while no data plane is attached.
 func (r *Router) tunsSnapshot() []tunInfo {
-	r.mu.RLock()
-	tuns := make(map[uint32]tunInfoSrc, len(r.tunByPeerID))
-	for id, t := range r.tunByPeerID {
-		nh, ok := r.routeTable[id]
-		tuns[id] = tunInfoSrc{t: t, nhid: nh, hasNH: ok}
+	out := []tunInfo{}
+	cl := r.node.dp()
+	if cl == nil {
+		return out
 	}
-	r.mu.RUnlock()
-
-	out := make([]tunInfo, 0, len(tuns))
-	for id, src := range tuns {
-		ti := tunInfo{PeerID: id}
-		ti.Name, _ = src.t.Name()
-		ti.MTU, _ = src.t.MTU()
-		if src.hasNH {
-			nh := src.nhid
+	tuns, err := cl.TunList()
+	if err != nil {
+		return out
+	}
+	routes := map[uint32]uint32{}
+	if rl, err := cl.RouteList(); err == nil {
+		for _, rt := range rl {
+			routes[rt.Dst] = rt.NextHop
+		}
+	}
+	for _, t := range tuns {
+		ti := tunInfo{PeerID: t.PeerID, Name: t.Name, MTU: int(t.MTU), Started: t.Started}
+		if nh, ok := routes[t.PeerID]; ok {
 			ti.NextHop = &nh
 		}
 		out = append(out, ti)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PeerID < out[j].PeerID })
 	return out
-}
-
-type tunInfoSrc struct {
-	t interface {
-		Name() (string, error)
-		MTU() (int, error)
-	}
-	nhid  uint32
-	hasNH bool
 }
 
 // ---- routes ---------------------------------------------------------------
@@ -205,7 +214,7 @@ func (pv *PathVector) routesSnapshot() []routeInfo {
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Dest < out[j].Dest })
 	names := make(map[uint32]string)
-	for _, t := range pv.dev.router.tunsSnapshot() {
+	for _, t := range pv.node.router.tunsSnapshot() {
 		names[t.PeerID] = t.Name
 	}
 	for i := range out {
@@ -273,39 +282,41 @@ func (pv *PathVector) prefixesSnapshot() []prefixInfo {
 // ---- summary --------------------------------------------------------------
 
 type summaryInfo struct {
-	LocalID        uint32  `json:"local_id"`
-	PublicKey      string  `json:"public_key"`
-	UptimeSeconds  float64 `json:"uptime_seconds"`
-	MTU            int     `json:"mtu"`
-	IdentityPrefix string  `json:"identity_prefix,omitempty"`
-	LinksTotal     int     `json:"links_total"`
-	LinksUp        int     `json:"links_up"`
-	Destinations   int     `json:"destinations"` // peerids currently reachable
-	Tuns           int     `json:"tuns"`
-	Prefixes       int     `json:"prefixes"`
+	LocalID           uint32  `json:"local_id"`
+	PublicKey         string  `json:"public_key"` // empty until the data plane has been attached at least once
+	DataplaneAttached bool    `json:"dataplane_attached"`
+	UptimeSeconds     float64 `json:"uptime_seconds"`
+	MTU               int     `json:"mtu"`
+	IdentityPrefix    string  `json:"identity_prefix,omitempty"`
+	LinksTotal        int     `json:"links_total"`
+	LinksUp           int     `json:"links_up"`
+	Destinations      int     `json:"destinations"` // peerids currently reachable
+	Tuns              int     `json:"tuns"`
+	Prefixes          int     `json:"prefixes"`
 }
 
 func (pv *PathVector) summarySnapshot() summaryInfo {
-	d := pv.dev
+	n := pv.node
 	s := summaryInfo{
-		LocalID:       d.localID,
+		LocalID:       n.localID,
 		UptimeSeconds: time.Since(processStart).Seconds(),
-		MTU:           d.mtu,
+		MTU:           int(n.mtu.Load()),
 	}
-	d.staticIdentity.RLock()
-	s.PublicKey = keyToBase64(d.staticIdentity.publicKey[:])
-	d.staticIdentity.RUnlock()
-	if d.router != nil && d.router.identityPrefix != nil {
-		s.IdentityPrefix = d.router.identityPrefix.String()
+	if hr := n.hello.Load(); hr != nil {
+		s.PublicKey = keyToBase64(hr.PubKey[:])
 	}
-	links := d.linksSnapshot()
+	s.DataplaneAttached = n.dp() != nil
+	if n.router != nil && n.router.identityPrefix != nil {
+		s.IdentityPrefix = n.router.identityPrefix.String()
+	}
+	links := n.linksSnapshot()
 	s.LinksTotal = len(links)
 	for _, l := range links {
 		if l.State == linkStateUp.String() {
 			s.LinksUp++
 		}
 	}
-	s.Tuns = len(d.router.tunsSnapshot())
+	s.Tuns = len(n.router.tunsSnapshot())
 	pv.mu.Lock()
 	s.Destinations = len(pv.best)
 	s.Prefixes = len(pv.prefixClaims)
@@ -344,10 +355,10 @@ func (c *controlAPI) registerIntrospection(mux *http.ServeMux) {
 // serves anything but GETs of the snapshots below.
 func registerReadEndpoints(mux *http.ServeMux, pv *PathVector, withWrite bool) {
 	mux.HandleFunc("/summary", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.summarySnapshot()) }))
-	mux.HandleFunc("/links", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.dev.linksSnapshot()) }))
+	mux.HandleFunc("/links", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.node.linksSnapshot()) }))
 	mux.HandleFunc("/routes", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.routesSnapshot()) }))
 	mux.HandleFunc("/prefixes", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.prefixesSnapshot()) }))
-	mux.HandleFunc("/tuns", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.dev.router.tunsSnapshot()) }))
+	mux.HandleFunc("/tuns", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.node.router.tunsSnapshot()) }))
 	mux.HandleFunc("/", getOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
