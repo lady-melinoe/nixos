@@ -16,15 +16,13 @@ import (
 // They do not require a trailing newline in the format.
 // If nil, that level of logging will be silent.
 type Logger struct {
-	Verbosef func(format string, args ...any)
-	Errorf   func(format string, args ...any)
+	Errorf func(format string, args ...any)
 }
 
 // Log levels for use with NewLogger.
 const (
 	LogLevelSilent = iota
 	LogLevelError
-	LogLevelVerbose
 )
 
 // Function for use in Logger for discarding logged lines.
@@ -34,12 +32,9 @@ func DiscardLogf(format string, args ...any) {}
 // It logs at the specified log level and above.
 // It decorates log lines with the log level, date, time, and prepend.
 func NewLogger(level int, prepend string) *Logger {
-	logger := &Logger{DiscardLogf, DiscardLogf}
+	logger := &Logger{DiscardLogf}
 	logf := func(prefix string) func(string, ...any) {
 		return log.New(os.Stdout, prefix+": "+prepend, log.Ldate|log.Ltime).Printf
-	}
-	if level >= LogLevelVerbose {
-		logger.Verbosef = logf("DEBUG")
 	}
 	if level >= LogLevelError {
 		logger.Errorf = logf("ERROR")

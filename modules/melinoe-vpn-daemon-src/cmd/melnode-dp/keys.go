@@ -7,19 +7,6 @@ import (
 
 var zeroKey NoisePrivateKey
 
-// genkeyAndExit implements `melnode -genkey`: generate a fresh, correctly
-// clamped Curve25519 keypair and print both halves as base64 (config-file
-// representation), same as `wg genkey`/`wg pubkey`.
-func genkeyAndExit() {
-	sk, err := newPrivateKey()
-	if err != nil {
-		panic(err)
-	}
-	pk := sk.publicKey()
-	println("private: " + keyToBase64(sk[:]))
-	println("public:  " + keyToBase64(pk[:]))
-}
-
 func keyToBase64(k []byte) string { return base64.StdEncoding.EncodeToString(k) }
 
 func parseKeyBase64(s string) (NoisePrivateKey, error) {

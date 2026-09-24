@@ -17,9 +17,8 @@ import (
 // boots knowing only its socket path and stays inert until DeviceSet.
 
 type ctlHandler struct {
-	srv     *dpproto.Server // set by main right after NewServer
-	verbose bool
-	quit    func() // asks main to exit (Shutdown)
+	srv  *dpproto.Server // set by main right after NewServer
+	quit func()          // asks main to exit (Shutdown)
 
 	mu     sync.Mutex
 	dev    *Device // nil until DeviceSet
@@ -95,9 +94,7 @@ func (h *ctlHandler) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, err
 
 	dev := newDevice(m.LocalID, priv)
 	dev.mtu = int(m.MTU)
-	if h.verbose {
-		dev.log = NewLogger(LogLevelVerbose, "")
-	}
+	dev.log = NewLogger(LogLevelError, "")
 	dev.net.bind = bind
 	dev.router = newRouter(dev, m.LocalID)
 	dev.ctl = h.srv
@@ -118,7 +115,6 @@ func (h *ctlHandler) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, err
 	}
 
 	h.dev, h.params = dev, m
-	dev.log.Verbosef("configured: node %d, udp port %d, mtu %d, fwmark %d", m.LocalID, m.ListenPort, m.MTU, m.Fwmark)
 	return dpproto.DeviceSetReply{PubKey: dev.staticIdentity.publicKey}, nil
 }
 
@@ -200,11 +196,6 @@ func (h *ctlHandler) LinkAdd(m dpproto.LinkAdd) error {
 	d.addPeer(p)
 	p.Start()
 
-	role := "listen-only (no endpoint configured)"
-	if endpoint != nil {
-		role = "dialing " + endpoint.DstToString()
-	}
-	d.log.Verbosef("link -> peerid %d: %s", m.PeerID, role)
 	return nil
 }
 
@@ -221,7 +212,6 @@ func (h *ctlHandler) LinkDel(id uint32) error {
 	}
 	p.Stop()
 	d.removePeer(p)
-	d.log.Verbosef("link peerid %d removed", id)
 	return nil
 }
 

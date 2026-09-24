@@ -70,9 +70,6 @@ func (n *Node) spawnDataplane(socket string) error {
 
 	argv := n.dpCommand
 	args := append(append([]string(nil), argv[1:]...), "-socket", socket)
-	if n.verbose {
-		args = append(args, "-verbose")
-	}
 	cmd := exec.Command(argv[0], args...)
 	// Inherit our stdout/stderr, so the data plane's log ends up wherever ours does.
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

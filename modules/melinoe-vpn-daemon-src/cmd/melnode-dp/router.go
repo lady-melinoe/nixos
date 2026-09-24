@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"sync"
 
 	"golang.zx2c4.com/wireguard/tun"
@@ -110,9 +109,7 @@ func (r *Router) SetRoute(dst, nh uint32) {
 	r.mu.Unlock()
 	switch {
 	case !had:
-		r.dev.log.Verbosef("router: new route to peerid %d via nhid %d", dst, nh)
 	case old != nh:
-		r.dev.log.Verbosef("router: route to peerid %d updated, now via nhid %d", dst, nh)
 	}
 }
 
@@ -123,7 +120,6 @@ func (r *Router) DelRoute(dst uint32) {
 	delete(r.routeTable, dst)
 	r.mu.Unlock()
 	if had {
-		r.dev.log.Verbosef("router: route to peerid %d withdrawn", dst)
 	}
 }
 
@@ -264,7 +260,6 @@ func (r *Router) DestroyTun(dstPeerID uint32) {
 	if err := t.dev.Close(); err != nil {
 		r.dev.log.Errorf("router: closing tun for peerid %d: %v", dstPeerID, err)
 	}
-	r.dev.log.Verbosef("router: tun for peerid %d removed", dstPeerID)
 }
 
 // maxTunBatchSize is the RLock'd read used by Device.batchSize().
@@ -308,12 +303,10 @@ func (r *Router) closeAllTuns() {
 func (r *Router) resolveNextHop(dstPeerID uint32) *Peer {
 	nhid, ok := r.LookupRoute(dstPeerID)
 	if !ok {
-		r.dev.log.Verbosef("router: no route to peerid %d -- dropping forwarded packet", dstPeerID)
 		return nil
 	}
 	nextHop := r.dev.lookupPeerByID(nhid)
 	if nextHop == nil {
-		r.dev.log.Verbosef("router: no such link nhid %d -- dropping forwarded packet", nhid)
 		return nil
 	}
 	return nextHop
@@ -356,9 +349,6 @@ func createPeerTun(name string, peerID uint32, mtu int) (tun.Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	actualName, _ := dev.Name()
-	log.Printf("created tun %q for peerid %d (mtu=%d)",
-		actualName, peerID, mtu)
 	return dev, nil
 }
 

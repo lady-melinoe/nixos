@@ -163,7 +163,6 @@ func (device *Device) Close() {
 	if device.closedFlag.Swap(true) {
 		return
 	}
-	device.log.Verbosef("Device closing")
 	device.peers.RLock()
 	for _, peer := range device.peers.keyMap {
 		peer.Stop()
