@@ -29,7 +29,11 @@ type Node struct {
 	// dpCommand is the data plane's argv when we own starting it (config:
 	// dataplaneCommand); empty when it is supervised elsewhere.
 	dpCommand []string
-	verbose   bool
+	// kernelDataplane attaches to the melnode kernel module over generic
+	// netlink (dpproto.DialKernel) instead of dialing a socket; see
+	// Config.KernelDataplane.
+	kernelDataplane bool
+	verbose         bool
 
 	router     *Router
 	pathVector *PathVector
@@ -93,9 +97,10 @@ func newNode(cfg *Config, verbose bool) (*Node, error) {
 			Fwmark:     uint32(cfg.Fwmark),
 			MTU:        uint32(cfg.MTU),
 		},
-		tunPrefix: cfg.TunPrefix,
-		dpCommand: cfg.DataplaneCommand,
-		verbose:   verbose,
+		tunPrefix:       cfg.TunPrefix,
+		dpCommand:       cfg.DataplaneCommand,
+		kernelDataplane: cfg.KernelDataplane,
+		verbose:         verbose,
 	}
 	if verbose {
 		n.log = NewLogger(LogLevelVerbose, "")

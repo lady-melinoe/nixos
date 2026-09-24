@@ -25,8 +25,16 @@ type Config struct {
 
 	// DataplaneSocket is the data plane's control socket: where this process
 	// attaches, and (when DataplaneCommand is set) what it starts the data
-	// plane listening on.
+	// plane listening on. Ignored (and not required) when KernelDataplane is
+	// set.
 	DataplaneSocket string `toml:"dataplaneSocket"`
+
+	// KernelDataplane, if true, attaches to the melnode kernel module
+	// (modules/melinoe-vpn-kernel) over generic netlink instead of dialing
+	// DataplaneSocket. Mutually exclusive with DataplaneCommand/
+	// DataplaneSocket: a kernel data plane is not a process this one starts,
+	// adopts, or asks to exit (dpproto.Client.Quit is a no-op for it).
+	KernelDataplane bool `toml:"kernelDataplane"`
 
 	// DataplaneCommand, if set, is the data plane's argv (e.g.
 	// ["/path/to/melnode-dp"]); this process then owns getting it running:
@@ -127,8 +135,15 @@ func (c *Config) validate() error {
 	if c.LocalID < 0 || c.LocalID > 255 {
 		return fmt.Errorf("localID must be 0-255, got %d", c.LocalID)
 	}
-	if c.DataplaneSocket == "" {
-		return fmt.Errorf("dataplaneSocket is required")
+	if c.KernelDataplane {
+		if c.DataplaneSocket != "" {
+			return fmt.Errorf("dataplaneSocket and kernelDataplane are mutually exclusive")
+		}
+		if len(c.DataplaneCommand) > 0 {
+			return fmt.Errorf("dataplaneCommand and kernelDataplane are mutually exclusive")
+		}
+	} else if c.DataplaneSocket == "" {
+		return fmt.Errorf("dataplaneSocket is required (unless kernelDataplane is set)")
 	}
 	if c.LocalPort <= 0 || c.LocalPort > 65535 {
 		return fmt.Errorf("localPort must be a valid port, got %d", c.LocalPort)

@@ -70,6 +70,17 @@
     }
   ];
   melinoe.services.melnode.extraRoutes = [ "130.95.13.0/24" ];
+  # Testing the melnode kernel data plane (modules/melinoe-vpn-kernel) - loads
+  # melnode.ko alongside the real melnode-dp, unconfigured and inert unless
+  # something (manual genl testing, for now) drives it. Does not touch the
+  # live mesh: melnode-cp still only ever talks to melnode-dp.
+  melinoe.services.melnode.kernelDataplane.enable = true;
+  # Arke is the live test target for the melnode kernel data plane: recoverable
+  # via the Proxmox console if this goes wrong (no IPMI/vendor-portal dance).
+  # This is a genuinely untested-in-the-wild code path taking over arke's real
+  # mesh membership - if arke drops off the mesh, this is the first place to
+  # look, and melinoe.services.melnode.dataplane = "userspace" is the revert.
+  melinoe.services.melnode.dataplane = "kernel";
   melinoe.node.networking.peers = [
     {
       id = 4;

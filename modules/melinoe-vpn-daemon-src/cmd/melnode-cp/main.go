@@ -54,7 +54,7 @@ func main() {
 	}
 
 	if *stopDP {
-		if err := stopDataplane(cfg.DataplaneSocket); err != nil {
+		if err := stopDataplane(cfg); err != nil {
 			log.Fatalf("stop-dataplane: %v", err)
 		}
 		log.Print("data plane stopped")

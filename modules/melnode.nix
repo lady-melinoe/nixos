@@ -129,28 +129,35 @@ let
   # Control plane: the data plane's settings (pushed down with DeviceSet on
   # attach, like `wg set`), the links, path vector, host integration and the
   # APIs. The data plane itself takes no config, only -socket.
-  cpConfig = tomlFormat.generate "melnode-cp.toml" {
-    localID = nodeID;
-    dataplaneSocket = dpSocket;
-    localPort = mCfg.port;
-    localPrivkeyPath = mCfg.privateKeyFile;
-    mtu = mCfg.mtu;
-    inherit tunPrefix;
-    # Keep melnode's own UDP traffic on the uplink instead of routing it back
-    # into the mesh (same job the WireGuard fwMark did).
-    fwmark = netCfg.uplinkFwMark;
-    # dataplaneCommand is deliberately unset: systemd owns the data plane here.
-    # (The control plane can start it itself; that needs KillMode=process and
-    # no separate melnode-dp unit, or systemd kills it with the cp's cgroup.)
-    identityPrefix = "${hostAddr}/32";
-    controlSocket = controlSocket;
-    # Read-only introspection over TCP (no advertise/withdraw); firewalled to
-    # the host range via specialHostAccess below.
-    introspectListen = ":${toString mCfg.introspectPort}";
-    tunCreateHookBin = "${mkHook "create"}";
-    tunDestroyHookBin = "${mkHook "destroy"}";
-    link = map mkLink netCfg.peers;
-  };
+  cpConfig = tomlFormat.generate "melnode-cp.toml" (
+    {
+      localID = nodeID;
+      localPort = mCfg.port;
+      localPrivkeyPath = mCfg.privateKeyFile;
+      mtu = mCfg.mtu;
+      inherit tunPrefix;
+      # Keep melnode's own UDP traffic on the uplink instead of routing it back
+      # into the mesh (same job the WireGuard fwMark did).
+      fwmark = netCfg.uplinkFwMark;
+      # dataplaneCommand is deliberately unset: systemd owns the data plane here.
+      # (The control plane can start it itself; that needs KillMode=process and
+      # no separate melnode-dp unit, or systemd kills it with the cp's cgroup.)
+      identityPrefix = "${hostAddr}/32";
+      controlSocket = controlSocket;
+      # Read-only introspection over TCP (no advertise/withdraw); firewalled to
+      # the host range via specialHostAccess below.
+      introspectListen = ":${toString mCfg.introspectPort}";
+      tunCreateHookBin = "${mkHook "create"}";
+      tunDestroyHookBin = "${mkHook "destroy"}";
+      link = map mkLink netCfg.peers;
+    }
+    // (
+      if mCfg.dataplane == "kernel" then
+        { kernelDataplane = true; }
+      else
+        { dataplaneSocket = dpSocket; }
+    )
+  );
 
   toolPath = [
     pkgs.iproute2
@@ -213,6 +220,25 @@ in
       readOnly = true;
       description = "The built melnode package (bin/melnode-dp and bin/melnode-cp).";
     };
+
+    dataplane = mkOption {
+      type = types.enum [
+        "userspace"
+        "kernel"
+      ];
+      default = "userspace";
+      description = ''
+        Which data plane melnode-cp attaches to. "userspace" (default) runs
+        melnode-dp as its own systemd service, as before. "kernel" attaches
+        to the melnode kernel module (modules/melinoe-vpn-kernel) over generic
+        netlink instead - no melnode-dp process at all - which requires
+        melinoe.services.melnode.kernelDataplane.enable to be set too (that
+        loads the module; this makes melnode-cp actually use it).
+
+        The kernel module is new and not yet as battle-tested as melnode-dp;
+        treat "kernel" as experimental.
+      '';
+    };
   };
 
   config = {
@@ -224,6 +250,10 @@ in
       {
         assertion = !mCfg.enabled || netCfg.enabled;
         message = "melinoe.node.networking.enabled must be true when melinoe.services.melnode.enabled is true (melinoe.node.networking.uplinks is an uplink property and pub_ips are derived from it).";
+      }
+      {
+        assertion = !mCfg.enabled || mCfg.dataplane != "kernel" || mCfg.kernelDataplane.enable;
+        message = "melinoe.services.melnode.dataplane = \"kernel\" requires melinoe.services.melnode.kernelDataplane.enable = true (it loads the module; this makes melnode-cp use it).";
       }
     ]
     ++ lib.optionals mCfg.enabled (
@@ -256,7 +286,7 @@ in
 
     environment.systemPackages = lib.mkIf mCfg.enabled [ mnctl ];
 
-    systemd.services.melnode-dp = lib.mkIf mCfg.enabled {
+    systemd.services.melnode-dp = lib.mkIf (mCfg.enabled && mCfg.dataplane == "userspace") {
       description = "melnode data plane (Noise tunnels, tuns, forwarding)";
       wantedBy = [ "multi-user.target" ];
       after = [
@@ -282,11 +312,11 @@ in
       description = "melnode control plane (liveness, path-vector routing, host integration)";
       wantedBy = [ "multi-user.target" ];
       after = [
-        "melnode-dp.service"
         "network-online.target"
         "melinoe-inet-setup.service"
         "nftables.service"
-      ];
+      ]
+      ++ lib.optional (mCfg.dataplane == "userspace") "melnode-dp.service";
       wants = [
         "network-online.target"
         "melinoe-inet-setup.service"
@@ -296,8 +326,10 @@ in
       # (it would just re-attach and re-sync anyway; restarting it is the
       # simplest way to guarantee a clean start against a fresh data plane).
       # The reverse is NOT true: restarting only the control plane leaves the
-      # data plane forwarding.
-      requires = [ "melnode-dp.service" ];
+      # data plane forwarding. Doesn't apply in kernel mode: there is no
+      # melnode-dp.service, and the module keeps forwarding across a
+      # melnode-cp restart the same way the userspace data plane does.
+      requires = lib.optional (mCfg.dataplane == "userspace") "melnode-dp.service";
       stopIfChanged = false;
       # `flush ruleset` on an nftables reload empties melinoe_peer_marks and
       # melinoe_peer_ifaces; restarting the control plane makes it re-adopt the

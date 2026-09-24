@@ -29,8 +29,13 @@ import (
 const spawnWait = 5 * time.Second
 
 // dialDataplane connects to the data plane, starting it first if we own that
-// and it isn't running.
+// and it isn't running. For a kernel data plane (config: kernelDataplane)
+// there is nothing to start or adopt - it's a module, not a process - so
+// this just dials it directly, ignoring socket entirely.
 func (n *Node) dialDataplane(socket string, onPunt func(dpproto.Punt), onEvent func(dpproto.Event)) (dpproto.Datapath, error) {
+	if n.kernelDataplane {
+		return dpproto.DialKernel(onPunt, onEvent)
+	}
 	cl, err := dpproto.Dial(socket, onPunt, onEvent)
 	if err == nil {
 		return cl, nil
@@ -152,18 +157,29 @@ func (n *Node) replaceDataplane(cl dpproto.Datapath, why string, restart bool) e
 
 // stopDataplane is `melnode-cp -stop-dataplane`: ask a running data plane to
 // exit. Stopping the control plane deliberately leaves it forwarding; this is
-// how to stop the whole thing.
-func stopDataplane(socket string) error {
-	cl, err := dpproto.Dial(socket, nil, nil)
+// how to stop the whole thing. For a kernel data plane there is no process to
+// ask to exit - this just tears down its configuration (DeviceDel); the
+// module itself stays loaded (rmmod is the real equivalent of "stop", and
+// that's an operator decision, not this flag's).
+func stopDataplane(cfg *Config) error {
+	var cl dpproto.Datapath
+	var err error
+	if cfg.KernelDataplane {
+		cl, err = dpproto.DialKernel(nil, nil)
+	} else {
+		cl, err = dpproto.Dial(cfg.DataplaneSocket, nil, nil)
+	}
 	if err != nil {
-		return fmt.Errorf("no data plane reachable on %s: %w", socket, err)
+		return fmt.Errorf("no data plane reachable: %w", err)
 	}
 	defer cl.Close()
 	if err := cl.DeviceDel(); err != nil {
 		return err
 	}
-	if err := cl.Quit(); err != nil {
-		return err
+	if q, ok := cl.(dpproto.Quitter); ok {
+		if err := q.Quit(); err != nil {
+			return err
+		}
 	}
 	select {
 	case <-cl.Done():
