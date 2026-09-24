@@ -37,7 +37,7 @@ let
     if peer.endpoint != null then
       peer.endpoint
     else
-      cfg.nodePublicInfo.${peerIdStr peer}.defaultEndpoint;
+      (cfg.nodePublicInfo.${peerIdStr peer} or { defaultEndpoint = null; }).defaultEndpoint;
 
   # melnode wants an ip:port literal (no hostnames); IPv6 literals need [].
   formatEndpoint =
@@ -50,12 +50,19 @@ let
   isIpLiteral =
     host: lib.hasInfix ":" host || builtins.match "[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+" host != null;
 
-  mkLink = peer: {
-    peerid = peer.id;
-    endpoint = formatEndpoint (resolveEndpointHost peer);
-    peerPubkey = cfg.nodePublicInfo.${peerIdStr peer}.wgPubkey;
-    prependCount = peer.prependCount;
-  };
+  # A peer without an endpoint is listen-only: we never dial it, it must dial
+  # us (melnode learns its address from its first authenticated packet).
+  mkLink =
+    peer:
+    let
+      host = resolveEndpointHost peer;
+    in
+    {
+      peerid = peer.id;
+      peerPubkey = cfg.nodePublicInfo.${peerIdStr peer}.wgPubkey;
+      prependCount = peer.prependCount;
+    }
+    // lib.optionalAttrs (host != null) { endpoint = formatEndpoint host; };
 
   # ---- helper (hooks + advertiser) ----------------------------------------
 
@@ -210,6 +217,10 @@ in
         "nftables.service"
       ];
       stopIfChanged = false;
+      # `flush ruleset` on an nftables reload empties melinoe_peer_marks and
+      # melinoe_peer_ifaces; restarting melnode re-runs the tun create hooks
+      # which repopulate them.
+      restartTriggers = [ (builtins.hashString "sha256" config.networking.nftables.ruleset) ];
       # PATH for the tun hooks, which shell out to ip/nft.
       path = toolPath;
       serviceConfig = {

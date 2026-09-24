@@ -54,11 +54,6 @@
   ];
   melinoe.node.serialConsoleMode = true;
   melinoe.node.id = 7;
-  melinoe.node.regions = [
-    "ORACLE"
-    "MELBOURNE"
-    "AUSTRALIA"
-  ];
   networking.hostName = "atropos";
   melinoe.node.networking.uplinks = [
     {
@@ -75,18 +70,23 @@
     }
     {
       id = 4;
+      prependCount = 2;
     }
     {
       id = 5;
+      prependCount = 2;
     }
     {
       id = 3;
+      prependCount = 2;
     }
     {
       id = 2;
+      prependCount = 2;
     }
     {
       id = 1;
+      prependCount = 2;
     }
   ];
 }

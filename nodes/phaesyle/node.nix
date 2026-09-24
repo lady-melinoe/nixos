@@ -53,11 +53,6 @@
     }
   ];
   melinoe.node.id = 1;
-  melinoe.node.regions = [
-    "BINARYLANE"
-    "PERTH"
-    "AUSTRALIA"
-  ];
   networking.hostName = "phaesyle";
   melinoe.node.networking.uplinks = [
     {
@@ -71,21 +66,27 @@
   melinoe.node.networking.peers = [
     {
       id = 5;
+      prependCount = 1;
     }
     {
       id = 2;
+      prependCount = 1;
     }
     {
       id = 6;
+      prependCount = 2;
     }
     {
       id = 7;
+      prependCount = 2;
     }
     {
       id = 3;
+      prependCount = 1;
     }
     {
       id = 4;
+      prependCount = 1;
     }
   ];
 }

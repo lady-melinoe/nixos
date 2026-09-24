@@ -53,11 +53,6 @@
     }
   ];
   melinoe.node.id = 5;
-  melinoe.node.regions = [
-    "UCC"
-    "PERTH"
-    "AUSTRALIA"
-  ];
   networking.hostName = "arke";
   melinoe.node.networking.uplinks = [
     {
@@ -84,15 +79,18 @@
     }
     {
       id = 6;
+      prependCount = 2;
     }
     {
       id = 7;
+      prependCount = 2;
     }
     {
       id = 3;
     }
     {
       id = 1;
+      prependCount = 1;
     }
   ];
 }
