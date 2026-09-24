@@ -73,6 +73,11 @@ let
     doCheck = false;
   } (builtins.readFile ./melnode-helper-src/melnode-helper.py);
 
+  # Read-only CLI: `mnctl <links|routes> [host[:port]]`.
+  mnctl = pkgs.writers.writePython3Bin "mnctl" {
+    doCheck = false;
+  } (builtins.readFile ./melnode-helper-src/mnctl.py);
+
   helperConfig = pkgs.writeText "melnode-helper.json" (
     builtins.toJSON {
       node_id = nodeID;
@@ -217,6 +222,8 @@ in
 
     melinoe.node.networking.openPorts.udp = lib.mkIf mCfg.enabled [ mCfg.port ];
     melinoe.node.networking.specialHostAccess.tcp = lib.mkIf mCfg.enabled [ mCfg.introspectPort ];
+
+    environment.systemPackages = lib.mkIf mCfg.enabled [ mnctl ];
 
     systemd.services.melnode = lib.mkIf mCfg.enabled {
       description = "melnode mesh VPN daemon";
