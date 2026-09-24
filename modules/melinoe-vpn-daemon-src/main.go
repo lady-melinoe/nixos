@@ -215,6 +215,19 @@ func main() {
 		log.Printf("control API listening on %s", cfg.ControlSocket)
 	}
 
+	// Read-only introspection over TCP (introspectapi.go). Separate from
+	// the control socket: no write endpoints are mounted on it.
+	var introspectAPIServer *introspectAPI
+	if cfg.IntrospectListen != "" {
+		var err error
+		introspectAPIServer, err = newIntrospectAPI(pathVector, cfg.IntrospectListen)
+		if err != nil {
+			log.Fatalf("introspect API: failed to listen on %s: %v", cfg.IntrospectListen, err)
+		}
+		introspectAPIServer.Start()
+		log.Printf("introspect API (read-only) listening on tcp %s", cfg.IntrospectListen)
+	}
+
 	// Start each link peer: brings up its timer loop, its two per-peer
 	// sequential sender/receiver goroutines (ported from wireguard-go's
 	// device/peer.go Start()), and its BFD-like liveness session
@@ -251,6 +264,9 @@ func main() {
 		log.Printf("received %v, shutting down", sig)
 		if controlAPIServer != nil {
 			controlAPIServer.Stop()
+		}
+		if introspectAPIServer != nil {
+			introspectAPIServer.Stop()
 		}
 		dev.Close()
 	}()
