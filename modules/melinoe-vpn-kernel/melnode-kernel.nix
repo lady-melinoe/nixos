@@ -29,20 +29,26 @@ stdenv.mkDerivation {
 
   nativeBuildInputs = kernel.moduleBuildDependencies;
 
-  makeFlags = kernel.makeFlags ++ [
-    "KERNELRELEASE=${kernel.modDirVersion}"
-    "KDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
-  ];
+  # Plain derivation attributes (Nix exports every string attr as an
+  # environment variable) - NOT makeFlags, which only becomes the $makeFlags
+  # bash array that genericBuild's *default* phases consume. buildPhase and
+  # installPhase below call make directly, so anything only in makeFlags
+  # would silently never reach make (which is exactly what happened before:
+  # $KDIR was unset, so `make -C "$KDIR"` ran as `make -C ""` and failed).
+  KDIR = "${kernel.dev}/lib/modules/${kernel.modDirVersion}/build";
+  KERNELRELEASE = kernel.modDirVersion;
+
+  kernelMakeFlags = kernel.makeFlags;
 
   buildPhase = ''
     runHook preBuild
-    make -C "$KDIR" M="$(pwd)" modules
+    make -C "$KDIR" M="$(pwd)" $kernelMakeFlags KERNELRELEASE="$KERNELRELEASE" modules
     runHook postBuild
   '';
 
   installPhase = ''
     runHook preInstall
-    make -C "$KDIR" M="$(pwd)" modules_install INSTALL_MOD_PATH="$out"
+    make -C "$KDIR" M="$(pwd)" $kernelMakeFlags KERNELRELEASE="$KERNELRELEASE" modules_install INSTALL_MOD_PATH="$out"
     runHook postInstall
   '';
 
