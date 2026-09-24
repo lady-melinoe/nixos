@@ -332,7 +332,7 @@ func (h *realHost) EnsureTun(peerID uint32) error {
 	if err != nil {
 		return err
 	}
-	rep, err := cl.TunCreate(peerID)
+	rep, err := cl.TunCreate(peerID, h.r.node.tunPrefix+itoa(peerID))
 	if err != nil {
 		return err
 	}

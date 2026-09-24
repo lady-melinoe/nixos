@@ -65,9 +65,10 @@ type reply struct {
 // Client is the control plane's handle on the data plane. It is safe for
 // concurrent use.
 type Client struct {
-	c      *conn
-	nextID atomic.Uint32
-	onPunt func(Punt)
+	c       *conn
+	nextID  atomic.Uint32
+	onPunt  func(Punt)
+	onEvent func(Event)
 
 	mu      sync.Mutex
 	pending map[uint32]chan reply
@@ -77,15 +78,16 @@ type Client struct {
 	err     error
 }
 
-// Dial connects to the data plane's socket. onPunt is called, from the
-// client's single reader goroutine and in arrival order, for every punted
-// packet; it must not block (queue and return).
-func Dial(path string, onPunt func(Punt)) (*Client, error) {
+// Dial connects to the data plane's socket. onPunt and onEvent (either may be
+// nil) are called from the client's single reader goroutine, in arrival
+// order, for every punted packet / event; they must not block (queue and
+// return).
+func Dial(path string, onPunt func(Punt), onEvent func(Event)) (*Client, error) {
 	uc, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: path, Net: "unixpacket"})
 	if err != nil {
 		return nil, err
 	}
-	cl := &Client{c: newConn(uc), onPunt: onPunt, pending: make(map[uint32]chan reply), done: make(chan struct{})}
+	cl := &Client{c: newConn(uc), onPunt: onPunt, onEvent: onEvent, pending: make(map[uint32]chan reply), done: make(chan struct{})}
 	go cl.readLoop()
 	return cl, nil
 }
@@ -140,6 +142,14 @@ func (cl *Client) readLoop() {
 			}
 			if cl.onPunt != nil {
 				cl.onPunt(p)
+			}
+		case TypeEvent:
+			e, err := UnmarshalEvent(body)
+			if err != nil {
+				continue
+			}
+			if cl.onEvent != nil {
+				cl.onEvent(e)
 			}
 		}
 	}
@@ -202,6 +212,32 @@ func (cl *Client) Hello() (HelloReply, error) {
 	return UnmarshalHelloReply(b)
 }
 
+// DeviceSet configures the data plane (idempotent for identical settings;
+// CodeExists if it was configured differently, see DeviceSet).
+func (cl *Client) DeviceSet(m DeviceSet) (DeviceSetReply, error) {
+	b, err := cl.Call(TypeDeviceSet, m.Marshal())
+	if err != nil {
+		return DeviceSetReply{}, err
+	}
+	return UnmarshalDeviceSetReply(b)
+}
+
+// Stats dumps the datapath counters.
+func (cl *Client) Stats() ([]Stat, error) {
+	b, err := cl.Call(TypeStats, nil)
+	if err != nil {
+		return nil, err
+	}
+	return UnmarshalStats(b)
+}
+
+// Shutdown asks the data plane to exit. It replies first, then goes away, so
+// expect the session to end shortly after a successful return.
+func (cl *Client) Shutdown() error {
+	_, err := cl.Call(TypeShutdown, nil)
+	return err
+}
+
 func (cl *Client) LinkAdd(m LinkAdd) error {
 	_, err := cl.Call(TypeLinkAdd, m.Marshal())
 	return err
@@ -220,11 +256,11 @@ func (cl *Client) LinkList() ([]LinkInfo, error) {
 	return UnmarshalLinkList(b)
 }
 
-// TunCreate makes the tun for destination peerID (idempotent). A new tun is
+// TunCreate makes the tun for destination peerID, named name (idempotent). A new tun is
 // created but NOT started: it carries no traffic until TunStart, so the
 // control plane can address it and run its hooks first.
-func (cl *Client) TunCreate(peerID uint32) (TunCreateReply, error) {
-	b, err := cl.Call(TypeTunCreate, MarshalID(peerID))
+func (cl *Client) TunCreate(peerID uint32, name string) (TunCreateReply, error) {
+	b, err := cl.Call(TypeTunCreate, TunCreate{PeerID: peerID, Name: name}.Marshal())
 	if err != nil {
 		return TunCreateReply{}, err
 	}
@@ -277,10 +313,15 @@ func (cl *Client) RouteList() ([]Route, error) {
 // code back; any other error becomes CodeInternal.
 type Handler interface {
 	Hello(Hello) (HelloReply, error)
+	DeviceSet(DeviceSet) (DeviceSetReply, error)
+	Stats() ([]Stat, error)
+	// Shutdown is called after its reply has been sent; it should make the
+	// data plane exit.
+	Shutdown()
 	LinkAdd(LinkAdd) error
 	LinkDel(peerID uint32) error
 	LinkList() ([]LinkInfo, error)
-	TunCreate(peerID uint32) (TunCreateReply, error)
+	TunCreate(TunCreate) (TunCreateReply, error)
 	TunStart(peerID uint32) error
 	TunDestroy(peerID uint32) error
 	TunList() ([]TunInfo, error)
@@ -301,7 +342,9 @@ type Server struct {
 	mu  sync.Mutex
 	cur *session
 
-	puntDropped atomic.Uint64
+	puntDropped   atomic.Uint64
+	eventsDropped atomic.Uint64
+	puntsSent     atomic.Uint64
 }
 
 // NewServer listens on path (replacing a stale socket file), mode 0600.
@@ -357,6 +400,9 @@ func (s *Server) Connected() bool {
 	return s.cur != nil
 }
 
+// PuntsSent counts punts queued for the control plane.
+func (s *Server) PuntsSent() uint64 { return s.puntsSent.Load() }
+
 // PuntDropped counts punts dropped because no control plane was attached or
 // its queue was full.
 func (s *Server) PuntDropped() uint64 { return s.puntDropped.Load() }
@@ -373,10 +419,31 @@ func (s *Server) Punt(p Punt) {
 	}
 	select {
 	case cur.punts <- p.MarshalMessage():
+		s.puntsSent.Add(1)
 	default:
 		s.puntDropped.Add(1)
 	}
 }
+
+// Event queues an asynchronous notification for the control plane, with the
+// same drop-don't-block semantics as Punt (counted by EventsDropped).
+func (s *Server) Event(e Event) {
+	s.mu.Lock()
+	cur := s.cur
+	s.mu.Unlock()
+	if cur == nil {
+		s.eventsDropped.Add(1)
+		return
+	}
+	select {
+	case cur.punts <- e.MarshalMessage():
+	default:
+		s.eventsDropped.Add(1)
+	}
+}
+
+// EventsDropped counts events dropped for lack of a control plane or queue room.
+func (s *Server) EventsDropped() uint64 { return s.eventsDropped.Load() }
 
 type session struct {
 	srv   *Server
@@ -428,6 +495,13 @@ func (ss *session) readLoop() {
 		}
 		out, err := dispatch(h, t, body)
 		var rerr error
+		if t == TypeShutdown && err == nil {
+			// Reply first, then let the handler take the process down.
+			if rerr = ss.c.send(TypeReply, id, nil); rerr == nil {
+				h.Shutdown()
+			}
+			return
+		}
 		if err != nil {
 			e, ok := err.(*Error)
 			if !ok {
@@ -464,13 +538,41 @@ func dispatch(h Handler, t Type, body []byte) ([]byte, error) {
 			return nil, err
 		}
 		return r.Marshal(), nil
+	case TypeDeviceSet:
+		m, err := UnmarshalDeviceSet(body)
+		if e, ok := bad(err); ok {
+			return nil, e
+		}
+		r, err := h.DeviceSet(m)
+		if err != nil {
+			return nil, err
+		}
+		return r.Marshal(), nil
+	case TypeStats:
+		l, err := h.Stats()
+		if err != nil {
+			return nil, err
+		}
+		return MarshalStats(l), nil
+	case TypeShutdown:
+		return nil, nil // the caller replies, then calls h.Shutdown
+	case TypeTunCreate:
+		m, err := UnmarshalTunCreate(body)
+		if e, ok := bad(err); ok {
+			return nil, e
+		}
+		r, err := h.TunCreate(m)
+		if err != nil {
+			return nil, err
+		}
+		return r.Marshal(), nil
 	case TypeLinkAdd:
 		m, err := UnmarshalLinkAdd(body)
 		if e, ok := bad(err); ok {
 			return nil, e
 		}
 		return nil, h.LinkAdd(m)
-	case TypeLinkDel, TypeTunStart, TypeTunDestroy, TypeRouteDel, TypeTunCreate:
+	case TypeLinkDel, TypeTunStart, TypeTunDestroy, TypeRouteDel:
 		id, err := UnmarshalID(body)
 		if e, ok := bad(err); ok {
 			return nil, e
@@ -484,12 +586,6 @@ func dispatch(h Handler, t Type, body []byte) ([]byte, error) {
 			return nil, h.TunDestroy(id)
 		case TypeRouteDel:
 			return nil, h.RouteDel(id)
-		default:
-			r, err := h.TunCreate(id)
-			if err != nil {
-				return nil, err
-			}
-			return r.Marshal(), nil
 		}
 	case TypeLinkList:
 		l, err := h.LinkList()

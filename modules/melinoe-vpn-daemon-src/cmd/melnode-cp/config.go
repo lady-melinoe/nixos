@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -14,15 +16,42 @@ type LinkConfig struct {
 	PrependCount int    `toml:"prependCount"` // AS-prepending for path-vector traffic engineering, see pathvector.go's forwardPath; 0 (default) is plain shortest-path
 }
 
-// Config is the control plane's configuration. The data plane has its own
-// small config (identity key, UDP port, MTU); everything about *who to talk
-// to* lives here and is pushed down to it on attach.
+// Config is the control plane's configuration -- all of it. The data plane
+// has no config file: it is started with just a socket path and is configured
+// entirely from here on attach (dpproto's DeviceSet for the device itself,
+// then links, tuns and routes).
 type Config struct {
 	LocalID int `toml:"localID"`
 
-	// DataplaneSocket is the data plane's control socket (its `socket`
-	// setting): where this process attaches.
+	// DataplaneSocket is the data plane's control socket: where this process
+	// attaches, and (when DataplaneCommand is set) what it starts the data
+	// plane listening on.
 	DataplaneSocket string `toml:"dataplaneSocket"`
+
+	// DataplaneCommand, if set, is the data plane's argv (e.g.
+	// ["/path/to/melnode-dp"]); this process then owns getting it running:
+	// on attach it adopts a data plane that is already there, or else starts
+	// one (with `-socket DataplaneSocket` appended) detached from itself, so
+	// the data plane keeps forwarding if this process restarts. An adopted
+	// data plane is replaced if it isn't running the configured binary, or
+	// was configured differently. Unset means the data plane is supervised
+	// elsewhere (e.g. its own systemd unit): it is never started, only
+	// attached to.
+	DataplaneCommand []string `toml:"dataplaneCommand"`
+
+	// The data plane's device settings, pushed to it on attach.
+	LocalPort int `toml:"localPort"` // UDP port every node listens on and every link dials
+	// LocalPrivkeyPath is a file holding this node's base64 Curve25519
+	// private key (surrounding whitespace ignored); LocalPrivkey is the same
+	// key inline. Exactly one must be set. The key is sent to the data plane
+	// over its socket, never written anywhere.
+	LocalPrivkeyPath string `toml:"localPrivkeyPath"`
+	LocalPrivkey     string `toml:"localPrivkey"`
+	MTU              int    `toml:"mtu"`    // of every tun; the default is WireGuard's 1420 minus melnode's 4-byte routing header
+	Fwmark           int    `toml:"fwmark"` // SO_MARK on the data plane's UDP socket; 0 (default) means unset
+
+	// TunPrefix names the tuns: "<tunPrefix><peerid>" (e.g. "node-4").
+	TunPrefix string `toml:"tunPrefix"`
 
 	// TunCreateHookBin / TunDestroyHookBin, if set, are executables run as
 	// `<bin> <peerid> <ifname>` after a peer tun is created and brought
@@ -55,7 +84,7 @@ type Config struct {
 }
 
 func loadConfig(path string) (*Config, error) {
-	cfg := &Config{}
+	cfg := &Config{TunPrefix: "node-", MTU: defaultMTU}
 	meta, err := toml.DecodeFile(path, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
@@ -82,12 +111,45 @@ func parsePubKeyBase64(s string) ([32]byte, error) {
 	return key, nil
 }
 
+// privateKey returns the configured static private key.
+func (c *Config) privateKey() ([32]byte, error) {
+	if c.LocalPrivkeyPath == "" {
+		return parsePubKeyBase64(c.LocalPrivkey)
+	}
+	raw, err := os.ReadFile(c.LocalPrivkeyPath)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("reading localPrivkeyPath: %w", err)
+	}
+	return parsePubKeyBase64(strings.TrimSpace(string(raw)))
+}
+
 func (c *Config) validate() error {
 	if c.LocalID < 0 || c.LocalID > 255 {
 		return fmt.Errorf("localID must be 0-255, got %d", c.LocalID)
 	}
 	if c.DataplaneSocket == "" {
 		return fmt.Errorf("dataplaneSocket is required")
+	}
+	if c.LocalPort <= 0 || c.LocalPort > 65535 {
+		return fmt.Errorf("localPort must be a valid port, got %d", c.LocalPort)
+	}
+	if c.LocalPrivkey == "" && c.LocalPrivkeyPath == "" {
+		return fmt.Errorf("one of localPrivkey or localPrivkeyPath is required")
+	}
+	if c.LocalPrivkey != "" && c.LocalPrivkeyPath != "" {
+		return fmt.Errorf("localPrivkey and localPrivkeyPath are mutually exclusive")
+	}
+	if c.MTU < 576 || c.MTU > 65000 {
+		return fmt.Errorf("mtu must be between 576 and 65000, got %d", c.MTU)
+	}
+	if c.Fwmark < 0 || c.Fwmark > 0xffffffff {
+		return fmt.Errorf("fwmark must fit in a uint32, got %d", c.Fwmark)
+	}
+	if c.TunPrefix == "" || len(c.TunPrefix) > 12 || strings.ContainsAny(c.TunPrefix, "/ \t\n") {
+		return fmt.Errorf("tunPrefix %q must be 1-12 characters with no spaces or slashes (interface names are at most 15, and the peerid follows)", c.TunPrefix)
+	}
+	if len(c.DataplaneCommand) > 0 && c.DataplaneCommand[0] == "" {
+		return fmt.Errorf("dataplaneCommand[0] is empty")
 	}
 	if c.IdentityPrefix != "" {
 		if _, ok := parsePrefix(c.IdentityPrefix); !ok {

@@ -126,25 +126,22 @@ let
 
   tomlFormat = pkgs.formats.toml { };
 
-  # Data plane: who it is and how it reaches the network. No links here -- the
-  # control plane programs those over dpSocket.
-  dpConfig = tomlFormat.generate "melnode-dp.toml" {
-    localID = nodeID;
-    localPort = mCfg.port;
-    tunPrefix = tunPrefix;
-    localPrivkeyPath = mCfg.privateKeyFile;
-    mtu = mCfg.mtu;
-    # Keep melnode's own UDP traffic on the uplink instead of routing it back
-    # into the mesh (same job the WireGuard fwMark did).
-    fwmark = netCfg.uplinkFwMark;
-    socket = dpSocket;
-  };
-
-  # Control plane: the links (pushed down to the data plane on attach), path
-  # vector, host integration and the APIs.
+  # Control plane: the data plane's settings (pushed down with DeviceSet on
+  # attach, like `wg set`), the links, path vector, host integration and the
+  # APIs. The data plane itself takes no config, only -socket.
   cpConfig = tomlFormat.generate "melnode-cp.toml" {
     localID = nodeID;
     dataplaneSocket = dpSocket;
+    localPort = mCfg.port;
+    localPrivkeyPath = mCfg.privateKeyFile;
+    mtu = mCfg.mtu;
+    inherit tunPrefix;
+    # Keep melnode's own UDP traffic on the uplink instead of routing it back
+    # into the mesh (same job the WireGuard fwMark did).
+    fwmark = netCfg.uplinkFwMark;
+    # dataplaneCommand is deliberately unset: systemd owns the data plane here.
+    # (The control plane can start it itself; that needs KillMode=process and
+    # no separate melnode-dp unit, or systemd kills it with the cp's cgroup.)
     identityPrefix = "${hostAddr}/32";
     controlSocket = controlSocket;
     # Read-only introspection over TCP (no advertise/withdraw); firewalled to
@@ -272,7 +269,7 @@ in
       ];
       stopIfChanged = false;
       serviceConfig = {
-        ExecStart = "${dpBin} -config ${dpConfig}";
+        ExecStart = "${dpBin} -socket ${dpSocket}";
         Restart = "always";
         RestartSec = 1;
         RuntimeDirectory = "melnode-dp";
