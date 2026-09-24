@@ -272,7 +272,7 @@ func (device *Device) RoutineReadFromTUN(peerID uint32, devTun tun.Device) {
 				buf[offset-headerSize+0] = 0 // proto 0: routed IP packet
 				buf[offset-headerSize+1] = byte(device.localID)
 				buf[offset-headerSize+2] = byte(peerID)
-				buf[offset-headerSize+3] = 0
+				buf[offset-headerSize+hdrOffTTL] = defaultTTL
 				elem.packet = buf[offset-headerSize : offset+sizes[i]]
 
 				elemsForPeer.elems = append(elemsForPeer.elems, elem)

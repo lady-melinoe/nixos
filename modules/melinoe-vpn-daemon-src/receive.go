@@ -640,10 +640,18 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				// round (forwardsByNextHop) instead of staging each
 				// packet individually -- see the comment where that map
 				// is declared for why that matters.
+				// TTL check first: a forwarded packet must have at
+				// least one hop left. Decrement in place -- the header
+				// is plaintext here and gets re-encrypted on the way out.
+				if elem.packet[hdrOffTTL] <= 1 {
+					device.log.Verbosef("router: ttl expired forwarding peerid %d -> %d from %v -- dropping", src, dst, peer)
+					continue
+				}
 				nextHop := device.router.resolveNextHop(uint32(dst))
 				if nextHop == nil {
 					continue // already logged by resolveNextHop
 				}
+				elem.packet[hdrOffTTL]--
 				outElem := device.GetOutboundElement() // NewOutboundElement would also fetch a *fresh* buffer, which we don't want -- we already have one
 				outElem.buffer = elem.buffer
 				outElem.packet = elem.packet

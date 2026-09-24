@@ -126,6 +126,10 @@ func (c *Config) validate() error {
 		if l.PrependCount < 0 {
 			return fmt.Errorf("[[link]] peerid %d prependCount must be >= 0, got %d", l.PeerID, l.PrependCount)
 		}
+		if l.PrependCount > pvMaxPathLen {
+			// Path lengths are a single byte on the wire (pathvector.go).
+			return fmt.Errorf("[[link]] peerid %d prependCount must be <= %d, got %d", l.PeerID, pvMaxPathLen, l.PrependCount)
+		}
 	}
 	// [[peer]]/nhid used to be validated here too, back when reachability
 	// was static config. It's now discovered at runtime by the
