@@ -38,6 +38,7 @@ func newControlAPI(pv *PathVector, socketPath string) (*controlAPI, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/advertise", c.handleAdvertise)
 	mux.HandleFunc("/withdraw", c.handleWithdraw)
+	c.registerIntrospection(mux)
 	c.server = &http.Server{Handler: mux}
 	return c, nil
 }

@@ -44,6 +44,18 @@ type Router struct {
 	tunCreateHookBin  string
 	tunDestroyHookBin string
 
+	// peerLocks[peerid] serializes that peer's tun lifecycle: creation
+	// (incl. the create hook), removal (incl. the destroy hook) and
+	// anything that must wait for an in-flight creation to finish (e.g.
+	// InstallPrefixRoute needing the tun to exist). Without it, two
+	// path-vector goroutines learning a route to the same peerid at the
+	// same time both saw "no tun yet" and both tried to create it (the
+	// loser failing with EBUSY), and prefix routes could be installed
+	// while the tun was still being set up. Guarded by mu; the mutexes
+	// themselves are never removed (peerids are 0-255). Lock order: a
+	// peer lock, then mu -- never the other way round.
+	peerLocks map[uint32]*sync.Mutex
+
 	mu          sync.RWMutex
 	tunByPeerID map[uint32]tun.Device
 	tunWriters  map[uint32]*tunWriter // see LookupTunWriter / runTunWriter below
@@ -58,10 +70,24 @@ func newRouter(dev *Device, localID uint32, tunPrefix string, identityPrefix *pv
 		identityPrefix:    identityPrefix,
 		tunCreateHookBin:  tunCreateHookBin,
 		tunDestroyHookBin: tunDestroyHookBin,
+		peerLocks:         make(map[uint32]*sync.Mutex),
 		tunByPeerID:       make(map[uint32]tun.Device),
 		tunWriters:        make(map[uint32]*tunWriter),
 		routeTable:        make(map[uint32]uint32),
 	}
+}
+
+// peerLock returns the lifecycle lock for one peerid, see Router.peerLocks.
+// Must not be called with r.mu held.
+func (r *Router) peerLock(peerID uint32) *sync.Mutex {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	l, ok := r.peerLocks[peerID]
+	if !ok {
+		l = &sync.Mutex{}
+		r.peerLocks[peerID] = l
+	}
+	return l
 }
 
 // LookupRoute is the RLock'd read used by RoutineReadFromTUN (send.go) to
@@ -95,6 +121,10 @@ func (r *Router) LookupTunWriter(peerID uint32) (*tunWriter, bool) {
 // update; the tun and its reader goroutine are untouched (LookupRoute's
 // per-round re-resolution is what makes that safe).
 func (r *Router) AddOrUpdateRoute(dstPeerID, nhid uint32) {
+	pl := r.peerLock(dstPeerID)
+	pl.Lock()
+	defer pl.Unlock()
+
 	r.mu.Lock()
 	_, hadRoute := r.routeTable[dstPeerID]
 	r.routeTable[dstPeerID] = nhid
@@ -117,6 +147,12 @@ func (r *Router) AddOrUpdateRoute(dstPeerID, nhid uint32) {
 // RoutineReadFromTUN goroutine to exit on its next failed Read, same as
 // Device.Close() already relies on for shutdown.
 func (r *Router) RemoveRoute(dstPeerID uint32) {
+	// Waits for an in-flight creation of this peer's tun to finish, so the
+	// destroy hook can never run before (or during) the create hook.
+	pl := r.peerLock(dstPeerID)
+	pl.Lock()
+	defer pl.Unlock()
+
 	r.mu.Lock()
 	delete(r.routeTable, dstPeerID)
 	t, hadTun := r.tunByPeerID[dstPeerID]
@@ -203,7 +239,7 @@ func (r *Router) closeAllTuns() {
 }
 
 func (r *Router) createAndStartTun(peerID uint32) {
-	t, err := createPeerTun(r.tunPrefix, peerID)
+	t, err := createPeerTun(r.tunPrefix, peerID, r.dev.mtu)
 	if err != nil {
 		r.dev.log.Errorf("router: failed to create tun for newly-routable peerid %d: %v", peerID, err)
 		return
@@ -308,19 +344,23 @@ const (
 
 // createPeerTun creates and returns the TUN device for one discovered
 // destination peerid, named "<tunPrefix><peerid>" (e.g. "node-4").
-func createPeerTun(namePrefix string, peerID uint32) (tun.Device, error) {
+func createPeerTun(namePrefix string, peerID uint32, mtu int) (tun.Device, error) {
 	name := namePrefix + itoa(peerID)
-	dev, err := tun.CreateTUN(name, defaultMTU)
+	dev, err := tun.CreateTUN(name, mtu)
 	if err != nil {
 		return nil, err
 	}
 	actualName, _ := dev.Name()
 	log.Printf("created tun %q for peerid %d (mtu=%d)",
-		actualName, peerID, defaultMTU)
+		actualName, peerID, mtu)
 	return dev, nil
 }
 
-const defaultMTU = 1420
+// defaultMTU is the default tun MTU (config: mtu). WireGuard's 1420 is
+// 1500 minus IPv6 (40) + UDP (8) + WireGuard's transport overhead (16-byte
+// header + 16-byte tag); melnode adds its own 4-byte routing header inside
+// the encrypted payload, so the same 1500-byte underlay leaves 1416.
+const defaultMTU = 1416
 
 // localDeliveryOffset is how much headroom tun.Device.Write gets to work
 // with per buffer (it uses this space itself -- e.g. for a virtio-net

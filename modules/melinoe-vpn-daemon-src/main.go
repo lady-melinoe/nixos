@@ -104,6 +104,7 @@ func main() {
 	}
 
 	dev := newDevice(uint32(cfg.LocalID), staticPrivate)
+	dev.mtu = cfg.MTU
 	if *verbose {
 		dev.log = NewLogger(LogLevelVerbose, "")
 	}

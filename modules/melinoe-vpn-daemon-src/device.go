@@ -25,6 +25,7 @@ var errNoKnownEndpoint = errors.New("no known remote address yet (listen-only pe
 // until killed.
 type Device struct {
 	localID uint32 // 0-255, from config `localID`
+	mtu     int    // MTU of every peer tun (config: mtu), also bounds padding -- see RoutineEncryption
 
 	staticIdentity struct {
 		sync.RWMutex
@@ -105,6 +106,7 @@ type Device struct {
 func newDevice(localID uint32, staticPrivate NoisePrivateKey) *Device {
 	d := &Device{
 		localID: localID,
+		mtu:     defaultMTU,
 		closed:  make(chan struct{}),
 		log:     NewLogger(LogLevelError, ""),
 	}

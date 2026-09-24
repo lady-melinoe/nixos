@@ -95,6 +95,7 @@ let
     localPort = mCfg.port;
     tunPrefix = tunPrefix;
     localPrivkeyPath = mCfg.privateKeyFile;
+    mtu = mCfg.mtu;
     # Keep melnode's own UDP traffic on the uplink instead of routing it back
     # into the mesh (same job the WireGuard fwMark did).
     fwmark = netCfg.uplinkFwMark;
@@ -124,6 +125,16 @@ in
       description = ''
         UDP port every node listens on, and every link dials. All nodes use
         the same port; no per-peer ports.
+      '';
+    };
+
+    mtu = mkOption {
+      type = types.ints.between 576 65000;
+      default = 1416;
+      description = ''
+        MTU of every node-<id> tun. 1416 is WireGuard's 1420 (1500 minus IPv6,
+        UDP and WireGuard framing) minus melnode's own 4-byte routing header,
+        so a full-size packet still fits a 1500-byte underlay.
       '';
     };
 
@@ -202,9 +213,6 @@ in
       # PATH for the tun hooks, which shell out to ip/nft.
       path = toolPath;
       serviceConfig = {
-        # Remove leftovers of the old ipip stack (node-N ipip devices would
-        # collide with melnode's node-N tuns). Never fatal.
-        ExecStartPre = "-${helperCmd} cleanup-legacy";
         ExecStart = "${mCfg.package}/bin/melnode -config ${melnodeConfig}";
         Restart = "always";
         RestartSec = 1;
