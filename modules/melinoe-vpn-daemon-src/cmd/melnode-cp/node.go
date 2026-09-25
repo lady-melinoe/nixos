@@ -62,14 +62,28 @@ type Node struct {
 
 // introspectDP returns the data plane for a read-only introspection query,
 // plus the func that releases it, or nil when detached or another query is
-// already running. Introspection is reachable over TCP and shares the
-// control plane's session: unbounded concurrent queries against an already
-// slow data plane could push a call past dpproto.CallTimeout, which drops
-// the session (and with it every link). Busy just means answering without
-// the data plane's live details this time.
+// already running. Introspection (the control socket's live views, the TCP
+// API's snapshot refresh) shares the control plane's session: unbounded
+// concurrent queries against an already slow data plane could push a call
+// past dpproto.CallTimeout, which drops the session (and with it every
+// link). Busy just means answering without the data plane's live details
+// this time.
 func (n *Node) introspectDP() (dpproto.Datapath, func()) {
 	cl := n.dp()
 	if cl == nil || !n.introspectMu.TryLock() {
+		return nil, func() {}
+	}
+	return cl, n.introspectMu.Unlock
+}
+
+// introspectDPWait is introspectDP for the TCP API's snapshot refresh: it
+// waits for a running query instead of giving up. There is only ever one
+// refresher, so the gate still admits one data plane query at a time.
+func (n *Node) introspectDPWait() (dpproto.Datapath, func()) {
+	n.introspectMu.Lock()
+	cl := n.dp()
+	if cl == nil {
+		n.introspectMu.Unlock()
 		return nil, func() {}
 	}
 	return cl, n.introspectMu.Unlock

@@ -83,16 +83,21 @@ type Config struct {
 
 	// IntrospectListen, if set, is a TCP listen address (e.g. ":60198")
 	// for a READ-ONLY HTTP API (introspectapi.go): the same "show ..."
-	// endpoints as the control socket, but never /advertise or /withdraw.
+	// endpoints as the control socket, but never /advertise or /withdraw,
+	// and served from a snapshot rebuilt every IntrospectIntervalMs.
 	// Unauthenticated -- restrict reachability with the host firewall.
 	// "" (default) disables it.
 	IntrospectListen string `toml:"introspectListen"`
+	// IntrospectIntervalMs is how often the TCP API's snapshot is rebuilt
+	// (introspectapi.go): the most out of date its answers can be, and
+	// how often it reads the data plane whether or not anyone asks.
+	IntrospectIntervalMs int `toml:"introspectIntervalMs"`
 
 	Links []LinkConfig `toml:"link"`
 }
 
 func loadConfig(path string) (*Config, error) {
-	cfg := &Config{TunPrefix: "node-", MTU: defaultMTU}
+	cfg := &Config{TunPrefix: "node-", MTU: defaultMTU, IntrospectIntervalMs: 1000}
 	meta, err := toml.DecodeFile(path, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
@@ -156,6 +161,9 @@ func (c *Config) validate() error {
 	}
 	if c.MTU < 576 || c.MTU > 65000 {
 		return fmt.Errorf("mtu must be between 576 and 65000, got %d", c.MTU)
+	}
+	if c.IntrospectIntervalMs < 100 || c.IntrospectIntervalMs > 60000 {
+		return fmt.Errorf("introspectIntervalMs must be between 100 and 60000, got %d", c.IntrospectIntervalMs)
 	}
 	if c.Fwmark < 0 || c.Fwmark > 0xffffffff {
 		return fmt.Errorf("fwmark must fit in a uint32, got %d", c.Fwmark)

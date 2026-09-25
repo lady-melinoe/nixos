@@ -147,6 +147,7 @@ let
       # Read-only introspection over TCP (no advertise/withdraw); firewalled to
       # the host range via specialHostAccess below.
       introspectListen = ":${toString mCfg.introspectPort}";
+      introspectIntervalMs = mCfg.introspectIntervalMs;
       tunCreateHookBin = "${mkHook "create"}";
       tunDestroyHookBin = "${mkHook "destroy"}";
       link = map mkLink netCfg.peers;
@@ -188,7 +189,19 @@ in
         TCP port for melnode's read-only introspection API (/summary, /links,
         /routes, /prefixes, /tuns; never the write endpoints). Reachable only
         from the host range (melinoe.node.networking.specialHostAccess), so any
-        node can view any other node's state.
+        node can view any other node's state. Served from a snapshot rebuilt
+        every introspectIntervalMs, never the live state.
+      '';
+    };
+
+    introspectIntervalMs = mkOption {
+      type = types.ints.between 100 60000;
+      default = 1000;
+      description = ''
+        How often, in milliseconds, the TCP introspection API's snapshot is
+        rebuilt: the most out of date its answers can be (each response
+        carries its age), and how often it reads the data plane whether or
+        not anyone is asking. The control socket's views stay live.
       '';
     };
 

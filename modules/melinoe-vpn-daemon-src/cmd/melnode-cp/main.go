@@ -37,6 +37,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -106,7 +107,7 @@ func main() {
 	// the control socket: no write endpoints are mounted on it.
 	var introspectAPIServer *introspectAPI
 	if cfg.IntrospectListen != "" {
-		introspectAPIServer, err = newIntrospectAPI(pathVector, cfg.IntrospectListen)
+		introspectAPIServer, err = newIntrospectAPI(pathVector, cfg.IntrospectListen, time.Duration(cfg.IntrospectIntervalMs)*time.Millisecond)
 		if err != nil {
 			log.Fatalf("introspect API: failed to listen on %s: %v", cfg.IntrospectListen, err)
 		}
