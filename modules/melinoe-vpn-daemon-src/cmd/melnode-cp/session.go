@@ -32,18 +32,44 @@ const (
 	// never delay RPC replies; overflow is dropped, which liveness and
 	// path-vector tolerate.
 	puntQueueSize = 1024
+
+	// livenessPuntQueueSize is deliberately small: liveness (linkmonitor.go)
+	// only ever has one meaningful packet in flight per peer at a time (the
+	// latest state), so this only needs to smooth over brief bursts, not
+	// buffer a backlog.
+	livenessPuntQueueSize = 64
 )
 
 // dpSession is one attachment to the data plane.
+//
+// Two punt queues, not one: liveness (proto=1) is control-flow - it must
+// never wait behind anything else, or a slow neighbor blows its own
+// detection timer for no reason but queueing. Path-vector (proto=2) is
+// data-flow: handling one packet can itself call back into the data plane
+// (propagateAnnounce -> Inject, syncKernel -> RouteSet/TunCreate), which is
+// exactly the kind of unbounded-latency work liveness must never sit
+// behind. A single shared queue+worker used to carry both, so a burst of
+// path-vector traffic (routine on every reconnect - "sending full table"
+// fires for every neighbor) could starve liveness processing long enough to
+// trip neighbors' own detection timers, which forces more reconnects, which
+// generates more path-vector traffic: a self-sustaining flapping cascade
+// (confirmed live - see arke, 2026-09-25). Splitting them by proto, each
+// with its own queue and worker, is what actually fixes that: nothing
+// liveness does can ever be delayed by path-vector's queue depth again.
 type dpSession struct {
-	cl    dpproto.Datapath
-	punts chan dpproto.Punt
-	done  chan struct{} // closed to stop the punt worker
+	cl            dpproto.Datapath
+	livenessPunts chan dpproto.Punt
+	punts         chan dpproto.Punt // path-vector and anything else
+	done          chan struct{}     // closed to stop both punt workers
 }
 
 func (s *dpSession) onPunt(p dpproto.Punt) {
+	ch := s.punts
+	if p.Proto == livenessProto {
+		ch = s.livenessPunts
+	}
 	select {
-	case s.punts <- p:
+	case ch <- p:
 	default: // full: drop
 	}
 }
@@ -53,6 +79,24 @@ func (s *dpSession) onPunt(p dpproto.Punt) {
 func (n *Node) onEvent(e dpproto.Event) {
 	if e.Kind == dpproto.EventLinkHandshake {
 		n.log.Verbosef("link(%d) - handshake complete (peer at %s)", e.PeerID, e.Endpoint)
+	}
+}
+
+// livenessWorker and worker are deliberately separate goroutines, not one
+// goroutine select()ing on both channels: a select still dispatches one
+// packet's handling to completion before it can even look at the other
+// channel again, so it wouldn't actually decouple them - a slow
+// path-vector handlePunt call would still delay the *next* select
+// iteration from reaching an already-queued liveness packet. Two
+// goroutines let each channel's handler run independently.
+func (s *dpSession) livenessWorker(n *Node) {
+	for {
+		select {
+		case <-s.done:
+			return
+		case p := <-s.livenessPunts:
+			n.handlePunt(p)
+		}
 	}
 }
 
@@ -114,7 +158,11 @@ func (n *Node) runSessions(socket string, stop <-chan struct{}) {
 // attach connects to the data plane (starting it first if that's ours to do),
 // configures it, and brings the control plane up against it.
 func (n *Node) attach(socket string) (*dpSession, error) {
-	sess := &dpSession{punts: make(chan dpproto.Punt, puntQueueSize), done: make(chan struct{})}
+	sess := &dpSession{
+		livenessPunts: make(chan dpproto.Punt, livenessPuntQueueSize),
+		punts:         make(chan dpproto.Punt, puntQueueSize),
+		done:          make(chan struct{}),
+	}
 	cl, err := n.dialDataplane(socket, sess.onPunt, n.onEvent)
 	if err != nil {
 		return nil, err
@@ -179,6 +227,7 @@ func (n *Node) attach(socket string) (*dpSession, error) {
 	if err := cl.Attach(); err != nil {
 		return fail(fmt.Errorf("attaching to the data plane: %w", err))
 	}
+	go sess.livenessWorker(n)
 	go sess.worker(n)
 	n.dpc.Store(&dpHandle{cl})
 	n.router.attach()
