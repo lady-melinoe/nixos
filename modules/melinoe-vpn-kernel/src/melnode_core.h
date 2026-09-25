@@ -20,9 +20,37 @@
 #include "melnode_cookie.h"
 
 #define MELNODE_MAX_PEER 256
+#define MELNODE_HANDSHAKE_DSCP 0x88
 #define MELNODE_MIN_MTU 576
 #define MELNODE_MAX_MTU 65000
 #define MELNODE_LINK_OUTQ_SIZE 1024
+
+struct melnode_endpoint {
+	u8 addr[sizeof(struct sockaddr_in6)];
+	u8 addr_len;
+	bool has_src;
+	int src_ifindex;
+	union {
+		__be32 v4;
+		struct in6_addr v6;
+	} src;
+};
+
+#define MELNODE_INDEX_SLOTS 5
+
+struct melnode_index_slot {
+	struct hlist_node node;
+	struct melnode_link *link;
+	__le32 index;
+	bool hashed;
+};
+
+struct melnode_hs_item {
+	struct list_head list;
+	struct melnode_endpoint from;
+	size_t len;
+	u8 data[];
+};
 
 struct melnode_link {
 	struct kref kref;
@@ -32,8 +60,8 @@ struct melnode_link {
 
 	spinlock_t lock;
 	bool has_endpoint;
-	u8 endpoint[sizeof(struct sockaddr_in6)];
-	u8 endpoint_len;
+	bool clear_src;
+	struct melnode_endpoint endpoint;
 	atomic64_t tx_bytes;
 	atomic64_t rx_bytes;
 	u64 last_handshake_unix_ns;
@@ -46,8 +74,11 @@ struct melnode_link {
 	u64 keepalive_at;
 	u64 new_handshake_at;
 	u64 retry_at;
-	u64 attempt_started;
 	u64 wipe_at;
+	u32 handshake_attempts;
+	bool sent_last_minute_handshake;
+	bool need_another_keepalive;
+	struct melnode_index_slot index_slots[MELNODE_INDEX_SLOTS];
 	struct delayed_work timer;
 
 	struct ptr_ring outq;
@@ -101,6 +132,12 @@ struct melnode_device {
 
 	struct melnode_cookie_checker cookie_checker;
 
+	spinlock_t hs_lock;
+	struct list_head hs_queue;
+	unsigned int hs_count;
+	struct work_struct hs_work;
+	u64 last_under_load;
+
 	struct rw_semaphore sock_sem;
 	struct socket *sock4;
 	struct socket *sock6;
@@ -119,6 +156,6 @@ extern struct melnode_device melnode_dev;
 
 void melnode_stat_inc(enum melnode_stat id);
 void melnode_get_keys(u8 public_key[32], u8 private_key[32]);
-void melnode_handle_datagram(u8 *data, size_t len, const void *from_addr, int from_len);
+void melnode_handle_datagram(u8 *data, size_t len, const struct melnode_endpoint *from);
 
 #endif /* _MELNODE_CORE_H */

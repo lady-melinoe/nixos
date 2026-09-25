@@ -440,40 +440,42 @@ out:
 }
 
 bool melnode_noise_handshake_begin_session(struct melnode_handshake *handshake,
-					    struct melnode_keypairs *keypairs)
+					   struct melnode_keypairs *keypairs)
 {
-	struct melnode_keypair new_keypair = { 0 };
+	struct melnode_keypair *kp;
 	bool initiator;
 
 	if (handshake->state != MELNODE_HANDSHAKE_CREATED_RESPONSE &&
 	    handshake->state != MELNODE_HANDSHAKE_CONSUMED_RESPONSE)
 		return false;
 
-	new_keypair.valid = true;
 	initiator = handshake->state == MELNODE_HANDSHAKE_CONSUMED_RESPONSE;
-	new_keypair.initiator = initiator;
-	new_keypair.remote_index = handshake->remote_index;
-	new_keypair.local_index = handshake->local_index;
-
-	if (initiator)
-		derive_keys(&new_keypair.sending, &new_keypair.receiving, handshake->chaining_key);
-	else
-		derive_keys(&new_keypair.receiving, &new_keypair.sending, handshake->chaining_key);
-
-	handshake_zero(handshake);
 
 	if (initiator) {
 		if (keypairs->next_kp.valid) {
 			keypairs->previous_kp = keypairs->next_kp;
-			memset(&keypairs->next_kp, 0, sizeof(keypairs->next_kp));
+			memzero_explicit(&keypairs->next_kp, sizeof(keypairs->next_kp));
 		} else {
 			keypairs->previous_kp = keypairs->current_kp;
 		}
-		keypairs->current_kp = new_keypair;
+		kp = &keypairs->current_kp;
 	} else {
-		keypairs->next_kp = new_keypair;
-		memset(&keypairs->previous_kp, 0, sizeof(keypairs->previous_kp));
+		memzero_explicit(&keypairs->previous_kp, sizeof(keypairs->previous_kp));
+		kp = &keypairs->next_kp;
 	}
+
+	memset(kp, 0, sizeof(*kp));
+	kp->valid = true;
+	kp->initiator = initiator;
+	kp->remote_index = handshake->remote_index;
+	kp->local_index = handshake->local_index;
+
+	if (initiator)
+		derive_keys(&kp->sending, &kp->receiving, handshake->chaining_key);
+	else
+		derive_keys(&kp->receiving, &kp->sending, handshake->chaining_key);
+
+	handshake_zero(handshake);
 	return true;
 }
 

@@ -22,10 +22,18 @@ int melnode_routing_send_now(struct melnode_link *link, const u8 *plain, size_t 
 int melnode_routing_route_and_send(u8 dst_peer_id, u8 *plain, size_t plain_len);
 void melnode_routing_deliver_or_forward(u8 src, u8 dst, u8 ttl, u8 *plain, size_t plain_len);
 
-void melnode_send_initiation(struct melnode_link *link);
+void melnode_send_initiation(struct melnode_link *link, bool retry);
+
+struct melnode_endpoint;
+u64 melnode_rekey_jitter_ns(void);
+bool melnode_link_endpoint_take_locked(struct melnode_link *link, struct melnode_endpoint *out);
+void melnode_link_set_endpoint_from_packet_locked(struct melnode_link *link,
+						  const struct melnode_endpoint *ep);
+void melnode_link_set_endpoint_configured_locked(struct melnode_link *link, const void *addr,
+						 int len);
 
 void melnode_link_arm_timer_locked(struct melnode_link *link);
-void melnode_link_session_established_locked(struct melnode_link *link);
+void melnode_link_session_established_locked(struct melnode_link *link, bool handshake_complete);
 void melnode_link_shutdown(struct melnode_link *link);
 
 #endif /* _MELNODE_ROUTING_H */

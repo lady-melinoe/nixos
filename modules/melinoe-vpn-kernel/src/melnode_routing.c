@@ -5,10 +5,12 @@
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
 #include <linux/if_ether.h>
+#include <linux/random.h>
 #include <net/gro_cells.h>
 
 #include "melnode_compat.h"
 #include "melnode_core.h"
+#include "melnode_index.h"
 #include "melnode_routing.h"
 #include "melnode_socket.h"
 #include "melnode_transport.h"
@@ -53,6 +55,43 @@ void melnode_link_put(struct melnode_link *link)
 
 #define SECS_TO_NS(s) ((u64)(s) * NSEC_PER_SEC)
 
+u64 melnode_rekey_jitter_ns(void)
+{
+	return (u64)get_random_u32_below(MELNODE_REKEY_JITTER_MAX_MS) * NSEC_PER_MSEC;
+}
+
+bool melnode_link_endpoint_take_locked(struct melnode_link *link, struct melnode_endpoint *out)
+{
+	if (!link->has_endpoint)
+		return false;
+	if (link->clear_src) {
+		link->endpoint.has_src = false;
+		link->endpoint.src_ifindex = 0;
+		memset(&link->endpoint.src, 0, sizeof(link->endpoint.src));
+		link->clear_src = false;
+	}
+	*out = link->endpoint;
+	return true;
+}
+
+void melnode_link_set_endpoint_from_packet_locked(struct melnode_link *link,
+						  const struct melnode_endpoint *ep)
+{
+	link->clear_src = false;
+	link->endpoint = *ep;
+	link->has_endpoint = true;
+}
+
+void melnode_link_set_endpoint_configured_locked(struct melnode_link *link, const void *addr,
+						 int len)
+{
+	memset(&link->endpoint, 0, sizeof(link->endpoint));
+	memcpy(link->endpoint.addr, addr, len);
+	link->endpoint.addr_len = len;
+	link->clear_src = false;
+	link->has_endpoint = true;
+}
+
 void melnode_link_arm_timer_locked(struct melnode_link *link)
 {
 	u64 now = ktime_get_coarse_boottime_ns();
@@ -77,10 +116,13 @@ void melnode_link_arm_timer_locked(struct melnode_link *link)
 		melnode_link_put(link);
 }
 
-void melnode_link_session_established_locked(struct melnode_link *link)
+void melnode_link_session_established_locked(struct melnode_link *link, bool handshake_complete)
 {
-	link->retry_at = 0;
-	link->attempt_started = 0;
+	if (handshake_complete) {
+		link->retry_at = 0;
+		link->handshake_attempts = 0;
+		link->sent_last_minute_handshake = false;
+	}
 	link->new_handshake_at = 0;
 	link->wipe_at = ktime_get_coarse_boottime_ns() + SECS_TO_NS(3 * MELNODE_REJECT_AFTER_TIME);
 	melnode_link_arm_timer_locked(link);
@@ -90,6 +132,7 @@ void melnode_link_shutdown(struct melnode_link *link)
 {
 	spin_lock_bh(&link->lock);
 	link->dead = true;
+	melnode_index_sync(link);
 	spin_unlock_bh(&link->lock);
 
 	if (cancel_delayed_work_sync(&link->timer))
@@ -107,7 +150,7 @@ static bool deadline_due(u64 *deadline, u64 now)
 static void link_timer_fn(struct work_struct *work)
 {
 	struct melnode_link *link = container_of(to_delayed_work(work), struct melnode_link, timer);
-	bool keepalive = false, initiate = false;
+	bool keepalive, initiate = false, retry = false;
 	u64 now = ktime_get_coarse_boottime_ns();
 
 	spin_lock_bh(&link->lock);
@@ -119,41 +162,72 @@ static void link_timer_fn(struct work_struct *work)
 	if (deadline_due(&link->wipe_at, now)) {
 		melnode_noise_keypairs_clear(&link->keypairs);
 		melnode_noise_handshake_clear(&link->handshake);
+		melnode_index_sync(link);
 		link->keepalive_at = 0;
 		link->new_handshake_at = 0;
 		link->retry_at = 0;
-		link->attempt_started = 0;
 	}
 	keepalive = deadline_due(&link->keepalive_at, now);
-	initiate = deadline_due(&link->new_handshake_at, now);
+	if (deadline_due(&link->new_handshake_at, now)) {
+		link->clear_src = true;
+		initiate = true;
+	}
 	if (deadline_due(&link->retry_at, now)) {
-		if (now - link->attempt_started >= SECS_TO_NS(MELNODE_REKEY_ATTEMPT_TIME)) {
-			link->attempt_started = 0;
-			melnode_noise_handshake_clear(&link->handshake);
+		if (link->handshake_attempts > MELNODE_MAX_TIMER_HANDSHAKES) {
+			link->keepalive_at = 0;
+			keepalive = false;
+			if (!link->wipe_at)
+				link->wipe_at = now + SECS_TO_NS(3 * MELNODE_REJECT_AFTER_TIME);
 		} else {
-			initiate = true;
+			link->handshake_attempts++;
+			link->clear_src = true;
+			retry = true;
 		}
 	}
 	melnode_link_arm_timer_locked(link);
 	spin_unlock_bh(&link->lock);
 
-	if (keepalive)
+	if (keepalive) {
 		melnode_routing_send_now(link, NULL, 0);
+		spin_lock_bh(&link->lock);
+		if (link->need_another_keepalive) {
+			link->need_another_keepalive = false;
+			link->keepalive_at = ktime_get_coarse_boottime_ns() +
+					     SECS_TO_NS(MELNODE_KEEPALIVE_TIMEOUT);
+			melnode_link_arm_timer_locked(link);
+		}
+		spin_unlock_bh(&link->lock);
+	}
 	if (initiate)
-		melnode_send_initiation(link);
+		melnode_send_initiation(link, false);
+	else if (retry)
+		melnode_send_initiation(link, true);
 out:
 	melnode_link_put(link);
 }
 
+static size_t melnode_padding_size(size_t len, u32 mtu)
+{
+	size_t last = len, padded;
+
+	if (last > mtu)
+		last %= mtu;
+	padded = ALIGN(last, MELNODE_PADDING_MULTIPLE);
+	if (padded > mtu)
+		padded = mtu;
+	return padded - last;
+}
+
 int melnode_routing_send_now(struct melnode_link *link, const u8 *plain, size_t plain_len)
 {
-	u8 endpoint[sizeof(struct sockaddr_in6)];
+	size_t pad = melnode_padding_size(plain_len, READ_ONCE(melnode_dev.mtu) + MELNODE_HDR_LEN);
+	size_t enc_len = plain_len + pad;
+	size_t out_len = sizeof(struct melnode_wire_data) + melnode_noise_encrypted_len(enc_len);
 	u8 key[MELNODE_NOISE_SYMMETRIC_KEY_LEN];
-	size_t out_len = sizeof(struct melnode_wire_data) + melnode_noise_encrypted_len(plain_len);
+	struct melnode_endpoint endpoint;
 	struct melnode_wire_data *out;
 	struct melnode_keypair *kp;
 	__le32 remote_index;
-	int endpoint_len;
 	bool rekey;
 	u64 counter;
 	int ret = 0;
@@ -178,29 +252,32 @@ int melnode_routing_send_now(struct melnode_link *link, const u8 *plain, size_t 
 	if (plain_len && !link->new_handshake_at) {
 		link->new_handshake_at = ktime_get_coarse_boottime_ns() +
 					 SECS_TO_NS(MELNODE_KEEPALIVE_TIMEOUT +
-						    MELNODE_REKEY_TIMEOUT);
+						    MELNODE_REKEY_TIMEOUT) +
+					 melnode_rekey_jitter_ns();
 		melnode_link_arm_timer_locked(link);
 	}
 	remote_index = kp->remote_index;
 	memcpy(key, kp->sending.key, sizeof(key));
-	endpoint_len = link->endpoint_len;
-	memcpy(endpoint, link->endpoint, endpoint_len);
+	melnode_link_endpoint_take_locked(link, &endpoint);
 	spin_unlock_bh(&link->lock);
 
 	out->header.type = cpu_to_le32(MELNODE_WIRE_MSG_DATA);
 	out->receiver_index = remote_index;
 	out->counter = cpu_to_le64(counter);
-	melnode_transport_encrypt(out->encrypted_data, plain, plain_len, key, counter);
+	if (plain_len)
+		memcpy(out->encrypted_data, plain, plain_len);
+	memset(out->encrypted_data + plain_len, 0, pad);
+	melnode_transport_encrypt(out->encrypted_data, out->encrypted_data, enc_len, key, counter);
 	memzero_explicit(key, sizeof(key));
 
-	if (melnode_socket_send(&melnode_dev, out, out_len, endpoint, endpoint_len) < 0)
+	if (melnode_socket_send(&melnode_dev, out, out_len, &endpoint, 0) < 0)
 		ret = -EIO;
 	else
-		atomic64_add(plain_len, &link->tx_bytes);
+		atomic64_add(out_len, &link->tx_bytes);
 
 	kfree(out);
 	if (rekey)
-		melnode_send_initiation(link);
+		melnode_send_initiation(link, false);
 	return ret;
 }
 
@@ -213,7 +290,7 @@ static void outq_work_fn(struct work_struct *work)
 		int err = melnode_routing_send_now(link, item->plain, item->plain_len);
 
 		if (err == -ENOENT) {
-			melnode_send_initiation(link);
+			melnode_send_initiation(link, false);
 			melnode_stat_inc(MELNODE_STAT_TX_QUEUE_FULL);
 		}
 		item_free(item);
@@ -332,7 +409,7 @@ static void deliver_local(u8 src, u8 *plain, size_t plain_len)
 
 	local_bh_disable();
 	if (melnode_compat_gro_receive(&priv->gcells, skb) == NET_RX_DROP) {
-		melnode_stat_inc(MELNODE_STAT_RX_QUEUE_FULL);
+		melnode_stat_inc(MELNODE_STAT_RX_TUN_FULL);
 		DEV_STATS_INC(dev, rx_dropped);
 	} else {
 		DEV_STATS_INC(dev, rx_packets);
@@ -345,9 +422,36 @@ out_free:
 	kfree(plain);
 }
 
+static bool trim_ip(size_t *plain_len, const u8 *plain)
+{
+	size_t ip_len = *plain_len - MELNODE_HDR_LEN;
+	const u8 *ip = plain + MELNODE_HDR_LEN;
+	size_t length;
+
+	if (ip_len >= 20 && (ip[0] >> 4) == 4) {
+		length = get_unaligned_be16(ip + 2);
+		if (length > ip_len || length < 20)
+			return false;
+	} else if (ip_len >= 40 && (ip[0] >> 4) == 6) {
+		length = get_unaligned_be16(ip + 4) + 40;
+		if (length > ip_len)
+			return false;
+	} else {
+		return false;
+	}
+	*plain_len = MELNODE_HDR_LEN + length;
+	return true;
+}
+
 void melnode_routing_deliver_or_forward(u8 src, u8 dst, u8 ttl, u8 *plain, size_t plain_len)
 {
 	int err;
+
+	if (!trim_ip(&plain_len, plain)) {
+		kfree(plain);
+		melnode_stat_inc(MELNODE_STAT_RX_BAD_PACKET);
+		return;
+	}
 
 	if (dst == READ_ONCE(melnode_dev.local_id)) {
 		deliver_local(src, plain, plain_len);
