@@ -4,6 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     disko.url = "github:nix-community/disko";
+
+    # Pinned by rev so `nix flake update` never bumps the kernel (and thus
+    # never forces a melnode module rebuild). To update: change the rev.
+    nixpkgs-kernel.url = "github:NixOS/nixpkgs/4975466d324710c576dc11ad614684e6bd8cad8e";
   };
 
   outputs =

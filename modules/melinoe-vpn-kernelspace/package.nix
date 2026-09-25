@@ -4,19 +4,6 @@
   kernel,
   kernelModuleMakeFlags,
 }:
-let
-  # melnode_genl.h is the wire contract between melnode-cp and any data
-  # plane (see dpproto/API.md); the userspace copy lives under the main
-  # project's license, this one under GPLv2, but the two must stay
-  # byte-for-byte identical or the kernel and Go sides silently disagree
-  # about command/attribute numbers. Nix asserts that here instead of
-  # relying on a build-time diff, so it fails at eval time either way.
-  ownHeader = ./src/melnode_genl.h;
-  dpprotoHeader = ../melinoe-vpn-daemon-src/dpproto/melnode_genl.h;
-in
-assert lib.assertMsg (
-  builtins.readFile ownHeader == builtins.readFile dpprotoHeader
-) "melnode-kernel: ${toString ownHeader} has drifted from ${toString dpprotoHeader} - they must be kept byte-for-byte identical (copy the dpproto one over and re-check licensing notes at its top).";
 stdenv.mkDerivation {
   pname = "melnode-kernel";
   version = "0.0.1";

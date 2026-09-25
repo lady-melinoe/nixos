@@ -1,3 +1,108 @@
+Licensing of this Repository
+============================
+
+Required Notice: Copyright Freya Andromeda / Melinoe, [TWA], (https://melinoe.net)
+
+This repository is licensed under the PolyForm Noncommercial License 1.0.0.
+Section 1 sets out that license and what it covers. Section 2 covers
+third-party code incorporated into this project. Section 3 identifies a
+directory that contains a separate project and is not covered by this file.
+
+
+Summary
+-------
+
+| Path                                   | License (SPDX identifier)                                                                              |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Everything except as below             | `PolyForm-Noncommercial-1.0.0` (Section 1, Appendix A)                                                 |
+| Third-party components (Section 2.4)   | Upstream: as listed in the register; as distributed here: `PolyForm-Noncommercial-1.0.0` (Section 2.2) |
+| `modules/melinoe-vpn-kernelspace/`     | Separate project; not covered by this file (Section 3)                                                 |
+
+This summary is for convenience only. Where it differs from Sections 1 to 3,
+those Sections govern.
+
+
+==============================================================================
+1. License
+==============================================================================
+
+Except as provided in Sections 2 and 3, all files in this repository are
+licensed under the PolyForm Noncommercial License 1.0.0, reproduced in
+Appendix A.
+
+This includes the userspace implementation of melnode, its helper programs,
+the NixOS modules, integration and configuration, the per-node
+configurations, and the deployment and provisioning tooling.
+
+
+==============================================================================
+2. Third-Party Components
+==============================================================================
+
+This project incorporates code written by third parties. Each such component
+is listed in the register in Section 2.4, and consists of the files identified
+in its entry together with any work derived from them. Sections 2.1 to 2.3
+apply to every component in the register.
+
+2.1 Upstream License
+
+    The upstream code of each component is licensed by its copyright holders
+    under the license stated in its register entry. The full text of that
+    license is reproduced in the Appendix named in the entry. The copyright
+    and permission notices that license requires are reproduced in that
+    Appendix and remain in the headers of the affected files.
+
+2.2 Sublicensing and Modifications
+
+    Modifications, additions and new works made by [TWA] to a component are
+    licensed under the PolyForm Noncommercial License 1.0.0.
+
+    Where a component's upstream license permits sublicensing, as the MIT
+    License does, the component as incorporated and modified in this project
+    is licensed to you under the PolyForm Noncommercial License 1.0.0, to
+    the extent permitted by that upstream license, including its grant of
+    the right to sublicense.
+
+    Where a component's upstream license does not permit this, the component
+    remains under its upstream license.
+
+2.3 Upstream Rights Preserved
+
+    Nothing in this file limits the rights of any person in the original,
+    unmodified code of a component under its upstream license, as granted by
+    its copyright holders.
+
+2.4 Register of Third-Party Components
+
+    2.4.1 wireguard-go
+
+        Files:     Files in modules/melinoe-vpn-userspace/src/cmd/melnode-dp
+                   bearing the notice "Copyright (C) 2017-2025 WireGuard LLC.
+                   All Rights Reserved."
+        Upstream:  https://git.zx2c4.com/wireguard-go
+        License:   MIT (Appendix B)
+        Copyright: Copyright (C) 2017-2025 WireGuard LLC. All Rights Reserved.
+
+
+==============================================================================
+3. Excluded Directory
+==============================================================================
+
+The directory modules/melinoe-vpn-kernelspace/ contains a separate project,
+distributed alongside this one. It is not part of this project, is not
+licensed under this file, and is governed solely by the license contained in
+that directory.
+
+This project uses it only as a separately built Linux kernel module,
+communicating with it through the kernel's system call interface. Neither
+project is licensed under the other's terms by reason of being distributed
+together.
+
+
+==============================================================================
+Appendix A: PolyForm Noncommercial License 1.0.0
+==============================================================================
+
 # PolyForm Noncommercial License 1.0.0
 
 <https://polyformproject.org/licenses/noncommercial/1.0.0>
@@ -129,3 +234,38 @@ software under these terms.
 
 **Use** means anything you do with the software requiring one
 of your licenses.
+
+
+==============================================================================
+Appendix B: MIT License
+==============================================================================
+
+The MIT License is the upstream license of each component listed below, under
+the copyright notice given for it. Each copyright notice is to be read
+together with the permission notice in Appendix B.2.
+
+B.1 Copyright Notices
+
+    wireguard-go (Section 2.4.1):
+        Copyright (C) 2017-2025 WireGuard LLC. All Rights Reserved.
+
+B.2 Permission Notice
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
