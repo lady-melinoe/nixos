@@ -100,12 +100,12 @@ static void make_cookie(u8 cookie[MELNODE_COOKIE_LEN], const void *from_addr, in
 		const struct sockaddr_in *a4 = from_addr;
 
 		blake2s_update(&blake, (const u8 *)&a4->sin_addr, sizeof(a4->sin_addr));
-		blake2s_update(&blake, (const u8 *)&a4->sin_port, sizeof(a4->sin_port));
+		blake2s_update(&blake, (__force const u8 *)&a4->sin_port, sizeof(a4->sin_port));
 	} else if (sa->sa_family == AF_INET6 && from_len >= sizeof(struct sockaddr_in6)) {
 		const struct sockaddr_in6 *a6 = from_addr;
 
 		blake2s_update(&blake, (const u8 *)&a6->sin6_addr, sizeof(a6->sin6_addr));
-		blake2s_update(&blake, (const u8 *)&a6->sin6_port, sizeof(a6->sin6_port));
+		blake2s_update(&blake, (__force const u8 *)&a6->sin6_port, sizeof(a6->sin6_port));
 	}
 	blake2s_final(&blake, cookie);
 }

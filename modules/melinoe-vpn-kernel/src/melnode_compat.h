@@ -6,6 +6,7 @@
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
 #include <linux/unaligned.h>
+#include <linux/sockptr.h>
 #include <net/genetlink.h>
 #include <net/gro_cells.h>
 #include <net/sock.h>
@@ -42,6 +43,12 @@ static inline ssize_t melnode_compat_nla_strscpy(char *dst, const struct nlattr 
 static inline u8 melnode_compat_genl_cmd(const struct genl_split_ops *ops)
 {
 	return ops->cmd;
+}
+
+static inline int melnode_compat_setsockopt_int(struct socket *sock, int level, int optname,
+						int val)
+{
+	return sock->ops->setsockopt(sock, level, optname, KERNEL_SOCKPTR(&val), sizeof(val));
 }
 
 #endif /* _MELNODE_COMPAT_H */
