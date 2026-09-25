@@ -30,7 +30,7 @@ type Config struct {
 	DataplaneSocket string `toml:"dataplaneSocket"`
 
 	// KernelDataplane, if true, attaches to the melnode kernel module
-	// (modules/melinoe-vpn-kernel) over generic netlink instead of dialing
+	// (modules/melinoe-vpn-kernelspace) over generic netlink instead of dialing
 	// DataplaneSocket. Mutually exclusive with DataplaneCommand/
 	// DataplaneSocket: a kernel data plane is not a process this one starts,
 	// adopts, or asks to exit (dpproto.Client.Quit is a no-op for it).

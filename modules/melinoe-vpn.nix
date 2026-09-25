@@ -6,9 +6,17 @@
   ...
 }:
 let
-  inherit (lib) mkOption types;
+  inherit (lib) mkOption mkIf types;
   cfg = config.melinoe;
   mCfg = cfg.services.melnode;
+
+  # Only evaluated/built when kernelDataplane.enable is set, which keeps a
+  # normal, all-userspace host from ever pulling the GPLv2 kmod source into
+  # its closure. The GPLv2 side is limited to ./melinoe-vpn-kernelspace; all
+  # NixOS wiring for it lives here.
+  melnodeKernelPackage =
+    config.boot.kernelPackages.callPackage ./melinoe-vpn-kernelspace/package.nix
+      { };
   netCfg = cfg.node.networking;
   nodeID = cfg.node.id;
 
@@ -40,7 +48,7 @@ let
     pname = "melnode";
     version = "0.0.2";
 
-    src = ./melinoe-vpn-daemon-src;
+    src = ./melinoe-vpn-userspace/src;
     # Builds (and tests) both daemons: bin/melnode-dp and bin/melnode-cp.
     subPackages = [
       "cmd/melnode-dp"
@@ -95,12 +103,12 @@ let
   helper = pkgs.writers.writePython3Bin "melnode-helper" {
     # Style linting shouldn't be able to break a deployment build.
     doCheck = false;
-  } (builtins.readFile ./melnode-helper-src/melnode-helper.py);
+  } (builtins.readFile ./melinoe-vpn-userspace/helper-scripts/melnode-helper.py);
 
   # Read-only CLI: `mnctl <links|routes> [host[:port]]`.
   mnctl = pkgs.writers.writePython3Bin "mnctl" {
     doCheck = false;
-  } (builtins.readFile ./melnode-helper-src/mnctl.py);
+  } (builtins.readFile ./melinoe-vpn-userspace/helper-scripts/mnctl.py);
 
   helperConfig = pkgs.writeText "melnode-helper.json" (
     builtins.toJSON {
@@ -153,10 +161,7 @@ let
       link = map mkLink netCfg.peers;
     }
     // (
-      if mCfg.dataplane == "kernel" then
-        { kernelDataplane = true; }
-      else
-        { dataplaneSocket = dpSocket; }
+      if mCfg.dataplane == "kernel" then { kernelDataplane = true; } else { dataplaneSocket = dpSocket; }
     )
   );
 
@@ -243,7 +248,7 @@ in
       description = ''
         Which data plane melnode-cp attaches to. "userspace" (default) runs
         melnode-dp as its own systemd service, as before. "kernel" attaches
-        to the melnode kernel module (modules/melinoe-vpn-kernel) over generic
+        to the melnode kernel module (modules/melinoe-vpn-kernelspace) over generic
         netlink instead - no melnode-dp process at all - which requires
         melinoe.services.melnode.kernelDataplane.enable to be set too (that
         loads the module; this makes melnode-cp actually use it).
@@ -252,9 +257,39 @@ in
         treat "kernel" as experimental.
       '';
     };
+
+    kernelDataplane = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Load the melnode kernel module (modules/melinoe-vpn-kernelspace)
+          instead of running melnode-dp in userspace. GPLv2, built out-of-tree
+          against `config.boot.kernelPackages` for this host.
+
+          Implements the full "melnode" genl family (device/link/route/tun
+          lifecycle, Noise handshake, forwarding) - see
+          modules/melinoe-vpn-kernelspace/ARCHITECTURE.md (untracked, local
+          reference only) for the design. Still early: enable on nodes you can
+          watch closely and roll back easily, not as a default.
+        '';
+      };
+
+      package = mkOption {
+        type = types.package;
+        default = melnodeKernelPackage;
+        readOnly = true;
+        description = "The built melnode.ko kernel module package.";
+      };
+    };
   };
 
   config = {
+    boot = mkIf mCfg.kernelDataplane.enable {
+      extraModulePackages = [ mCfg.kernelDataplane.package ];
+      kernelModules = [ "melnode" ];
+    };
+
     assertions = [
       {
         assertion = mCfg.enabled || mCfg.extraRoutes == [ ];
@@ -263,6 +298,19 @@ in
       {
         assertion = !mCfg.enabled || netCfg.enabled;
         message = "melinoe.node.networking.enabled must be true when melinoe.services.melnode.enabled is true (melinoe.node.networking.uplinks is an uplink property and pub_ips are derived from it).";
+      }
+      {
+        # melnode_genl.h is the wire contract between melnode-cp and any data
+        # plane (see dpproto/API.md); the userspace copy lives under the main
+        # project's license, the kernelspace one under GPLv2, but the two must
+        # stay byte-for-byte identical or the kernel and Go sides silently
+        # disagree about command/attribute numbers.
+        assertion =
+          !mCfg.kernelDataplane.enable
+          ||
+            builtins.readFile ./melinoe-vpn-userspace/src/dpproto/melnode_genl.h
+            == builtins.readFile ./melinoe-vpn-kernelspace/src/melnode_genl.h;
+        message = "modules/melinoe-vpn-kernelspace/src/melnode_genl.h and modules/melinoe-vpn-userspace/src/dpproto/melnode_genl.h are incompatible.";
       }
       {
         assertion = !mCfg.enabled || mCfg.dataplane != "kernel" || mCfg.kernelDataplane.enable;

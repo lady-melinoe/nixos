@@ -45,7 +45,8 @@
   };
 
   boot = {
-    kernelPackages = pkgs.linuxPackages_latest;
+    kernelPackages =
+      inputs.nixpkgs-kernel.legacyPackages.${pkgs.stdenv.hostPlatform.system}.linuxPackages_latest;
     tmp.cleanOnBoot = true;
     loader.grub.configurationLimit = 5;
     initrd = {
