@@ -202,13 +202,17 @@ type LinkMonitor struct {
 }
 
 func newLinkMonitor(link *Link) *LinkMonitor {
-	var discBuf [4]byte
-	_, _ = rand.Read(discBuf[:]) // non-zero with overwhelming probability; a collision just costs one extra Down->Init round trip
+	var disc uint32
+	for disc == 0 { // 0 means "not yet learned" on the wire (RFC 5880 6.8.1)
+		var discBuf [4]byte
+		_, _ = rand.Read(discBuf[:])
+		disc = binary.BigEndian.Uint32(discBuf[:])
+	}
 	return &LinkMonitor{
 		link:               link,
 		state:              linkStateDown,
 		stateSince:         time.Now(),
-		localDiscriminator: binary.BigEndian.Uint32(discBuf[:]),
+		localDiscriminator: disc,
 	}
 }
 
@@ -347,6 +351,18 @@ func (m *LinkMonitor) handlePacket(payload []byte) {
 		m.mu.Unlock()
 		return
 	}
+	// RFC 5880 6.8.6: a packet addressed to a different session of ours (a
+	// peer still talking to our previous incarnation) is discarded, as is a
+	// packet claiming Init/Up without having learned our discriminator.
+	// Without this a peer that never noticed us restarting could carry its
+	// old session straight into our new one, and neither side would see
+	// the flap (so path-vector would never resync).
+	if pkt.MyDiscriminator == 0 ||
+		(pkt.YourDiscriminator != 0 && pkt.YourDiscriminator != m.localDiscriminator) ||
+		(pkt.YourDiscriminator == 0 && pkt.State != linkStateDown && pkt.State != linkStateAdminDown) {
+		m.mu.Unlock()
+		return
+	}
 	m.remoteDiscriminator = pkt.MyDiscriminator
 	m.remoteDesiredMinTX = pkt.DesiredMinTX
 	m.remoteRequiredMinRX = pkt.RequiredMinRX
@@ -385,14 +401,14 @@ func (m *LinkMonitor) handlePacket(payload []byte) {
 			// top comment) by forcing Down here unconditionally,
 			// which meant two fresh sessions could never leave Down.
 			m.transitionTo(linkStateInit, diagNone)
-		case linkStateInit, linkStateUp:
-			// The peer has confirmed (via State>=Init) it's already
-			// heard from us too -- but this can only actually happen
-			// from Down (never AdminDown, in melnode's current usage
-			// AdminDown is momentary and Stop() follows immediately;
-			// kept as a case here for a future explicit long-lived
-			// admin-disable rather than relying on that timing).
+		case linkStateInit:
+			// The peer has confirmed (via Init, carrying our
+			// discriminator, checked above) that it has heard from
+			// this session of ours.
 			m.transitionTo(linkStateUp, diagNone)
+			// A received Up while we're Down is ignored (RFC 5880
+			// 6.8.6): the peer is Up with some other session of ours
+			// and must first see our Down and drop back itself.
 		}
 	case linkStateInit:
 		if pkt.State == linkStateInit || pkt.State == linkStateUp {

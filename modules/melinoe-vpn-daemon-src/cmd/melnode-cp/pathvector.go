@@ -132,7 +132,9 @@ func parsePrefix(s string) (pvPrefix, bool) {
 		return pvPrefix{}, false
 	}
 	ones, bits := ipnet.Mask.Size()
-	if bits != 32 {
+	if bits != 32 || !ip4.Equal(ipnet.IP.To4()) {
+		// Host bits set (e.g. 10.0.1.5/24): the kernel refuses such a
+		// route, and it would never match the normalized prefix read back.
 		return pvPrefix{}, false
 	}
 	return pvPrefix{addr: binary.BigEndian.Uint32(ip4), len: uint8(ones)}, true
@@ -428,6 +430,11 @@ func (pv *PathVector) handlePacket(from *Link, payload []byte) {
 	}
 
 	pv.mu.Lock()
+	if !pv.acceptingFromLocked(from) {
+		pv.mu.Unlock()
+		pv.node.log.Verbosef("%v - pathvector: link not up, dropping", from)
+		return
+	}
 	var announceChanges []struct {
 		dest  uint32
 		route pvRoute
@@ -543,6 +550,24 @@ func (pv *PathVector) handlePacket(from *Link, payload []byte) {
 	if len(announceChanges) > 0 || len(withdrawChanges) > 0 || len(prefixChanges) > 0 {
 		pv.syncKernel()
 	}
+}
+
+// acceptingFromLocked reports whether routes from this link may be learned:
+// it is a neighbor, or its liveness session is at least Init (the peer may
+// go Up, and send its table, a moment before we do; OnLinkDown fires on any
+// transition to Down and clears whatever was learned meanwhile). Checked
+// under pv.mu so a packet processed after OnLinkDown -- liveness and
+// path-vector run on separate workers -- can't resurrect the routes it just
+// removed. Caller holds pv.mu.
+func (pv *PathVector) acceptingFromLocked(from *Link) bool {
+	if _, ok := pv.neighbors[from.id]; ok {
+		return true
+	}
+	if from.monitor == nil {
+		return false
+	}
+	st := from.monitor.State()
+	return st == linkStateInit || st == linkStateUp
 }
 
 // AdvertisePrefix and WithdrawPrefix are the control API's (controlapi.go)
@@ -1001,6 +1026,9 @@ func decodePVPacket(payload []byte) (announces []pvAnnouncement, withdraws []uin
 				return nil, nil, false
 			}
 			addr := binary.BigEndian.Uint32(payload[off+1 : off+5])
+			if plen < 32 {
+				addr &^= 0xffffffff >> plen // normalize: no host bits
+			}
 			off += 5
 			prefixes = append(prefixes, pvPrefix{addr: addr, len: plen})
 		}

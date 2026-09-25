@@ -193,34 +193,30 @@ func (n *Node) attach(socket string) (*dpSession, error) {
 	pub := dsr.PubKey
 	n.pubkey.Store(&pub)
 
-	// Declarative link sync: every configured link is (re-)added, which also
-	// re-applies its endpoint on a data plane that survived us; anything
-	// else the data plane has is removed.
+	// Declarative link sync. Removals first: a data plane refuses a public
+	// key that another peerid already uses, so a key that moved to a
+	// different peerid (or two peerids that swapped keys) can only be added
+	// once the old holder is gone. Then every configured link is
+	// (re-)added, which also re-applies its endpoint on a data plane that
+	// survived us.
 	want := n.links
-	for _, l := range n.sortedLinks() {
-		err := cl.LinkAdd(dpproto.LinkAdd{PeerID: l.id, PubKey: l.pubkey, Endpoint: l.endpoint})
-		if dpproto.IsCode(err, dpproto.CodeExists) {
-			// Same peerid, different key: the config changed. Replace it.
-			if err = cl.LinkDel(l.id); err == nil {
-				err = cl.LinkAdd(dpproto.LinkAdd{PeerID: l.id, PubKey: l.pubkey, Endpoint: l.endpoint})
-			}
-		}
-		if err != nil {
-			return fail(fmt.Errorf("configuring link %d: %w", l.id, err))
-		}
-	}
 	have, err := cl.LinkList()
 	if err != nil {
 		return fail(fmt.Errorf("listing links: %w", err))
 	}
 	for _, li := range have {
-		if _, ok := want[li.PeerID]; ok {
+		if l, ok := want[li.PeerID]; ok && l.pubkey == li.PubKey {
 			continue
 		}
 		if err := cl.LinkDel(li.PeerID); err != nil && !dpproto.IsCode(err, dpproto.CodeNotFound) {
 			return fail(fmt.Errorf("removing stale link %d: %w", li.PeerID, err))
 		}
-		n.log.Verbosef("removed link %d from the data plane (not in config)", li.PeerID)
+		n.log.Verbosef("removed link %d from the data plane (not in config, or its key changed)", li.PeerID)
+	}
+	for _, l := range n.sortedLinks() {
+		if err := cl.LinkAdd(dpproto.LinkAdd{PeerID: l.id, PubKey: l.pubkey, Endpoint: l.endpoint}); err != nil {
+			return fail(fmt.Errorf("configuring link %d: %w", l.id, err))
+		}
 	}
 
 	// From here on punts and events come to us.

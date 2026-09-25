@@ -184,6 +184,13 @@ func DialKernel(onPunt func(Punt), onEvent func(Event)) (*Client, error) {
 		unix.Close(fd)
 		return nil, fmt.Errorf("dpproto: netlink bind: %w", err)
 	}
+	// Punts and events are lossy by contract (API.md): an overrun must drop
+	// them, not surface as ENOBUFS from recvmsg, which readLoop would take
+	// for a dead session (detaching every link, mesh-wide).
+	if err := unix.SetsockoptInt(fd, unix.SOL_NETLINK, unix.NETLINK_NO_ENOBUFS, 1); err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("dpproto: netlink NETLINK_NO_ENOBUFS: %w", err)
+	}
 	f := os.NewFile(uintptr(fd), "melnode-genl")
 
 	cl := &Client{c: newConn(f), isKernel: true, onPunt: onPunt, onEvent: onEvent, pending: make(map[uint32]*call), done: make(chan struct{})}
@@ -273,6 +280,12 @@ func (cl *Client) readLoop() {
 	for {
 		msgs, err := cl.c.recv()
 		if err != nil && len(msgs) == 0 {
+			if errors.Is(err, unix.ENOBUFS) {
+				// Belt and braces for NETLINK_NO_ENOBUFS: notifications
+				// were dropped, which the contract allows. Replies are
+				// unaffected (a lost one times out its own call).
+				continue
+			}
 			cl.fail(fmt.Errorf("dpproto: session lost: %w", err))
 			return
 		}

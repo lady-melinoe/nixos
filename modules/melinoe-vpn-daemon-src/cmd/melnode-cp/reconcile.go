@@ -54,7 +54,7 @@ type hostOps interface {
 	Ready() bool                                              // is a data plane attached? (if not, there is nothing to reconcile)
 	Tuns() ([]uint32, error)                                  // peerids that currently have a tun
 	TunName(peerID uint32) (string, bool)                     // interface name of that peer's tun
-	EnsureTun(peerID uint32) error                            // create, configure and start the tun if missing
+	EnsureTun(peerID uint32) error                            // make the tun exist, configured (once per session) and started; cheap when it already is
 	DestroyTun(peerID uint32)                                 // close and remove the tun
 	ProgramRoutes(routes map[uint32]uint32, prune bool) error // add/repoint the data plane's next hops to match routes; with prune, also remove any others
 	ListRoutes() (map[pvPrefix]string, error)                 // our proto-198 main-table routes: prefix -> ifname
@@ -180,7 +180,10 @@ func (r *Router) reconcileOnce() (retry bool) {
 	r.mu.RUnlock()
 	sort.Slice(wantDests, func(i, j int) bool { return wantDests[i] < wantDests[j] })
 
-	// 1. tuns for reachable dests
+	// 1. tuns for reachable dests. EnsureTun runs for existing tuns too: one
+	// adopted from before this session (control plane restart, or a kernel
+	// data plane that outlived a lost session) still needs its create hook
+	// re-run, and one left stopped (a failed TunStart) still needs starting.
 	haveTun := make(map[uint32]bool)
 	tuns, err := h.Tuns()
 	if err != nil {
@@ -191,9 +194,6 @@ func (r *Router) reconcileOnce() (retry bool) {
 		haveTun[id] = true
 	}
 	for _, d := range wantDests {
-		if haveTun[d] {
-			continue
-		}
 		if err := h.EnsureTun(d); err != nil {
 			r.node.log.Errorf("router: can't create tun for peerid %d (will retry): %v", d, err)
 			retry = true
@@ -299,13 +299,16 @@ func (h *realHost) Tuns() ([]uint32, error) {
 		return nil, err
 	}
 	names := make(map[uint32]string, len(tuns))
+	started := make(map[uint32]bool, len(tuns))
 	ids := make([]uint32, 0, len(tuns))
 	for _, t := range tuns {
 		names[t.PeerID] = t.Name
+		started[t.PeerID] = t.Started
 		ids = append(ids, t.PeerID)
 	}
 	h.r.hostMu.Lock()
 	h.r.tunNames = names // the data plane is the source of truth for what exists
+	h.r.started = started
 	h.r.hostMu.Unlock()
 	return ids, nil
 }
@@ -328,6 +331,14 @@ func (h *realHost) TunName(peerID uint32) (string, bool) {
 //  3. only then does the data plane start moving traffic through it, so
 //     nothing flows before the interface is fully set up.
 func (h *realHost) EnsureTun(peerID uint32) error {
+	h.r.hostMu.Lock()
+	_, exists := h.r.tunNames[peerID]
+	ready := exists && h.r.hooked[peerID] && h.r.started[peerID]
+	h.r.hostMu.Unlock()
+	if ready {
+		return nil // nothing to do: no data plane round trip
+	}
+
 	cl, err := h.client()
 	if err != nil {
 		return err
@@ -348,8 +359,13 @@ func (h *realHost) EnsureTun(peerID uint32) error {
 		h.r.hostMu.Unlock()
 	}
 	if !rep.Started {
-		return cl.TunStart(peerID)
+		if err := cl.TunStart(peerID); err != nil {
+			return err
+		}
 	}
+	h.r.hostMu.Lock()
+	h.r.started[peerID] = true
+	h.r.hostMu.Unlock()
 	return nil
 }
 
@@ -358,6 +374,7 @@ func (h *realHost) DestroyTun(peerID uint32) {
 	name, hadName := h.r.tunNames[peerID]
 	delete(h.r.tunNames, peerID)
 	delete(h.r.hooked, peerID)
+	delete(h.r.started, peerID)
 	h.r.hostMu.Unlock()
 
 	if cl, err := h.client(); err == nil {
