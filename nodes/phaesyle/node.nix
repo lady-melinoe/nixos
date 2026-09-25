@@ -54,6 +54,8 @@
   ];
   melinoe.node.id = 1;
   networking.hostName = "phaesyle";
+  melinoe.services.melnode.kernelDataplane.enable = true;
+  melinoe.services.melnode.dataplane = "kernel";
   melinoe.node.networking.uplinks = [
     {
       ip = "103.249.239.233/32";
