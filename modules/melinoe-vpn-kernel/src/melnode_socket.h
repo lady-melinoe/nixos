@@ -10,10 +10,10 @@
  * cost of a route lookup per send instead of a cached one. Same "simple
  * now, revisit if it matters" reasoning as melnode_transport.h.
  *
- * sk_data_ready fires in softirq context, where taking melnode_dev.lock
- * (a mutex) or doing GFP_KERNEL crypto work is not allowed - it only
- * schedules melnode_dev's rx_work; the actual recvmsg + dispatch loop runs
- * in that work's process context.
+ * sk_data_ready fires in softirq context, where taking a sleeping lock or
+ * doing GFP_KERNEL crypto work is not allowed - it only schedules
+ * melnode_dev's rx_work; the actual recvmsg + dispatch loop runs in that
+ * work's process context.
  */
 #ifndef _MELNODE_SOCKET_H
 #define _MELNODE_SOCKET_H

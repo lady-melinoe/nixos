@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * mac1/mac2 + cookie-reply. Ported from drivers/net/wireguard/cookie.c
- * (Jason A. Donenfeld, GPL-2.0) - see melnode_cookie.h for what's
- * simplified (no per-object rwsems; melnode_dev.lock already covers this
- * state) and the overall design.
+ * (Jason A. Donenfeld, GPL-2.0) - see melnode_cookie.h for the locking
+ * (a per-checker secret_lock plus each link's own lock for its
+ * struct melnode_cookie) and the overall design.
  */
 
 #include <linux/string.h>
@@ -42,6 +42,7 @@ static void precompute_key(u8 key[MELNODE_NOISE_SYMMETRIC_KEY_LEN],
 void melnode_cookie_checker_init(struct melnode_cookie_checker *checker)
 {
 	memset(checker, 0, sizeof(*checker));
+	rwlock_init(&checker->secret_lock);
 	checker->secret_birthdate = ktime_get_coarse_boottime_ns();
 	get_random_bytes(checker->secret, MELNODE_NOISE_HASH_LEN);
 }
@@ -79,18 +80,37 @@ static void compute_mac2(u8 mac2[MELNODE_COOKIE_LEN], const void *message, size_
 	blake2s(cookie, MELNODE_COOKIE_LEN, message, len, mac2, MELNODE_COOKIE_LEN);
 }
 
+/* secret/secret_birthdate are guarded by checker->secret_lock, not by
+ * whatever lock the caller holds on its own link/table state - see
+ * melnode_cookie.h's header comment. Read-locked for the common case
+ * (using the current secret); briefly escalated to a write lock only when
+ * the secret has actually expired, matching
+ * drivers/net/wireguard/cookie.c's own wg_make_cookie(). Runs from
+ * softirq-reachable contexts (handshake RX), hence the _bh variants.
+ */
 static void make_cookie(u8 cookie[MELNODE_COOKIE_LEN], const void *from_addr, int from_len,
 			 struct melnode_cookie_checker *checker)
 {
 	const struct sockaddr *sa = from_addr;
 	struct blake2s_ctx blake;
 
-	if (birthdate_has_expired(checker->secret_birthdate, MELNODE_COOKIE_SECRET_MAX_AGE)) {
-		checker->secret_birthdate = ktime_get_coarse_boottime_ns();
-		get_random_bytes(checker->secret, MELNODE_NOISE_HASH_LEN);
+	read_lock_bh(&checker->secret_lock);
+	if (unlikely(birthdate_has_expired(checker->secret_birthdate, MELNODE_COOKIE_SECRET_MAX_AGE))) {
+		read_unlock_bh(&checker->secret_lock);
+		write_lock_bh(&checker->secret_lock);
+		/* Re-check: another caller may have already rotated the secret
+		 * while this one was waiting for the write lock.
+		 */
+		if (birthdate_has_expired(checker->secret_birthdate, MELNODE_COOKIE_SECRET_MAX_AGE)) {
+			checker->secret_birthdate = ktime_get_coarse_boottime_ns();
+			get_random_bytes(checker->secret, MELNODE_NOISE_HASH_LEN);
+		}
+		write_unlock_bh(&checker->secret_lock);
+		read_lock_bh(&checker->secret_lock);
 	}
 
 	blake2s_init_key(&blake, MELNODE_COOKIE_LEN, checker->secret, MELNODE_NOISE_HASH_LEN);
+	read_unlock_bh(&checker->secret_lock);
 	if (sa->sa_family == AF_INET && from_len >= sizeof(struct sockaddr_in)) {
 		const struct sockaddr_in *a4 = from_addr;
 

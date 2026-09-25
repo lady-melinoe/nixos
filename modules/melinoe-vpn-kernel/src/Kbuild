@@ -1,2 +1,2 @@
 obj-m := melnode.o
-melnode-y := melnode_core.o melnode_noise.o melnode_cookie.o melnode_ratelimiter.o melnode_transport.o melnode_socket.o
+melnode-y := melnode_core.o melnode_routing.o melnode_noise.o melnode_cookie.o melnode_ratelimiter.o melnode_transport.o melnode_socket.o

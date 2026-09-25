@@ -538,7 +538,8 @@ out:
 
 /* Slots the freshly derived keypair into current/previous/next, exactly as
  * wg_noise_handshake_begin_session() / add_new_keypair() do - see the
- * comment on struct melnode_keypairs. Caller holds melnode_dev.lock.
+ * comment on struct melnode_keypairs. Caller holds the relevant link's own
+ * lock (melnode_link.lock - see melnode_core.h).
  */
 bool melnode_noise_handshake_begin_session(struct melnode_handshake *handshake,
 					    struct melnode_keypairs *keypairs)

@@ -3,3 +3,4 @@ keys
 *.patch
 *.txt
 *.md
+!README.md

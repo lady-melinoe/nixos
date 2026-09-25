@@ -23,9 +23,11 @@ in
         running melnode-dp in userspace. GPLv2, built out-of-tree against
         `config.boot.kernelPackages` for this host.
 
-        Currently a skeleton: it loads and unloads cleanly but does not yet
-        register the "melnode" genl family, so melnode-cp still needs
-        melnode-dp. Do not enable this on a real node yet.
+        Implements the full "melnode" genl family (device/link/route/tun
+        lifecycle, Noise handshake, forwarding) - see
+        modules/melinoe-vpn-kernel/ARCHITECTURE.md (untracked, local
+        reference only) for the design. Still early: enable on nodes you can
+        watch closely and roll back easily, not as a default.
       '';
     };
 
