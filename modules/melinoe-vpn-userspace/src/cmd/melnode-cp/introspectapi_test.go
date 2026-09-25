@@ -11,8 +11,6 @@ import (
 	"melnode/dpproto"
 )
 
-// countingDP answers the introspection reads with fixed data and counts
-// every call; fail makes LinkList error.
 type countingDP struct {
 	stubDP
 	mu    sync.Mutex
@@ -67,7 +65,6 @@ func newTestIntrospectAPI(t *testing.T) (*introspectAPI, *countingDP) {
 	n.links[2] = newLink(n, 2, [32]byte{}, "", 0)
 	dp := &countingDP{}
 	n.dpc.Store(&dpHandle{dp})
-	// An hour: only the refreshes a test asks for happen.
 	a, err := newIntrospectAPI(n.pathVector, "127.0.0.1:0", time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -93,8 +90,6 @@ func getJSON(t *testing.T, a *introspectAPI, path string, into any) http.Header 
 	return resp.Header
 }
 
-// TCP requests are served from the snapshot: however many arrive, none
-// reaches the data plane.
 func TestIntrospectTCPServesSnapshot(t *testing.T) {
 	a, dp := newTestIntrospectAPI(t)
 	before := dp.n()
@@ -131,9 +126,6 @@ func TestIntrospectTCPServesSnapshot(t *testing.T) {
 	}
 }
 
-// A refresh whose data plane read fails keeps the previous snapshot rather
-// than serving one with the data plane's details missing; the next good
-// one replaces it. Detaching is a real state, not a failure.
 func TestIntrospectRefreshKeepsSnapshotOnFailure(t *testing.T) {
 	a, dp := newTestIntrospectAPI(t)
 	first := a.snap.Load()
@@ -159,8 +151,6 @@ func TestIntrospectRefreshKeepsSnapshotOnFailure(t *testing.T) {
 	}
 }
 
-// The refresher waits for a query holding the data plane gate instead of
-// building a snapshot without the data plane's details.
 func TestIntrospectRefreshWaitsForGate(t *testing.T) {
 	a, _ := newTestIntrospectAPI(t)
 	_, release := a.pv.node.introspectDP()

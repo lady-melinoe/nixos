@@ -33,10 +33,6 @@ static void link_release(struct kref *kref)
 	struct melnode_link *link = container_of(kref, struct melnode_link, kref);
 
 	ptr_ring_cleanup(&link->outq, item_free);
-	/* No references left, and RCU readers that can still see the link
-	 * only touch kref and public_key: safe to wipe the secrets now
-	 * (kfree_rcu can't do it for us).
-	 */
 	memzero_explicit(&link->keypairs, sizeof(link->keypairs));
 	memzero_explicit(&link->handshake, sizeof(link->handshake));
 	memzero_explicit(&link->cookie, sizeof(link->cookie));
@@ -252,10 +248,6 @@ int melnode_routing_send_now(struct melnode_link *link, const u8 *plain, size_t 
 		kfree(out);
 		return -ENOENT;
 	}
-	/* Like WireGuard's keep_key_fresh: either side rekeys on the message
-	 * count; only the initiator rekeys on age (avoids both sides
-	 * initiating at once when the session gets old).
-	 */
 	rekey = kp->sending_counter >= MELNODE_REKEY_AFTER_MESSAGES ||
 		(kp->initiator && melnode_key_expired(&kp->sending, MELNODE_REKEY_AFTER_TIME));
 	counter = kp->sending_counter++;
@@ -301,9 +293,6 @@ static void outq_work_fn(struct work_struct *work)
 		int err = melnode_routing_send_now(link, item->plain, item->plain_len);
 
 		if (err == -ENOENT) {
-			/* No session on the link: counted like a link that
-			 * isn't running (tx_no_route), not as a full queue.
-			 */
 			melnode_send_initiation(link, false);
 			melnode_stat_inc(MELNODE_STAT_TX_NO_ROUTE);
 		}

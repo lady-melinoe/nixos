@@ -10,34 +10,12 @@ let
   cfg = config.melinoe;
   mCfg = cfg.services.melnode;
 
-  # Only evaluated/built when kernelDataplane.enable is set, which keeps a
-  # normal, all-userspace host from ever pulling the GPLv2 kmod source into
-  # its closure. The GPLv2 side is limited to ./melinoe-vpn-kernelspace; all
-  # NixOS wiring for it lives here.
   melnodeKernelPackage =
     config.boot.kernelPackages.callPackage ./melinoe-vpn-kernelspace/package.nix
       { };
   netCfg = cfg.node.networking;
   nodeID = cfg.node.id;
 
-  # melnode replaces the old WireGuard + BGP (FRR) + IPIP (melinoe-route)
-  # stack. The node's own "identity" is its host-range address, which melnode
-  # assigns to every node-<id> tun and always advertises.
-  #
-  # It is split in two, like an OVS kernel datapath and its userspace daemon:
-  #
-  #   melnode-dp  the data plane. Owns the UDP socket, the Noise tunnels, the
-  #               tun devices and the dst -> next-hop table, and forwards
-  #               tunneled IP packets on its own. Everything else it receives
-  #               (proto != 0) it hands to melnode-cp. It only does what
-  #               melnode-cp tells it to, over dpSocket.
-  #   melnode-cp  the control plane. Link liveness, path-vector routing,
-  #               tun/route programming, interface addresses, hooks and the
-  #               control/introspection APIs. It pushes the configured links
-  #               down to melnode-dp when it attaches.
-  #
-  # melnode-dp keeps forwarding if melnode-cp restarts (a config change that
-  # only touches routing/links restarts just the control plane).
   hostAddr = melinoeNodeIntraIP nodeID;
 
   tunPrefix = "node-";
@@ -49,7 +27,6 @@ let
     version = "0.0.2";
 
     src = ./melinoe-vpn-userspace/src;
-    # Builds (and tests) both daemons: bin/melnode-dp and bin/melnode-cp.
     subPackages = [
       "cmd/melnode-dp"
       "cmd/melnode-cp"
@@ -60,8 +37,6 @@ let
   dpBin = "${mCfg.package}/bin/melnode-dp";
   cpBin = "${mCfg.package}/bin/melnode-cp";
 
-  # ---- links ------------------------------------------------------------
-
   peerIdStr = peer: toString peer.id;
 
   resolveEndpointHost =
@@ -71,7 +46,6 @@ let
     else
       (cfg.nodePublicInfo.${peerIdStr peer} or { defaultEndpoint = null; }).defaultEndpoint;
 
-  # melnode wants an ip:port literal (no hostnames); IPv6 literals need [].
   formatEndpoint =
     host:
     if lib.hasInfix ":" host then
@@ -82,8 +56,6 @@ let
   isIpLiteral =
     host: lib.hasInfix ":" host || builtins.match "[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+" host != null;
 
-  # A peer without an endpoint is listen-only: we never dial it, it must dial
-  # us (melnode learns its address from its first authenticated packet).
   mkLink =
     peer:
     let
@@ -96,16 +68,12 @@ let
     }
     // lib.optionalAttrs (host != null) { endpoint = formatEndpoint host; };
 
-  # ---- helper (hooks + advertiser) ----------------------------------------
-
   pubIps = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) netCfg.uplinks);
 
   helper = pkgs.writers.writePython3Bin "melnode-helper" {
-    # Style linting shouldn't be able to break a deployment build.
     doCheck = false;
   } (builtins.readFile ./melinoe-vpn-userspace/helper-scripts/melnode-helper.py);
 
-  # Read-only CLI: `mnctl <links|routes> [host[:port]]`.
   mnctl = pkgs.writers.writePython3Bin "mnctl" {
     doCheck = false;
   } (builtins.readFile ./melinoe-vpn-userspace/helper-scripts/mnctl.py);
@@ -130,13 +98,8 @@ let
       exec ${helperCmd} hook-${kind} "$@"
     '';
 
-  # ---- melnode configs -----------------------------------------------------
-
   tomlFormat = pkgs.formats.toml { };
 
-  # Control plane: the data plane's settings (pushed down with DeviceSet on
-  # attach, like `wg set`), the links, path vector, host integration and the
-  # APIs. The data plane itself takes no config, only -socket.
   cpConfig = tomlFormat.generate "melnode-cp.toml" (
     {
       localID = nodeID;
@@ -144,16 +107,9 @@ let
       localPrivkeyPath = mCfg.privateKeyFile;
       mtu = mCfg.mtu;
       inherit tunPrefix;
-      # Keep melnode's own UDP traffic on the uplink instead of routing it back
-      # into the mesh (same job the WireGuard fwMark did).
       fwmark = netCfg.uplinkFwMark;
-      # dataplaneCommand is deliberately unset: systemd owns the data plane here.
-      # (The control plane can start it itself; that needs KillMode=process and
-      # no separate melnode-dp unit, or systemd kills it with the cp's cgroup.)
       identityPrefix = "${hostAddr}/32";
       controlSocket = controlSocket;
-      # Read-only introspection over TCP (no advertise/withdraw); firewalled to
-      # the host range via specialHostAccess below.
       introspectListen = ":${toString mCfg.introspectPort}";
       introspectIntervalMs = mCfg.introspectIntervalMs;
       tunCreateHookBin = "${mkHook "create"}";
@@ -300,11 +256,6 @@ in
         message = "melinoe.node.networking.enabled must be true when melinoe.services.melnode.enabled is true (melinoe.node.networking.uplinks is an uplink property and pub_ips are derived from it).";
       }
       {
-        # melnode_genl.h is the wire contract between melnode-cp and any data
-        # plane (see dpproto/API.md); the userspace copy lives under the main
-        # project's license, the kernelspace one under GPLv2, but the two must
-        # stay byte-for-byte identical or the kernel and Go sides silently
-        # disagree about command/attribute numbers.
         assertion =
           !mCfg.kernelDataplane.enable
           ||
@@ -347,11 +298,6 @@ in
 
     environment.systemPackages = lib.mkIf mCfg.enabled [ mnctl ];
 
-    # melnode is part of the network, like NetworkManager or a wireguard
-    # interface: it starts after network.target and before network-online.target,
-    # so anything that waits for the network (incus, cluster members, ...) starts
-    # after it and, since units stop in reverse start order, stops before it.
-    # network-online.target is deliberately not in `after`: that would be a cycle.
     systemd.services.melnode-dp = lib.mkIf (mCfg.enabled && mCfg.dataplane == "userspace") {
       description = "melnode data plane (Noise tunnels, tuns, forwarding)";
       before = [ "network-online.target" ];
@@ -366,11 +312,6 @@ in
       ];
       stopIfChanged = false;
       serviceConfig = {
-        # Coming from dataplane = "kernel": a still-loaded module keeps its
-        # device configured (the UDP port and the node-<id> tuns), so
-        # melnode-dp could never bind. Unloading it tears that down. The "-"
-        # ignores the failure when it isn't loaded; "+" runs it with full
-        # privileges (the service only has CAP_NET_ADMIN).
         ExecStartPre = "-+${pkgs.kmod}/bin/rmmod melnode";
         ExecStart = "${dpBin} -socket ${dpSocket}";
         Restart = "always";
@@ -396,27 +337,11 @@ in
         "melinoe-inet-setup.service"
         "nftables.service"
       ];
-      # If the data plane is stopped or restarted, so is the control plane
-      # (it would just re-attach and re-sync anyway; restarting it is the
-      # simplest way to guarantee a clean start against a fresh data plane).
-      # The reverse is NOT true: restarting only the control plane leaves the
-      # data plane forwarding. Doesn't apply in kernel mode: there is no
-      # melnode-dp.service, and the module keeps forwarding across a
-      # melnode-cp restart the same way the userspace data plane does.
       requires = lib.optional (mCfg.dataplane == "userspace") "melnode-dp.service";
       stopIfChanged = false;
-      # `flush ruleset` on an nftables reload empties melinoe_peer_marks and
-      # melinoe_peer_ifaces; restarting the control plane makes it re-adopt the
-      # data plane's tuns and re-run the tun create hooks, which repopulate them.
       restartTriggers = [ (builtins.hashString "sha256" config.networking.nftables.ruleset) ];
-      # PATH for the tun hooks, which shell out to ip/nft.
       path = toolPath;
       serviceConfig = {
-        # Kernel mode: make sure the module is loaded (no-op if it already is;
-        # its softdeps pull in libcurve25519/libchacha20poly1305). The "+"
-        # runs this one command with full privileges - the service itself only
-        # has CAP_NET_ADMIN. A failure here fails the start, and Restart=
-        # retries it.
         ExecStartPre = lib.optional (
           mCfg.dataplane == "kernel"
         ) "+/run/current-system/sw/bin/modprobe melnode";
@@ -429,9 +354,6 @@ in
       };
     };
 
-    # Advertises this node's prefixes to melnode, and keeps per-tun policy
-    # routing / nft pinning in shape. Independent of melnode's lifetime: it
-    # notices melnode restarting (new control socket) and re-advertises.
     systemd.services.melnode-helper = lib.mkIf mCfg.enabled {
       description = "melnode helper (route advertisement, per-tun policy routing)";
       before = [ "network-online.target" ];

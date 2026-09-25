@@ -7,15 +7,11 @@ import (
 	"testing"
 )
 
-// pvNet is an in-memory mesh of real PathVector instances. Messages go
-// through encodePVPacket/decodePVPacket (so the wire codec is exercised
-// too) and are delivered FIFO by drain(), which avoids the re-entrant
-// locking a synchronous delivery would hit.
 type pvNet struct {
 	t     *testing.T
 	nodes map[uint32]*PathVector
-	peers map[[2]uint32]*Link // [owner, neighborID] -> owner's Peer for that neighbor
-	up    map[[2]uint32]bool  // undirected, key sorted
+	peers map[[2]uint32]*Link
+	up    map[[2]uint32]bool
 	queue []pvMsg
 }
 
@@ -81,7 +77,7 @@ func (n *pvNet) drain() {
 		m := n.queue[0]
 		n.queue = n.queue[1:]
 		if !n.up[linkKey(m.from, m.to)] {
-			continue // link is down, packet lost
+			continue
 		}
 		wire := encodePVPacket(m.announces, m.withdraws)
 		if _, _, ok := decodePVPacket(wire); !ok {
@@ -92,8 +88,6 @@ func (n *pvNet) drain() {
 	n.reconcileAll()
 }
 
-// reconcileAll runs one reconcile pass on every node (there's no background
-// loop in tests since Start isn't called).
 func (n *pvNet) reconcileAll() {
 	for _, pv := range n.nodes {
 		pv.node.router.reconcileOnce()
@@ -112,19 +106,16 @@ func (n *pvNet) fullSyncAll() {
 	n.drain()
 }
 
-// nextHop returns node's currently-installed next hop to dest.
 func (n *pvNet) nextHop(node, dest uint32) (uint32, bool) {
 	return n.nodes[node].node.router.LookupRoute(dest)
 }
 
-// assertNoLoop follows next hops from src toward dest and fails on a
-// loop or a dead end that isn't dest.
 func (n *pvNet) route(src, dest uint32) (path []uint32, ok bool) {
 	cur := src
 	seen := map[uint32]bool{}
 	for cur != dest {
 		if seen[cur] {
-			return append(path, cur), false // loop
+			return append(path, cur), false
 		}
 		seen[cur] = true
 		path = append(path, cur)
@@ -137,15 +128,6 @@ func (n *pvNet) route(src, dest uint32) (path []uint32, ok bool) {
 	return append(path, cur), true
 }
 
-// TestSplitHorizonStaleRoute reproduces the double-failure scenario:
-//
-//	D--B, D--C, C--A, A--B     (ids: A=1, C=2, B=3, D=4)
-//
-// A's best to D is via C (lowest neighbor id on a tie), with B as a
-// non-best alternative. B's direct D link dies; B's new best is via A,
-// and split-horizon must withdraw B's earlier advertisement from A
-// rather than silently skipping it. Then C-D dies: D is now genuinely
-// unreachable, so nobody may keep a route to it.
 func TestSplitHorizonStaleRoute(t *testing.T) {
 	const A, C, B, D = 1, 2, 3, 4
 	n := newPVNet(t, A, B, C, D)
@@ -165,8 +147,8 @@ func TestSplitHorizonStaleRoute(t *testing.T) {
 		t.Fatalf("after B-D failure B should still reach D via A/C, got %v ok=%v", p, ok)
 	}
 
-	n.linkDown(D, C) // D is now completely cut off
-	n.fullSyncAll()  // periodic resync must not resurrect anything either
+	n.linkDown(D, C)
+	n.fullSyncAll()
 
 	for _, node := range []uint32{A, B, C} {
 		if nh, has := n.nextHop(node, D); has {
@@ -175,12 +157,9 @@ func TestSplitHorizonStaleRoute(t *testing.T) {
 	}
 }
 
-// TestPathLengthOverflow: with heavy prepending a forwarded path can
-// exceed 255 hops, which used to wrap byte(len(path)) and corrupt the
-// packet. It must now be withheld (not advertised) instead.
 func TestPathLengthOverflow(t *testing.T) {
 	n := newPVNet(t, 1, 2, 3)
-	n.peer(2, 3).prependCount = 254 // 2 relaying toward 3 adds 255 copies of itself
+	n.peer(2, 3).prependCount = 254
 	n.linkUp(1, 2)
 	n.linkUp(2, 3)
 	n.fullSyncAll()
@@ -191,21 +170,17 @@ func TestPathLengthOverflow(t *testing.T) {
 	if nh, ok := n.nextHop(3, 1); ok {
 		t.Fatalf("3 should not get a route to 1 (path would be %d+ hops), got nh=%d", 256, nh)
 	}
-	// and the direct route to 2 is unaffected
 	if _, ok := n.nextHop(3, 2); !ok {
 		t.Fatal("3 should still reach 2")
 	}
 }
 
-// TestChunking: a full table bigger than one MTU-sized packet must be
-// split across packets (each <= the MTU) and still arrive completely.
 func TestChunking(t *testing.T) {
 	n := newPVNet(t, 1, 2)
 	for _, pv := range n.nodes {
-		pv.node.mtu.Store(200) // tiny, to force many chunks with few routes
+		pv.node.mtu.Store(200)
 	}
-	// node 1 claims lots of prefixes -> a big self-origin entry per packet limit
-	for i := 0; i < 30; i++ { // 8+2+1+1+30*5 = 162 <= 200
+	for i := 0; i < 30; i++ {
 		n.nodes[1].AdvertisePrefix(pvPrefix{addr: uint32(0x0a000000 + i), len: 32})
 	}
 	n.linkUp(1, 2)
@@ -214,10 +189,9 @@ func TestChunking(t *testing.T) {
 		t.Fatalf("node 2 learned %d prefixes, want 30", got)
 	}
 
-	// many dests behind node 1 -> node 2's table to node 3 must split
 	m := newPVNet(t, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 	for _, pv := range m.nodes {
-		pv.node.mtu.Store(40) // 8 hdr + ~5 entries of 6 bytes
+		pv.node.mtu.Store(40)
 	}
 	sizes := 0
 	orig := m.nodes[2].sendHook
@@ -243,14 +217,13 @@ func TestChunking(t *testing.T) {
 	}
 }
 
-// fakeHost is an in-memory hostOps: tuns and proto-198 routes as plain maps.
 type fakeHost struct {
 	mu         sync.Mutex
 	tuns       map[uint32]bool
 	routes     map[pvPrefix]string
-	dpRoutes   map[uint32]uint32 // what the data plane's next-hop table was last programmed to
-	failCreate map[uint32]int    // remaining EnsureTun failures per peerid
-	ops        []string          // ordered log of mutating calls
+	dpRoutes   map[uint32]uint32
+	failCreate map[uint32]int
+	ops        []string
 }
 
 func newFakeHost() *fakeHost {
@@ -270,7 +243,6 @@ func (f *fakeHost) Tuns() ([]uint32, error) {
 	return out, nil
 }
 
-// ProgramRoutes stands in for the data plane's next-hop table.
 func (f *fakeHost) ProgramRoutes(want map[uint32]uint32, prune bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -308,7 +280,6 @@ func (f *fakeHost) DestroyTun(id uint32) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.tuns, id)
-	// like the kernel: routes on a deleted device vanish with it
 	for p, dev := range f.routes {
 		if dev == fmt.Sprintf("t-%d", id) {
 			delete(f.routes, p)
@@ -355,8 +326,6 @@ func mustPrefix(t *testing.T, s string) pvPrefix {
 	return p
 }
 
-// A dest's tun and a route for a prefix it owns appear once it's reachable,
-// and go away again when the link drops.
 func TestReconcileInstallsAndRemoves(t *testing.T) {
 	n := newPVNet(t, 1, 2)
 	p := mustPrefix(t, "10.9.0.5/32")
@@ -370,7 +339,6 @@ func TestReconcileInstallsAndRemoves(t *testing.T) {
 	if h.routes[p] != "t-2" {
 		t.Fatalf("route for %v = %q, want t-2", p, h.routes[p])
 	}
-	// the owner itself installs nothing for its own prefix
 	if len(n.host(2).routes) != 0 {
 		t.Fatalf("owner installed routes for its own prefix: %v", n.host(2).routes)
 	}
@@ -381,9 +349,6 @@ func TestReconcileInstallsAndRemoves(t *testing.T) {
 	}
 }
 
-// The original bug: a tun that failed to come up left prefix routes
-// permanently missing. Now the pass reports it, and the next one fixes it
-// with no new path-vector event needed.
 func TestReconcileRetriesFailedTun(t *testing.T) {
 	n := newPVNet(t, 1, 2)
 	p := mustPrefix(t, "10.9.0.5/32")
@@ -407,7 +372,6 @@ func TestReconcileRetriesFailedTun(t *testing.T) {
 	}
 }
 
-// Routes are only installed after the owner's tun exists (tun+ before route+).
 func TestReconcileOrdersTunBeforeRoute(t *testing.T) {
 	n := newPVNet(t, 1, 2)
 	p := mustPrefix(t, "10.9.0.5/32")
@@ -428,8 +392,6 @@ func TestReconcileOrdersTunBeforeRoute(t *testing.T) {
 	}
 }
 
-// Drift is healed: a route someone flushed, a stray proto-198 route nobody
-// wants, and a tun that vanished all get put right on the next pass.
 func TestReconcileHealsDrift(t *testing.T) {
 	n := newPVNet(t, 1, 2)
 	p := mustPrefix(t, "10.9.0.5/32")
@@ -457,7 +419,6 @@ func TestReconcileHealsDrift(t *testing.T) {
 	}
 }
 
-// A prefix that becomes ours drops the route installed for its old owner.
 func TestReconcileDropsRouteWhenPrefixBecomesLocal(t *testing.T) {
 	n := newPVNet(t, 1, 2)
 	p := mustPrefix(t, "10.9.0.5/32")
@@ -467,17 +428,13 @@ func TestReconcileDropsRouteWhenPrefixBecomesLocal(t *testing.T) {
 	if h.routes[p] == "" {
 		t.Fatal("precondition: route via node 2")
 	}
-	n.nodes[1].AdvertisePrefix(p) // node 1 is now the shorter-path owner
+	n.nodes[1].AdvertisePrefix(p)
 	n.drain()
 	if _, ok := h.routes[p]; ok {
 		t.Fatalf("stale route kept after prefix became local: %v", h.routes)
 	}
 }
 
-// A node's own route is announced as path [self] however the announcement
-// was triggered; forwardPath (which appends us again) is only for relaying
-// other nodes' routes. It used to go out as [self self] when a prefix was
-// advertised, and back to [self] at the next full sync.
 func TestSelfOriginPathLength(t *testing.T) {
 	n := newPVNet(t, 1, 2)
 	n.linkUp(1, 2)
@@ -488,9 +445,6 @@ func TestSelfOriginPathLength(t *testing.T) {
 	}
 }
 
-// Whatever order concurrent changes land in, the last update a neighbor
-// gets for each dest must match our current state, without waiting for a
-// full sync (proto=2 isn't acked, so a stale last update would stick).
 func TestLastUpdateIsCurrent(t *testing.T) {
 	n := newPVNet(t, 1)
 	pv := n.nodes[1]
@@ -501,7 +455,7 @@ func TestLastUpdateIsCurrent(t *testing.T) {
 		prefixes  []pvPrefix
 	}
 	var mu sync.Mutex
-	heard := map[uint32]belief{} // what neighbor 2 currently believes, per dest
+	heard := map[uint32]belief{}
 	pv.sendHook = func(peer *Link, a []pvAnnouncement, w []uint32) {
 		if peer.id != 2 {
 			return

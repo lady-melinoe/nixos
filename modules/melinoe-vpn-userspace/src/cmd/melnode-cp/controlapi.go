@@ -7,16 +7,6 @@ import (
 	"os"
 )
 
-// controlapi.go is melnode's local control-plane input (config:
-// controlSocket): a tiny HTTP-over-Unix-socket API an external process
-// (a container/VM scheduler, per PROJECT_STATE.md) uses to tell melnode
-// which prefixes it's now responsible for. Deliberately not a
-// network-reachable port: this is a *local* control surface, not
-// something other mesh nodes ever talk to -- they only ever see the
-// resulting proto=2 announcements (pathvector.go), same as any other
-// route. HTTP-over-Unix-socket rather than a raw line protocol since
-// net/http is already in the binary (for -pprof) and JSON leaves room
-// for richer requests later without another wire-format bump.
 type controlAPI struct {
 	pv       *PathVector
 	listener net.Listener
@@ -28,7 +18,7 @@ type prefixRequest struct {
 }
 
 func newControlAPI(pv *PathVector, socketPath string) (*controlAPI, error) {
-	_ = os.Remove(socketPath) // stale socket from a previous crashed run
+	_ = os.Remove(socketPath)
 	l, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, err
@@ -52,7 +42,7 @@ func (c *controlAPI) Start() {
 }
 
 func (c *controlAPI) Stop() {
-	_ = c.server.Close() // also closes c.listener
+	_ = c.server.Close()
 }
 
 func (c *controlAPI) handleAdvertise(w http.ResponseWriter, r *http.Request) {

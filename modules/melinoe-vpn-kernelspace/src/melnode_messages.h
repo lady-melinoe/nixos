@@ -96,4 +96,4 @@ struct melnode_wire_data {
 	u8 encrypted_data[];
 };
 
-#endif /* _MELNODE_MESSAGES_H */
+#endif

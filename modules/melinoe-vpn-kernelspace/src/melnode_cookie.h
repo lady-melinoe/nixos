@@ -52,4 +52,4 @@ void melnode_cookie_message_create(struct melnode_wire_handshake_cookie *dst, co
 void melnode_cookie_message_consume(const struct melnode_wire_handshake_cookie *src,
 				    struct melnode_cookie *cookie);
 
-#endif /* _MELNODE_COOKIE_H */
+#endif

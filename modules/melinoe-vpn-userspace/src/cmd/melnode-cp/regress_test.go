@@ -7,9 +7,6 @@ import (
 	"melnode/dpproto"
 )
 
-// A tun that already exists when we attach (adopted after a control plane
-// restart, or left stopped by a failed TunStart) still goes through
-// EnsureTun, so its create hook re-runs and it gets started.
 func TestReconcileEnsuresAdoptedTun(t *testing.T) {
 	n := newTestNode(t)
 	h := n.router.host.(*fakeHost)
@@ -24,21 +21,20 @@ func TestReconcileEnsuresAdoptedTun(t *testing.T) {
 	t.Fatalf("EnsureTun(5) never called for an existing tun; ops=%v", h.ops)
 }
 
-// Routes are only learned from a link whose liveness session is at least Init.
 func TestPathVectorIgnoresDownLink(t *testing.T) {
 	n := newTestNode(t)
 	l := newLink(n, 7, [32]byte{7}, "", 0)
 	n.links[7] = l
 	pkt := encodePVPacket([]pvAnnouncement{{dest: 9, path: []uint32{9, 7}}}, nil)
 
-	n.pathVector.handlePacket(l, pkt) // monitor Down (not even started)
+	n.pathVector.handlePacket(l, pkt)
 	if nh, ok := n.router.LookupRoute(9); ok {
 		t.Fatalf("route to 9 via %d learned from a Down link", nh)
 	}
 
 	l.monitor.Start()
 	defer l.monitor.Stop()
-	n.handlePunt(livenessPunt(7, linkStateDown, 0)) // -> Init
+	n.handlePunt(livenessPunt(7, linkStateDown, 0))
 	n.pathVector.handlePacket(l, pkt)
 	if _, ok := n.router.LookupRoute(9); !ok {
 		t.Fatal("route from an Init link (peer went Up first) was dropped")
@@ -53,9 +49,6 @@ func livenessFrom(link uint32, st linkState, my, your uint32) dpproto.Punt {
 	return p
 }
 
-// A peer still Up with a previous session of ours must not carry it into
-// this one: its Up (stale or zero YourDiscriminator) is ignored while we're
-// Down, and the handshake completes only via Down -> Init -> Up.
 func TestLivenessChecksDiscriminators(t *testing.T) {
 	n := newTestNode(t)
 	l := newLink(n, 2, [32]byte{2}, "", 0)
@@ -64,12 +57,12 @@ func TestLivenessChecksDiscriminators(t *testing.T) {
 	defer l.monitor.Stop()
 	mine := l.monitor.localDiscriminator
 
-	n.handlePunt(livenessFrom(2, linkStateUp, 0x55, mine+1)) // addressed to an old session
-	n.handlePunt(livenessFrom(2, linkStateUp, 0x55, 0))      // Up without knowing us
+	n.handlePunt(livenessFrom(2, linkStateUp, 0x55, mine+1))
+	n.handlePunt(livenessFrom(2, linkStateUp, 0x55, 0))
 	if s := l.monitor.State(); s != linkStateDown {
 		t.Fatalf("state = %v after stale Up packets, want Down", s)
 	}
-	n.handlePunt(livenessFrom(2, linkStateUp, 0x55, mine)) // Up while we're Down: ignored
+	n.handlePunt(livenessFrom(2, linkStateUp, 0x55, mine))
 	if s := l.monitor.State(); s != linkStateDown {
 		t.Fatalf("state = %v after Up while Down, want Down", s)
 	}
@@ -97,7 +90,6 @@ func TestParsePrefixRejectsHostBits(t *testing.T) {
 	}
 }
 
-// Keys that moved between peerids (here: swapped) converge on attach.
 func TestSessionHandlesKeySwap(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "dp.sock")
 	dp := newFakeDP(1)
@@ -127,8 +119,6 @@ func TestSessionHandlesKeySwap(t *testing.T) {
 	}
 }
 
-// An entry sendTo refuses (here: more prefixes than the wire allows) must
-// not be recorded as advertised by a full sync.
 func TestFullSyncDoesNotMarkUnsendable(t *testing.T) {
 	n := newTestNode(t)
 	pv := n.pathVector
@@ -148,7 +138,6 @@ func TestFullSyncDoesNotMarkUnsendable(t *testing.T) {
 	}
 }
 
-// Only one introspection query reaches the data plane at a time.
 func TestIntrospectDPAdmitsOne(t *testing.T) {
 	n := newTestNode(t)
 	n.dpc.Store(&dpHandle{stubDP{}})
@@ -167,5 +156,4 @@ func TestIntrospectDPAdmitsOne(t *testing.T) {
 	}
 }
 
-// stubDP satisfies dpproto.Datapath for tests that never call it.
 type stubDP struct{ dpproto.Datapath }

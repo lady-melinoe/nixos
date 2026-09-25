@@ -144,10 +144,6 @@ struct melnode_device {
 	void (*orig_sk_data_ready4)(struct sock *sk);
 	void (*orig_sk_data_ready6)(struct sock *sk);
 	struct work_struct rx_work;
-	/* rx_work's receive buffer: allocated with the sockets, freed once
-	 * rx_work can no longer run (melnode_socket_open/close). rx_work never
-	 * runs concurrently with itself, so one is enough.
-	 */
 	u8 *rx_buf;
 
 	spinlock_t pending_teardown_lock;
@@ -159,14 +155,10 @@ struct melnode_device {
 
 extern struct melnode_device melnode_dev;
 
-/* The module's own workqueue (receive, handshakes, link send queues, tun
- * teardown): keeps the data path off system_wq, and destroy_workqueue() at
- * unload waits for every item still queued on it.
- */
 extern struct workqueue_struct *melnode_wq;
 
 void melnode_stat_inc(enum melnode_stat id);
 void melnode_get_keys(u8 public_key[32], u8 private_key[32]);
 void melnode_handle_datagram(u8 *data, size_t len, const struct melnode_endpoint *from);
 
-#endif /* _MELNODE_CORE_H */
+#endif

@@ -17,8 +17,6 @@ import (
 //go:linkname fastrandn runtime.fastrandn
 func fastrandn(n uint32) uint32
 
-// A Timer manages time-based aspects of the WireGuard protocol.
-// Timer roughly copies the interface of the Linux kernel's struct timer_list.
 type Timer struct {
 	*time.Timer
 	modifyingLock sync.RWMutex
@@ -79,26 +77,18 @@ func (peer *Peer) timersActive() bool {
 
 func expiredRetransmitHandshake(peer *Peer) {
 	if peer.timers.handshakeAttempts.Load() > MaxTimerHandshakes {
-
 		if peer.timersActive() {
 			peer.timers.sendKeepalive.Del()
 		}
 
-		/* We drop all packets without a keypair and don't try again,
-		 * if we try unsuccessfully for too long to make a handshake.
-		 */
 		peer.FlushStagedPackets()
 
-		/* We set a timer for destroying any residue that might be left
-		 * of a partial exchange.
-		 */
 		if peer.timersActive() && !peer.timers.zeroKeyMaterial.IsPending() {
 			peer.timers.zeroKeyMaterial.Mod(RejectAfterTime * 3)
 		}
 	} else {
 		peer.timers.handshakeAttempts.Add(1)
 
-		/* We clear the endpoint address src address, in case this is the cause of trouble. */
 		peer.markEndpointSrcForClearing()
 
 		peer.SendHandshakeInitiation(true)
@@ -116,7 +106,6 @@ func expiredSendKeepalive(peer *Peer) {
 }
 
 func expiredNewHandshake(peer *Peer) {
-	/* We clear the endpoint address src address, in case this is the cause of trouble. */
 	peer.markEndpointSrcForClearing()
 	peer.SendHandshakeInitiation(false)
 }
@@ -131,14 +120,12 @@ func expiredPersistentKeepalive(peer *Peer) {
 	}
 }
 
-/* Should be called after an authenticated data packet is sent. */
 func (peer *Peer) timersDataSent() {
 	if peer.timersActive() && !peer.timers.newHandshake.IsPending() {
 		peer.timers.newHandshake.Mod(KeepaliveTimeout + RekeyTimeout + time.Millisecond*time.Duration(fastrandn(RekeyTimeoutJitterMaxMs)))
 	}
 }
 
-/* Should be called after an authenticated data packet is received. */
 func (peer *Peer) timersDataReceived() {
 	if peer.timersActive() {
 		if !peer.timers.sendKeepalive.IsPending() {
@@ -149,28 +136,24 @@ func (peer *Peer) timersDataReceived() {
 	}
 }
 
-/* Should be called after any type of authenticated packet is sent -- keepalive, data, or handshake. */
 func (peer *Peer) timersAnyAuthenticatedPacketSent() {
 	if peer.timersActive() {
 		peer.timers.sendKeepalive.Del()
 	}
 }
 
-/* Should be called after any type of authenticated packet is received -- keepalive, data, or handshake. */
 func (peer *Peer) timersAnyAuthenticatedPacketReceived() {
 	if peer.timersActive() {
 		peer.timers.newHandshake.Del()
 	}
 }
 
-/* Should be called after a handshake initiation message is sent. */
 func (peer *Peer) timersHandshakeInitiated() {
 	if peer.timersActive() {
 		peer.timers.retransmitHandshake.Mod(RekeyTimeout + time.Millisecond*time.Duration(fastrandn(RekeyTimeoutJitterMaxMs)))
 	}
 }
 
-/* Should be called after a handshake response message is received and processed or when getting key confirmation via the first data message. */
 func (peer *Peer) timersHandshakeComplete() {
 	if peer.timersActive() {
 		peer.timers.retransmitHandshake.Del()
@@ -179,8 +162,6 @@ func (peer *Peer) timersHandshakeComplete() {
 	peer.timers.sentLastMinuteHandshake.Store(false)
 	now := time.Now()
 	peer.lastHandshakeNano.Store(now.UnixNano())
-	// Tell the control plane (lossy, non-blocking: see dpproto.Event). The
-	// endpoint rides along so a roamed listen-only link is visible.
 	if ctl := peer.device.ctl; ctl != nil {
 		ev := dpproto.Event{Kind: dpproto.EventLinkHandshake, PeerID: peer.id, UnixNano: now.UnixNano()}
 		peer.endpoint.Lock()
@@ -192,14 +173,12 @@ func (peer *Peer) timersHandshakeComplete() {
 	}
 }
 
-/* Should be called after an ephemeral key is created, which is before sending a handshake response or after receiving a handshake response. */
 func (peer *Peer) timersSessionDerived() {
 	if peer.timersActive() {
 		peer.timers.zeroKeyMaterial.Mod(RejectAfterTime * 3)
 	}
 }
 
-/* Should be called before a packet with authentication -- keepalive, data, or handshake -- is sent, or after one is received. */
 func (peer *Peer) timersAnyAuthenticatedPacketTraversal() {
 	keepalive := peer.persistentKeepaliveInterval.Load()
 	if keepalive > 0 && peer.timersActive() {

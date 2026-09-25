@@ -47,9 +47,6 @@ struct melnode_device melnode_dev = {
 
 struct workqueue_struct *melnode_wq;
 
-/* Serializes TUN_CREATE, so two concurrent creates for one peer can't race
- * (the loser would fail with EEXIST instead of getting the existing tun).
- */
 static DEFINE_MUTEX(melnode_tun_create_lock);
 
 struct melnode_pending_teardown {
@@ -60,7 +57,6 @@ struct melnode_pending_teardown {
 static struct genl_family melnode_genl_family;
 
 static struct genl_multicast_group melnode_mcgrps[] = {
-	/* Events carry peer endpoints: CAP_NET_ADMIN to subscribe. */
 	[0] = { .name = "events", .flags = GENL_MCAST_CAP_NET_ADMIN },
 };
 
@@ -212,10 +208,6 @@ static int melnode_netlink_notifier_call(struct notifier_block *nb, unsigned lon
 {
 	struct netlink_notify *notify = _notify;
 
-	/* Portids are only unique per netns, and the family lives in init_net:
-	 * a socket closing anywhere else (a container, a PrivateNetwork=
-	 * service) must not detach the control plane.
-	 */
 	if (state != NETLINK_URELEASE || notify->protocol != NETLINK_GENERIC ||
 	    !net_eq(notify->net, &init_net))
 		return NOTIFY_DONE;
@@ -396,9 +388,6 @@ static void melnode_teardown_device(void)
 
 	WRITE_ONCE(melnode_dev.configured, false);
 
-	/* unregister_netdevice_queue() needs RTNL. Lock order is rtnl, then
-	 * tables_mutex: no path takes rtnl while holding tables_mutex.
-	 */
 	rtnl_lock();
 	mutex_lock(&melnode_dev.tables_mutex);
 	for (i = 0; i < MELNODE_MAX_PEER; i++) {
@@ -672,9 +661,6 @@ static int melnode_nl_route_set(struct sk_buff *skb, struct genl_info *info)
 
 	mutex_lock(&melnode_dev.tables_mutex);
 	if (!melnode_configured()) {
-		/* A DEVICE_DEL won the race: don't leave a route behind for
-		 * the next DEVICE_SET.
-		 */
 		mutex_unlock(&melnode_dev.tables_mutex);
 		kfree(route);
 		return -ENODEV;
@@ -966,9 +952,6 @@ static int melnode_nl_tun_create(struct sk_buff *skb, struct genl_info *info)
 	int err;
 
 	mutex_lock(&melnode_tun_create_lock);
-	/* A TUN_DESTROY unregisters asynchronously: let it finish, or
-	 * recreating the same name right after fails with EEXIST.
-	 */
 	flush_work(&melnode_dev.tun_teardown_work);
 	err = __melnode_nl_tun_create(info);
 	mutex_unlock(&melnode_tun_create_lock);
@@ -1613,12 +1596,6 @@ err_wq:
 
 static void __exit melnode_exit(void)
 {
-	/* Stop the data path first, so nothing sends punts or events on the
-	 * family once it is gone; then unregister it (which waits for running
-	 * ops) and tear down again, in case a DEVICE_SET slipped in between.
-	 * destroy_workqueue() drains anything still queued, e.g. the send
-	 * queue of a link deleted just before unload.
-	 */
 	melnode_teardown_device();
 	netlink_unregister_notifier(&melnode_netlink_notifier);
 	genl_unregister_family(&melnode_genl_family);

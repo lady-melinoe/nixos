@@ -10,26 +10,6 @@ import (
 	"time"
 )
 
-// introspectapi.go serves melnode's read-only "show ..." endpoints
-// (introspect.go) over TCP, so an operator on any node can look at any
-// other node's view of the mesh (curl http://<node-host-addr>:60198/links),
-// and so monitoring has something to scrape.
-//
-// This is deliberately a *separate* http.Server with its own mux, not the
-// control socket exposed on a TCP port: only the read endpoints are mounted
-// here, so /advertise and /withdraw do not exist on this listener at all
-// (they 404), and every handler is additionally GET-only. There is no
-// authentication; reachability is restricted by the host firewall
-// (nftables specialHostAccess: host range only).
-//
-// Requests are served from a snapshot, not the live state: one goroutine
-// rebuilds every view every interval (config: introspectIntervalMs) and
-// swaps it in whole, JSON already encoded. A request takes no locks and
-// never reaches the data plane, so however many arrive, they can't slow
-// the control plane's own data plane calls (or push one past
-// dpproto.CallTimeout, which would drop the session). Each response says
-// how old it is: an Age header (seconds) and X-Melnode-Generated-At, and
-// /summary carries generated_at itself.
 type introspectAPI struct {
 	pv       *PathVector
 	listener net.Listener
@@ -41,10 +21,9 @@ type introspectAPI struct {
 	wg   sync.WaitGroup
 }
 
-// introspectSnapshot is one generation of every view, as served.
 type introspectSnapshot struct {
 	generatedAt time.Time
-	bodies      map[string][]byte // readPaths -> encoded JSON
+	bodies      map[string][]byte
 }
 
 func newIntrospectAPI(pv *PathVector, addr string, interval time.Duration) (*introspectAPI, error) {
@@ -74,8 +53,6 @@ func newIntrospectAPI(pv *PathVector, addr string, interval time.Duration) (*int
 	return a, nil
 }
 
-// Start takes the first snapshot (so there is always one to serve), then
-// keeps it fresh and starts serving.
 func (a *introspectAPI) Start() {
 	a.refresh()
 	a.wg.Add(1)
@@ -88,7 +65,7 @@ func (a *introspectAPI) Start() {
 }
 
 func (a *introspectAPI) Stop() {
-	_ = a.server.Close() // also closes a.listener
+	_ = a.server.Close()
 	close(a.stop)
 	a.wg.Wait()
 }
@@ -107,11 +84,6 @@ func (a *introspectAPI) refreshLoop() {
 	}
 }
 
-// refresh rebuilds the snapshot. It waits for the data plane gate rather
-// than skipping it, so a snapshot never lacks the data plane's details just
-// because a query on the control socket held the gate at that moment. If a
-// data plane call fails, the previous snapshot stays (its age shows it's
-// stale) instead of being replaced by one with those details missing.
 func (a *introspectAPI) refresh() {
 	v := a.pv.node.readDP(true)
 	if v.err != nil && a.snap.Load() != nil {

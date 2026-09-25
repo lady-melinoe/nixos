@@ -45,16 +45,12 @@ func (st *CookieChecker) Init(pk NoisePublicKey) {
 	st.Lock()
 	defer st.Unlock()
 
-	// mac1 state
-
 	func() {
 		hash, _ := blake2s.New256(nil)
 		hash.Write([]byte(WGLabelMAC1))
 		hash.Write(pk[:])
 		hash.Sum(st.mac1.key[:0])
 	}()
-
-	// mac2 state
 
 	func() {
 		hash, _ := blake2s.New256(nil)
@@ -91,16 +87,12 @@ func (st *CookieChecker) CheckMAC2(msg, src []byte) bool {
 		return false
 	}
 
-	// derive cookie key
-
 	var cookie [blake2s.Size128]byte
 	func() {
 		mac, _ := blake2s.New128(st.mac2.secret[:])
 		mac.Write(src)
 		mac.Sum(cookie[:0])
 	}()
-
-	// calculate mac of packet (including mac1)
 
 	smac2 := len(msg) - blake2s.Size128
 
@@ -121,8 +113,6 @@ func (st *CookieChecker) CreateReply(
 ) (*MessageCookieReply, error) {
 	st.RLock()
 
-	// refresh cookie secret
-
 	if time.Since(st.mac2.secretSet) > CookieRefreshTime {
 		st.RUnlock()
 		st.Lock()
@@ -136,16 +126,12 @@ func (st *CookieChecker) CreateReply(
 		st.RLock()
 	}
 
-	// derive cookie
-
 	var cookie [blake2s.Size128]byte
 	func() {
 		mac, _ := blake2s.New128(st.mac2.secret[:])
 		mac.Write(src)
 		mac.Sum(cookie[:0])
 	}()
-
-	// encrypt cookie
 
 	size := len(msg)
 
@@ -224,8 +210,6 @@ func (st *CookieGenerator) AddMacs(msg []byte) {
 	st.Lock()
 	defer st.Unlock()
 
-	// set mac1
-
 	func() {
 		mac, _ := blake2s.New128(st.mac1.key[:])
 		mac.Write(msg[:smac1])
@@ -233,8 +217,6 @@ func (st *CookieGenerator) AddMacs(msg []byte) {
 	}()
 	copy(st.mac2.lastMAC1[:], mac1)
 	st.mac2.hasLastMAC1 = true
-
-	// set mac2
 
 	if time.Since(st.mac2.cookieSet) > CookieRefreshTime {
 		return

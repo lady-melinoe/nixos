@@ -45,14 +45,7 @@ log = logging.getLogger("melnode-helper")
 
 MAX_PEER_ID = 255
 
-# Same protocol number melnode tags its own kernel routes with
-# (routeProtocolMelnode in kernelroutes.go): `ip route show proto 198`.
 ROUTE_PROTO = "198"
-
-
-# --------------------------------------------------------------------------
-# Config
-# --------------------------------------------------------------------------
 
 
 @dataclass
@@ -93,16 +86,11 @@ class Config:
         return self.table_base <= table <= self.table_base + MAX_PEER_ID
 
 
-# --------------------------------------------------------------------------
-# Command helpers
-# --------------------------------------------------------------------------
-
-
 def run(cmd: list[str]) -> subprocess.CompletedProcess:
     """Run a command, never raising (callers decide what a failure means)."""
     try:
         return subprocess.run(cmd, capture_output=True, text=True, check=False)
-    except OSError as exc:  # e.g. the binary isn't on PATH
+    except OSError as exc:
         return subprocess.CompletedProcess(cmd, 127, "", str(exc))
 
 
@@ -124,11 +112,6 @@ def run_json(cmd: list[str]):
     except json.JSONDecodeError as exc:
         log.error("%s: bad JSON: %s", " ".join(cmd), exc)
         return None
-
-
-# --------------------------------------------------------------------------
-# Per-tun state: policy routing + nft pinning
-# --------------------------------------------------------------------------
 
 
 def parse_rules(rules) -> set[int]:
@@ -156,8 +139,6 @@ def ensure_rule(table: int, have: set[int] | None = None) -> None:
         have = parse_rules(run_json(["ip", "-4", "-j", "rule", "show"]))
     if table in have:
         return
-    # pref 0: must be evaluated before `local` (uplink.nix moves local to pref 1
-    # to make room). Without an explicit pref the kernel picks ~32765, after it.
     run_ok(["ip", "-4", "rule", "add", "pref", "0", "fwmark", str(table), "table", str(table)],
            f"add rule for table {table}")
 
@@ -220,7 +201,6 @@ def setup_peer(cfg: Config, peer_id: int, ifname: str) -> None:
 
 def teardown_peer(cfg: Config, peer_id: int, ifname: str) -> None:
     table = cfg.table(peer_id)
-    # Remove every matching rule (there should only be one, but be thorough).
     for _ in range(8):
         if run(["ip", "-4", "rule", "del", "fwmark", str(table), "table", str(table)]).returncode != 0:
             break
@@ -230,7 +210,6 @@ def teardown_peer(cfg: Config, peer_id: int, ifname: str) -> None:
 
 
 def nft_delete_quiet(cfg: Config, marks: list[int], ifnames: list[str]) -> None:
-    # Elements may already be gone (e.g. nftables was reloaded); that's fine.
     base = ["nft", "delete", "element", cfg.nft_family, cfg.nft_table]
     for n in ifnames:
         run(base + [cfg.nft_iface_map, '{ "%s" }' % n])
@@ -260,7 +239,6 @@ def full_reconcile(cfg: Config, live: dict[int, tuple[str, int]]) -> None:
         ensure_rule(table, have_rules)
         ensure_route(table, name)
 
-    # Garbage-collect state for tuns that no longer exist.
     live_tables = {cfg.table(p) for p in live}
     for table in sorted(have_rules - live_tables):
         log.info("gc: stale rule/routes for table %d", table)
@@ -269,7 +247,7 @@ def full_reconcile(cfg: Config, live: dict[int, tuple[str, int]]) -> None:
 
     state = nft_state(cfg)
     if state is None:
-        return  # nft table not there (yet); try again next resync
+        return
     cur_marks, cur_map = state
     want_marks = live_tables
     want_map = {name: cfg.table(pid) for pid, (name, _idx) in live.items()}
@@ -285,11 +263,6 @@ def full_reconcile(cfg: Config, live: dict[int, tuple[str, int]]) -> None:
     if missing:
         log.info("nft: (re)registering peers %s", sorted(missing))
         nft_add(cfg, missing)
-
-
-# --------------------------------------------------------------------------
-# Prefix advertisement
-# --------------------------------------------------------------------------
 
 
 def normalize_prefix(val: str) -> str | None:
@@ -324,7 +297,7 @@ def vm_routes(cfg: Config) -> set[str] | None:
 def desired_prefixes(cfg: Config) -> set[str] | None:
     vms = vm_routes(cfg)
     if vms is None:
-        return None  # keep what we have advertised rather than flap on a read error
+        return None
     out = set(vms)
     for p in [*cfg.pub_ips, *cfg.extra_routes]:
         norm = normalize_prefix(p)
@@ -375,12 +348,10 @@ def sync_advertisements(cfg: Config, state: AdvertState, desired: set[str]) -> N
     try:
         st = os.stat(cfg.control_socket)
     except OSError:
-        # melnode isn't up (or is restarting): whatever it knew is gone.
         state.advertised.clear()
         state.sock_ident = None
         return
 
-    # A new socket file means melnode restarted and lost its local prefixes.
     ident = (st.st_ino, st.st_mtime_ns)
     if ident != state.sock_ident:
         if state.sock_ident is not None:
@@ -400,11 +371,6 @@ def sync_advertisements(cfg: Config, state: AdvertState, desired: set[str]) -> N
         log.info("withdrew %s", prefix)
 
 
-# --------------------------------------------------------------------------
-# Daemon
-# --------------------------------------------------------------------------
-
-
 def daemon(cfg: Config) -> int:
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
@@ -419,8 +385,6 @@ def daemon(cfg: Config) -> int:
         try:
             live = live_tuns(cfg)
             if live is not None:
-                # Reconcile immediately when a tun appears/changes/vanishes, and
-                # periodically regardless (heals e.g. an nftables reload).
                 if live != known or tick % cfg.full_resync_ticks == 0:
                     full_reconcile(cfg, live)
                 known = live
@@ -428,23 +392,13 @@ def daemon(cfg: Config) -> int:
             desired = desired_prefixes(cfg)
             if desired is not None:
                 sync_advertisements(cfg, state, desired)
-        except Exception:  # never let one bad tick kill the daemon
+        except Exception:
             log.exception("tick failed")
         tick += 1
         stop.wait(cfg.poll_interval)
 
-    # Deliberately no withdrawal on shutdown: the helper restarts on every
-    # deploy that touches its config, and withdrawing first would pull this
-    # node's prefixes from the whole mesh for a tick. The next helper
-    # re-advertises idempotently; if melnode-cp restarts instead, it starts
-    # with an empty local set anyway.
     log.info("daemon stopped")
     return 0
-
-
-# --------------------------------------------------------------------------
-# CLI
-# --------------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> int:

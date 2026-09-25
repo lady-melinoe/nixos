@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// roundTrip encodes a message's attributes and decodes them again, going
-// through the real framing.
 func roundTrip(t *testing.T, put func(*nlb), get func(attrs) error) {
 	t.Helper()
 	b := newNL(FamilyID, 0, 1, 0, CmdHello, uint8(Version))
@@ -45,7 +43,7 @@ func TestCodecRoundTrip(t *testing.T) {
 		}
 	}
 	{
-		want := LinkAdd{PeerID: 7, PubKey: k} // listen-only: no endpoint attribute at all
+		want := LinkAdd{PeerID: 7, PubKey: k}
 		var got LinkAdd
 		roundTrip(t, func(b *nlb) { _ = want.put(b) }, got.get)
 		if got != want {
@@ -83,7 +81,6 @@ func TestCodecRoundTrip(t *testing.T) {
 	check("Punt", p.put, gp.get, func() bool { return reflect.DeepEqual(gp, p) })
 	in, gin := Inject{Link: 2, Proto: 1, Dst: 2, TTL: 1, Payload: []byte{1, 2, 3}}, Inject{}
 	check("Inject", in.put, gin.get, func() bool { return reflect.DeepEqual(gin, in) })
-	// An empty payload must survive as an empty (not erroring) payload.
 	gp = Punt{}
 	roundTrip(t, Punt{Proto: 1}.put, gp.get)
 	if len(gp.Payload) != 0 {
@@ -91,15 +88,12 @@ func TestCodecRoundTrip(t *testing.T) {
 	}
 }
 
-// Every attribute is padded to 4 bytes, and 64-bit attribute payloads land on
-// 8-byte boundaries (with a header-only pad attribute where needed), as
-// nla_put_64bit does in the kernel.
 func TestFramingLayout(t *testing.T) {
 	b := newNL(FamilyID, 0, 1, 0, CmdLinkGet, uint8(Version))
-	b.u8(AttrPktProto, 1)  // 1 byte payload, padded to 4
-	b.u64(AttrTxBytes, 42) // needs a pad attribute first
+	b.u8(AttrPktProto, 1)
+	b.u64(AttrTxBytes, 42)
 	b.u32(AttrPeerID, 7)
-	b.u64(AttrRxBytes, 43) // (offset now needs no pad, or does; either way aligned)
+	b.u64(AttrRxBytes, 43)
 	raw := b.bytes()
 	if len(raw)%4 != 0 || int(nativeEndian.Uint32(raw)) != len(raw) {
 		t.Fatalf("length field %d vs %d", nativeEndian.Uint32(raw), len(raw))
@@ -143,7 +137,6 @@ func TestEndpointSockaddr(t *testing.T) {
 
 func TestErrorMessages(t *testing.T) {
 	req := nlmsg{typ: FamilyID, flags: nlmFRequest | nlmFAck, seq: 77}
-	// An ACK.
 	ms, err := splitMessages(errMessage(req, nil))
 	if err != nil || len(ms) != 1 || ms[0].typ != nlmsgError || ms[0].seq != 77 {
 		t.Fatalf("ack: %v %+v", err, ms)
@@ -151,13 +144,11 @@ func TestErrorMessages(t *testing.T) {
 	if err := parseErrMessage(ms[0]); err != nil {
 		t.Fatalf("ack parsed as error: %v", err)
 	}
-	// An error keeps its errno and its text (as an extended-ack message).
 	ms, _ = splitMessages(errMessage(req, Errorf(CodeExists, "link %d exists", 3)))
 	err = parseErrMessage(ms[0])
 	if !IsCode(err, CodeExists) || err.(*Error).Msg != "link 3 exists" {
 		t.Fatalf("error: %v", err)
 	}
-	// Garbage never panics.
 	for _, g := range [][]byte{nil, {1}, make([]byte, 15), {255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}} {
 		_, _ = splitMessages(g)
 	}
@@ -166,7 +157,6 @@ func TestErrorMessages(t *testing.T) {
 	}
 }
 
-// fakeDP is an in-memory Handler.
 type fakeDP struct {
 	mu         sync.Mutex
 	links      map[uint32]LinkAdd
@@ -320,7 +310,6 @@ func TestClientServer(t *testing.T) {
 		t.Fatal("Attach did not register the session")
 	}
 
-	// Device configuration: idempotent when identical, CodeExists when different.
 	ds := DeviceSet{LocalID: 1, ListenPort: 60198, MTU: 1416}
 	if r, err := cl.DeviceSet(ds); err != nil || r.PubKey != [32]byte{0xaa} {
 		t.Fatalf("DeviceSet: %v %+v", err, r)
@@ -373,8 +362,6 @@ func TestClientServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// An unknown command gets an error reply rather than wedging, and a
-	// request missing a required attribute is EINVAL.
 	if err := cl.ack(99, nil); !IsCode(err, CodeUnsupported) {
 		t.Fatalf("unknown command: %v", err)
 	}
@@ -382,8 +369,6 @@ func TestClientServer(t *testing.T) {
 		t.Fatalf("missing attribute: %v", err)
 	}
 
-	// DeviceDel returns the data plane to unconfigured, so a different
-	// DeviceSet is accepted afterwards (and nothing survives the teardown).
 	if err := cl.DeviceDel(); err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +379,6 @@ func TestClientServer(t *testing.T) {
 		t.Fatalf("DeviceSet after DeviceDel: %v", err)
 	}
 
-	// Inject: client -> data plane.
 	if err := cl.Inject(Inject{Link: 5, Proto: 1, Dst: 5, TTL: 1, Payload: []byte("ping")}); err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +391,6 @@ func TestClientServer(t *testing.T) {
 		t.Fatal("inject not delivered")
 	}
 
-	// Event: data plane -> client, ordered with punts.
 	srv.Event(Event{Kind: EventLinkHandshake, PeerID: 5, UnixNano: 42, Endpoint: "1.2.3.4:5"})
 	select {
 	case e := <-events:
@@ -418,7 +401,6 @@ func TestClientServer(t *testing.T) {
 		t.Fatal("event not delivered")
 	}
 
-	// Punt: data plane -> client.
 	srv.Punt(Punt{Ingress: 5, Proto: 2, Src: 5, Dst: 1, TTL: 1, Payload: []byte("pv")})
 	select {
 	case p := <-punts:
@@ -430,8 +412,6 @@ func TestClientServer(t *testing.T) {
 	}
 }
 
-// A dump with many entries arrives as many multipart messages, and an empty
-// one as just the terminator.
 func TestDumpsAreMultipart(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "dp.sock")
 	h := newFakeDP()
@@ -482,7 +462,6 @@ func TestQuitRepliesThenCallsHandler(t *testing.T) {
 	}
 }
 
-// Events and punts with no session attached are counted, not queued.
 func TestEventsWithoutSessionAreCounted(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "dp.sock")
 	srv, err := NewServer(sock, newFakeDP())
@@ -504,7 +483,6 @@ func TestSessionReplacementAndLoss(t *testing.T) {
 	}
 	go srv.Run()
 
-	// No session: punts are dropped and counted, never block.
 	srv.Punt(Punt{Proto: 1})
 	if srv.PuntDropped() != 1 {
 		t.Fatalf("dropped = %d", srv.PuntDropped())
@@ -517,7 +495,6 @@ func TestSessionReplacementAndLoss(t *testing.T) {
 	if err := a.Attach(); err != nil {
 		t.Fatal(err)
 	}
-	// A tool connecting (never attaching) does not disturb the control plane.
 	tool, err := Dial(sock, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -548,7 +525,6 @@ func TestSessionReplacementAndLoss(t *testing.T) {
 		t.Fatal("call on a dead session should fail")
 	}
 
-	// The data plane going away is seen as session loss.
 	srv.Close()
 	select {
 	case <-b.Done():
@@ -557,9 +533,6 @@ func TestSessionReplacementAndLoss(t *testing.T) {
 	}
 }
 
-// The userspace data plane answers the genetlink controller's GETFAMILY like
-// the kernel would, and the client resolves the family id that way instead of
-// assuming it.
 func TestFamilyResolution(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "dp.sock")
 	srv, err := NewServer(sock, newFakeDP())
@@ -601,8 +574,6 @@ func TestFamilyResolution(t *testing.T) {
 		t.Fatalf("events group: %v %+v", err, g)
 	}
 
-	// Other families don't exist here, and neither does a melnode request
-	// addressed to a family id we never handed out.
 	_, err = cl.request(genlIDCtrl, ctrlCmdGetFamily, ctrlVersion, false, func(b *nlb) error {
 		b.str(ctrlAttrFamilyName, "wireguard")
 		return nil

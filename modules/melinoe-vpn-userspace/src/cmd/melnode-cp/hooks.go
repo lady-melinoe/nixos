@@ -8,15 +8,8 @@ import (
 	"time"
 )
 
-// hookTimeout bounds how long a tun create/destroy hook may run. Hooks run
-// synchronously from the router (path-vector goroutines / shutdown), so a
-// hung hook must not be able to wedge route handling forever.
 const hookTimeout = 10 * time.Second
 
-// runTunHook runs the configured hook binary (if any) as
-// `<bin> <peerID> <ifname>`. Failures are logged, never fatal: a broken
-// hook must not take the tunnel down with it. kind is "create"/"destroy",
-// used only for logging.
 func (r *Router) runTunHook(kind, bin string, peerID uint32, ifname string) {
 	if bin == "" {
 		return

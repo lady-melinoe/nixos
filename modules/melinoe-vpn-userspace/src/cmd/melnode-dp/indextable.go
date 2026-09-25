@@ -25,7 +25,6 @@ type IndexTable struct {
 func randUint32() (uint32, error) {
 	var integer [4]byte
 	_, err := rand.Read(integer[:])
-	// Arbitrary endianness; both are intrinsified by the Go compiler.
 	return binary.LittleEndian.Uint32(integer[:]), err
 }
 
@@ -57,14 +56,10 @@ func (table *IndexTable) SwapIndexForKeypair(index uint32, keypair *Keypair) {
 
 func (table *IndexTable) NewIndexForHandshake(peer *Peer, handshake *Handshake) (uint32, error) {
 	for {
-		// generate random index
-
 		index, err := randUint32()
 		if err != nil {
 			return index, err
 		}
-
-		// check if index used
 
 		table.RLock()
 		_, ok := table.table[index]
@@ -72,8 +67,6 @@ func (table *IndexTable) NewIndexForHandshake(peer *Peer, handshake *Handshake) 
 		if ok {
 			continue
 		}
-
-		// check again while locked
 
 		table.Lock()
 		_, found := table.table[index]

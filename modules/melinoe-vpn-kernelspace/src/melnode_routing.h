@@ -36,4 +36,4 @@ void melnode_link_arm_timer_locked(struct melnode_link *link);
 void melnode_link_session_established_locked(struct melnode_link *link, bool handshake_complete);
 void melnode_link_shutdown(struct melnode_link *link);
 
-#endif /* _MELNODE_ROUTING_H */
+#endif

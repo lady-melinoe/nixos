@@ -7,46 +7,6 @@ import (
 	"time"
 )
 
-// linkmonitor.go implements a scaled-down BFD (RFC 5880) for melnode's
-// [[link]] tunnels: one session per Link (== one per directly-connected
-// neighbor; see PROJECT_STATE.md -- multi-hop [[peer]]s are explicitly
-// out of scope, they're just routeTable entries, not a Link). Runs
-// entirely inside the existing Noise-encrypted tunnel as proto=1, so a
-// liveness packet arriving at all is already proof the crypto session
-// itself is alive, not just that some UDP packet showed up.
-//
-// Deliberately dropped relative to full BFD, because melnode has no use
-// for them: Poll/Final (synchronous interval renegotiation -- melnode's
-// intervals are fixed config, not changed live), Demand mode,
-// Multipoint, the Echo function (no separate forwarding-plane-vs-
-// control-plane distinction to exploit), and BFD's own authentication
-// section (Noise already authenticates the tunnel this rides inside).
-//
-// Kept, because they're what prevents the footguns that matter:
-//   - Discriminators (MyDiscriminator/YourDiscriminator): without these,
-//     a restarted peer's fresh session could be confused for a
-//     continuation of the old one.
-//   - The Init step between Down and Up: without it, two nodes can each
-//     unilaterally declare Up on a single received packet, without
-//     either having confirmed the *other* direction actually works --
-//     which is worse than no liveness check at all once path-vector
-//     routing starts trusting this signal to pick routes.
-//   - A real, distinct AdminDown state, not just a Down with a
-//     diagnostic code attached. This matters because the two need
-//     different receiver behavior (RFC 5880 6.8.6): a plain received
-//     Down is normal bootstrap traffic -- both sides start Down and are
-//     *supposed* to see the other's Down before advancing to Init --
-//     whereas a received AdminDown means "I am deliberately not trying
-//     to establish a session right now", and must NOT be treated as an
-//     invitation to start the bootstrap handshake. Collapsing these
-//     into one state (as an earlier version of this file did, sending
-//     admin-shutdown as State=Down with a diag code) breaks the
-//     bootstrap case entirely -- a receiver can't tell "peer is also
-//     just starting up" from "peer explicitly doesn't want a session",
-//     and treating every received Down as a forced instruction to also
-//     go Down means two fresh sessions started at the same time would
-//     each force the other back to Down forever, never reaching Init.
-
 type linkState uint8
 
 const (
@@ -71,16 +31,13 @@ func (s linkState) String() string {
 	}
 }
 
-// diag mirrors BFD's diagnostic code, trimmed to the reasons that can
-// actually occur here (most of RFC 5880's ~9 codes are IP/multipoint-
-// specific and can't happen on a melnode link).
 type diag uint8
 
 const (
-	diagNone                 diag = iota
-	diagDetectTimeout             // detection timer expired
-	diagNeighborSignaledDown      // we went Down because the remote told us Down or AdminDown
-	diagAdminDown                 // WE are deliberately shutting this session down (the control plane stopping, or losing the data plane)
+	diagNone diag = iota
+	diagDetectTimeout
+	diagNeighborSignaledDown
+	diagAdminDown
 )
 
 func (d diag) String() string {
@@ -99,31 +56,12 @@ func (d diag) String() string {
 }
 
 const (
-	livenessProto = 1 // sibling to proto=0 (tunneled IP) in the 4-byte routing header
+	livenessProto = 1
 
 	livenessVers1 = 1
 
-	// proto=1, Vers=1 payload layout (offsets within the payload, i.e.
-	// after melnode's own 4-byte routing header):
-	//   0: Vers            (uint8)
-	//   1: Diag            (uint8)
-	//   2: State           (uint8)
-	//   3: DetectMult       (uint8)
-	//   4:6: Length         (uint16, big-endian -- self-declared, same
-	//        idea as proto=0 trimming against the inner IP header's own
-	//        length field, see punt.go)
-	//   6:8: reserved/pad (uint16, zero)
-	//   8:12:  MyDiscriminator    (uint32)
-	//   12:16: YourDiscriminator  (uint32)
-	//   16:20: DesiredMinTX       (uint32, microseconds)
-	//   20:24: RequiredMinRX      (uint32, microseconds)
 	livenessV1Size = 24
 
-	// Defaults. Not yet exposed in [[link]] config (melnode links are
-	// homogeneous today); a real per-direction negotiated interval is
-	// still computed at runtime from these plus whatever the peer
-	// advertises, so this isn't a hardcoded shortcut -- see
-	// (*LinkMonitor).negotiatedIntervals.
 	defaultDesiredMinTX  = 200 * time.Millisecond
 	defaultRequiredMinRX = 200 * time.Millisecond
 	defaultDetectMult    = 3
@@ -146,7 +84,6 @@ func (p *livenessPacket) encode() []byte {
 	buf[2] = byte(p.State)
 	buf[3] = p.DetectMult
 	binary.BigEndian.PutUint16(buf[4:6], livenessV1Size)
-	// buf[6:8] reserved, left zero
 	binary.BigEndian.PutUint32(buf[8:12], p.MyDiscriminator)
 	binary.BigEndian.PutUint32(buf[12:16], p.YourDiscriminator)
 	binary.BigEndian.PutUint32(buf[16:20], uint32(p.DesiredMinTX/time.Microsecond))
@@ -154,10 +91,6 @@ func (p *livenessPacket) encode() []byte {
 	return buf
 }
 
-// decodeLivenessPacket assumes the caller has already used the Vers
-// byte to route here and the Length field to trim elem.packet to the
-// right size (see punt.go's proto=1 dispatch) -- payload is expected
-// to be exactly livenessV1Size bytes.
 func decodeLivenessPacket(payload []byte) (livenessPacket, bool) {
 	if len(payload) < livenessV1Size {
 		return livenessPacket{}, false
@@ -173,19 +106,15 @@ func decodeLivenessPacket(payload []byte) (livenessPacket, bool) {
 	}, true
 }
 
-// LinkMonitor is one BFD-like session, owned by exactly one Link (i.e.
-// one [[link]]). State is guarded by a mutex rather than atomics since
-// transitions touch several fields together and happen rarely relative
-// to the data path (every txInterval, not per packet).
 type LinkMonitor struct {
 	link *Link
 
 	mu                  sync.Mutex
 	state               linkState
-	stateSince          time.Time // when state last changed (introspect.go)
-	diag                diag      // last diag associated with state, per transitionTo -- this is what actually goes out on the wire, see sendPacket
+	stateSince          time.Time
+	diag                diag
 	localDiscriminator  uint32
-	remoteDiscriminator uint32 // 0 == not yet learned
+	remoteDiscriminator uint32
 	remoteDesiredMinTX  time.Duration
 	remoteRequiredMinRX time.Duration
 
@@ -193,17 +122,12 @@ type LinkMonitor struct {
 	stopCh      chan struct{}
 	wg          sync.WaitGroup
 
-	// onStateChange, if set, is called (with m.mu released) on every
-	// state transition. This is the push side of the query surface
-	// mentioned in the type doc -- path-vector routing (pathvector.go)
-	// is the intended (and, as of this doc, only) consumer, wired up in
-	// main.go before any session starts.
 	onStateChange func(link *Link, next linkState)
 }
 
 func newLinkMonitor(link *Link) *LinkMonitor {
 	var disc uint32
-	for disc == 0 { // 0 means "not yet learned" on the wire (RFC 5880 6.8.1)
+	for disc == 0 {
 		var discBuf [4]byte
 		_, _ = rand.Read(discBuf[:])
 		disc = binary.BigEndian.Uint32(discBuf[:])
@@ -216,9 +140,6 @@ func newLinkMonitor(link *Link) *LinkMonitor {
 	}
 }
 
-// IsAlive reports whether this link's BFD-like session is Up. Path-
-// vector routing (pathvector.go) is the intended consumer, both via
-// this pull API and the onStateChange push callback below.
 func (m *LinkMonitor) IsAlive() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -231,18 +152,12 @@ func (m *LinkMonitor) State() linkState {
 	return m.state
 }
 
-// SetOnStateChange wires the callback invoked on every transition. Must
-// be called before Start() to avoid missing an early transition -- see
-// main.go, which wires this for every link before any session starts.
 func (m *LinkMonitor) SetOnStateChange(fn func(link *Link, next linkState)) {
 	m.mu.Lock()
 	m.onStateChange = fn
 	m.mu.Unlock()
 }
 
-// Start begins sending periodic liveness packets and arms the
-// detection timer. Restartable: each data plane session Starts every
-// link's monitor afresh (in the Down state) and Stops it when the session ends.
 func (m *LinkMonitor) Start() {
 	m.mu.Lock()
 	m.state = linkStateDown
@@ -253,20 +168,11 @@ func (m *LinkMonitor) Start() {
 	m.detectTimer = timer
 	m.mu.Unlock()
 
-	// The loops get their own copies: Stop() clears m.stopCh, and a nil
-	// channel in a select would never fire.
 	m.wg.Add(2)
 	go m.sendLoop(stop)
 	go m.detectLoop(stop, timer)
 }
 
-// AdminDown sends one final AdminDown-state packet before the session
-// stops, so the peer reacts immediately instead of waiting out its
-// detection timer -- and, per RFC 5880, so the peer knows this is a
-// deliberate shutdown rather than a lost connection, and doesn't
-// respond to it as though it were the start of a fresh bootstrap
-// handshake (see this file's top comment and handlePacket). Call before
-// Stop(), while the peer's send path is still up.
 func (m *LinkMonitor) AdminDown() {
 	m.transitionTo(linkStateAdminDown, diagAdminDown)
 	m.sendPacket()
@@ -279,7 +185,7 @@ func (m *LinkMonitor) Stop() {
 		return
 	}
 	close(m.stopCh)
-	m.stopCh = nil // so a second Stop is a no-op rather than a double close
+	m.stopCh = nil
 	m.detectTimer.Stop()
 	m.mu.Unlock()
 	m.wg.Wait()
@@ -307,9 +213,6 @@ func (m *LinkMonitor) detectLoop(stop <-chan struct{}, timer *time.Timer) {
 			return
 		case <-timer.C:
 			m.transitionTo(linkStateDown, diagDetectTimeout)
-			// re-arm so a later packet can bring the session back up
-			// (transitionTo doesn't touch the timer itself -- see its
-			// comment).
 			m.mu.Lock()
 			timer.Reset(defaultRequiredMinRX * defaultDetectMult)
 			m.mu.Unlock()
@@ -330,13 +233,9 @@ func (m *LinkMonitor) sendPacket() {
 	}
 	m.mu.Unlock()
 
-	// link-local: sent on this link only, never forwarded. If the data
-	// plane isn't attached the packet is simply lost, like any other.
 	m.link.send(livenessProto, linkLocalTTL, pkt.encode())
 }
 
-// handlePacket runs the receive side of the state machine. Called from
-// punt.go's proto=1 dispatch with the already Length-trimmed payload.
 func (m *LinkMonitor) handlePacket(payload []byte) {
 	pkt, ok := decodeLivenessPacket(payload)
 	if !ok {
@@ -346,17 +245,9 @@ func (m *LinkMonitor) handlePacket(payload []byte) {
 
 	m.mu.Lock()
 	if m.stopCh == nil {
-		// Not running (no data plane session yet, or already torn down): a
-		// late punt from before/after must not touch the stopped timer.
 		m.mu.Unlock()
 		return
 	}
-	// RFC 5880 6.8.6: a packet addressed to a different session of ours (a
-	// peer still talking to our previous incarnation) is discarded, as is a
-	// packet claiming Init/Up without having learned our discriminator.
-	// Without this a peer that never noticed us restarting could carry its
-	// old session straight into our new one, and neither side would see
-	// the flap (so path-vector would never resync).
 	if pkt.MyDiscriminator == 0 ||
 		(pkt.YourDiscriminator != 0 && pkt.YourDiscriminator != m.localDiscriminator) ||
 		(pkt.YourDiscriminator == 0 && pkt.State != linkStateDown && pkt.State != linkStateAdminDown) {
@@ -366,10 +257,6 @@ func (m *LinkMonitor) handlePacket(payload []byte) {
 	m.remoteDiscriminator = pkt.MyDiscriminator
 	m.remoteDesiredMinTX = pkt.DesiredMinTX
 	m.remoteRequiredMinRX = pkt.RequiredMinRX
-	// Detection timeout is driven by what the *remote* says it sends
-	// at, per RFC 5880 6.8.4 -- not our own guess -- so a slow peer
-	// gets a correspondingly relaxed timeout instead of flapping
-	// against a locally-assumed interval.
 	timeout := pkt.DesiredMinTX * time.Duration(pkt.DetectMult)
 	if timeout <= 0 {
 		timeout = defaultRequiredMinRX * defaultDetectMult
@@ -378,13 +265,6 @@ func (m *LinkMonitor) handlePacket(payload []byte) {
 	m.mu.Unlock()
 
 	if pkt.State == linkStateAdminDown {
-		// RFC 5880 6.8.6: a received AdminDown always forces us to
-		// Down, regardless of our current state -- but unlike a plain
-		// received Down, it must NOT be treated as the start of a
-		// normal bootstrap handshake (no Down->Init here). The remote
-		// has told us, explicitly, that it isn't trying to establish a
-		// session right now, so responding by trying to initiate one
-		// would just be wrong.
 		m.transitionTo(linkStateDown, diagNeighborSignaledDown)
 		return
 	}
@@ -393,36 +273,14 @@ func (m *LinkMonitor) handlePacket(payload []byte) {
 	case linkStateDown, linkStateAdminDown:
 		switch pkt.State {
 		case linkStateDown:
-			// Normal bootstrap: both sides start Down and are
-			// *supposed* to see the other's Down before advancing --
-			// this is "peer is also just starting up", not an
-			// instruction to go/stay Down. This is the case an
-			// earlier version of this file got wrong (see this file's
-			// top comment) by forcing Down here unconditionally,
-			// which meant two fresh sessions could never leave Down.
 			m.transitionTo(linkStateInit, diagNone)
 		case linkStateInit:
-			// The peer has confirmed (via Init, carrying our
-			// discriminator, checked above) that it has heard from
-			// this session of ours.
 			m.transitionTo(linkStateUp, diagNone)
-			// A received Up while we're Down is ignored (RFC 5880
-			// 6.8.6): the peer is Up with some other session of ours
-			// and must first see our Down and drop back itself.
 		}
 	case linkStateInit:
 		if pkt.State == linkStateInit || pkt.State == linkStateUp {
-			// The core anti-footgun rule: a received packet alone
-			// never jumps straight to Up from Down (see the Down case
-			// above); it's this Init->Up step, reached only after
-			// we've already seen the peer at least once, that
-			// actually confirms bidirectional liveness.
 			m.transitionTo(linkStateUp, diagNone)
 		}
-		// pkt.State == Down while we're Init: no transition, keep
-		// waiting -- per RFC 6.8.6, only a received AdminDown (handled
-		// above) or our own local detection timeout can knock us back
-		// down from here.
 	case linkStateUp:
 		if pkt.State == linkStateDown {
 			m.transitionTo(linkStateDown, diagNeighborSignaledDown)
@@ -443,10 +301,6 @@ func (m *LinkMonitor) transitionTo(next linkState, d diag) {
 	cb := m.onStateChange
 	m.mu.Unlock()
 
-	// This is the query surface's log-on-transition half (IsAlive is
-	// the other half) -- per earlier discussion, this is deliberately
-	// the only consumer for now; path-vector routing wires up to
-	// IsAlive/onStateChange instead of this log line.
 	m.link.node.log.Verbosef("%v - liveness: %v -> %v (diag=%d)", m.link, prev, next, d)
 
 	if cb != nil {

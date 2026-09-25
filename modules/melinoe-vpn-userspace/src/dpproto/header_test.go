@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// The C header is the specification a kernel module is written from; this
-// test keeps it and the Go implementation from drifting apart. Every constant
-// in the header must exist here with the same value, and vice versa.
 func TestHeaderMatchesGo(t *testing.T) {
 	src, err := os.ReadFile("melnode_genl.h")
 	if err != nil {
@@ -75,7 +72,6 @@ func TestHeaderMatchesGo(t *testing.T) {
 			t.Errorf("%s is in Go but missing from the header", name)
 		}
 	}
-	// Family name and message type namespace.
 	if !regexp.MustCompile(`MELNODE_GENL_NAME\s+"` + FamilyName + `"`).Match(src) {
 		t.Error("family name differs between header and Go")
 	}

@@ -28,9 +28,6 @@ LOCAL_TCP_HOST = "127.0.0.1"
 TIMEOUT = 5.0
 
 
-# ---- transport --------------------------------------------------------------
-
-
 class UnixHTTPConnection(http.client.HTTPConnection):
     def __init__(self, path, timeout):
         super().__init__("localhost", timeout=timeout)
@@ -52,15 +49,13 @@ def split_target(target):
     if target.count(":") == 1:
         host, port = target.split(":")
         return host, int(port)
-    return target, DEFAULT_PORT  # hostname/IPv4 without port, or bare IPv6
+    return target, DEFAULT_PORT
 
 
 class Client:
     def __init__(self, target, socket_path):
         self.target = target
         self.socket_path = socket_path
-        # Set once the local control socket has refused us (no permission):
-        # every later request goes straight to the local TCP API.
         self.tcp_fallback = False
 
     def _tcp_target(self):
@@ -90,14 +85,10 @@ class Client:
             try:
                 return self._request(UnixHTTPConnection(self.socket_path, TIMEOUT), path)
             except PermissionError:
-                # The control socket is only writable by root, but the local
-                # TCP introspection API serves the same read-only data.
                 self.tcp_fallback = True
         host, port = self._tcp_target()
         return self._request(http.client.HTTPConnection(host, port, timeout=TIMEOUT), path)
 
-
-# ---- formatting helpers -----------------------------------------------------
 
 USE_COLOR = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 
@@ -152,9 +143,6 @@ def table(rows, headers, aligns=None):
     return "\n".join(out)
 
 
-# ---- links ------------------------------------------------------------------
-
-
 def cmd_links(client):
     summary = client.get("/summary")
     links = client.get("/links")
@@ -188,9 +176,6 @@ def cmd_links(client):
     )
 
 
-# ---- routes -----------------------------------------------------------------
-
-
 def prefix_key(p):
     try:
         net = ipaddress.ip_network(p, strict=False)
@@ -205,7 +190,6 @@ def cmd_routes(client, show_all):
     routes = client.get("/routes")
     prefixes = client.get("/prefixes")
 
-    # dest node -> its paths (best first, as the daemon sorts them)
     paths_to = {r["dest"]: r["paths"] for r in routes}
 
     def path_row(net, owner, path, is_best, also=""):
@@ -250,8 +234,6 @@ def cmd_routes(client, show_all):
             alts = [x for x in paths_to.get(owner, []) if x is not best]
 
         if show_all:
-            # Every other path we know to the winner, then paths to the other
-            # claimants (valid, but not what we forward on).
             extra = [(owner, x) for x in alts]
             for c in claimants:
                 if c != owner and c != local:
@@ -263,7 +245,6 @@ def cmd_routes(client, show_all):
         elif alts:
             rows[-1][6] = f"+{len(alts)}"
 
-    # Reachable nodes that own no advertised prefix at all.
     for dest in sorted(paths_to):
         if dest not in claimed_dests and paths_to[dest]:
             best = next((x for x in paths_to[dest] if x["best"]), paths_to[dest][0])
@@ -276,16 +257,13 @@ def cmd_routes(client, show_all):
     print()
     headers = ["", "Network", "Owner", "Next Hop", "Hops", "Path", "Alts", "Also claimed by"]
     aligns = ["<", "<", "<", "<", ">", "<", ">", "<"]
-    if show_all:  # alternates are listed inline instead of counted
+    if show_all:
         rows = [r[:6] + r[7:] for r in rows]
         headers = headers[:6] + headers[7:]
         aligns = aligns[:6] + aligns[7:]
     print(table(rows, headers, aligns))
     print()
     print(f"{n_prefixes} prefixes, {n_paths} paths shown")
-
-
-# ---- main -------------------------------------------------------------------
 
 
 def main():

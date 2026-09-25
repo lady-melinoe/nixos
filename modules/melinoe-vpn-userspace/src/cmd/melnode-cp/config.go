@@ -11,87 +11,37 @@ import (
 
 type LinkConfig struct {
 	PeerID       int    `toml:"peerid"`
-	Endpoint     string `toml:"endpoint"` // "" means listen-only (no dial target)
+	Endpoint     string `toml:"endpoint"`
 	PeerPubkey   string `toml:"peerPubkey"`
-	PrependCount int    `toml:"prependCount"` // AS-prepending for path-vector traffic engineering, see pathvector.go's forwardPath; 0 (default) is plain shortest-path
+	PrependCount int    `toml:"prependCount"`
 }
 
-// Config is the control plane's configuration -- all of it. The data plane
-// has no config file: it is started with just a socket path and is configured
-// entirely from here on attach (dpproto's DeviceSet for the device itself,
-// then links, tuns and routes).
 type Config struct {
 	LocalID int `toml:"localID"`
 
-	// DataplaneSocket is the data plane's control socket: where this process
-	// attaches, and (when DataplaneCommand is set) what it starts the data
-	// plane listening on. Ignored (and not required) when KernelDataplane is
-	// set.
 	DataplaneSocket string `toml:"dataplaneSocket"`
 
-	// KernelDataplane, if true, attaches to the melnode kernel module
-	// (modules/melinoe-vpn-kernelspace) over generic netlink instead of dialing
-	// DataplaneSocket. Mutually exclusive with DataplaneCommand/
-	// DataplaneSocket: a kernel data plane is not a process this one starts,
-	// adopts, or asks to exit (dpproto.Client.Quit is a no-op for it).
 	KernelDataplane bool `toml:"kernelDataplane"`
 
-	// DataplaneCommand, if set, is the data plane's argv (e.g.
-	// ["/path/to/melnode-dp"]); this process then owns getting it running:
-	// on attach it adopts a data plane that is already there, or else starts
-	// one (with `-socket DataplaneSocket` appended) detached from itself, so
-	// the data plane keeps forwarding if this process restarts. An adopted
-	// data plane is replaced if it isn't running the configured binary, or
-	// was configured differently. Unset means the data plane is supervised
-	// elsewhere (e.g. its own systemd unit): it is never started, only
-	// attached to.
 	DataplaneCommand []string `toml:"dataplaneCommand"`
 
-	// The data plane's device settings, pushed to it on attach.
-	LocalPort int `toml:"localPort"` // UDP port every node listens on and every link dials
-	// LocalPrivkeyPath is a file holding this node's base64 Curve25519
-	// private key (surrounding whitespace ignored); LocalPrivkey is the same
-	// key inline. Exactly one must be set. The key is sent to the data plane
-	// over its socket, never written anywhere.
+	LocalPort        int    `toml:"localPort"`
 	LocalPrivkeyPath string `toml:"localPrivkeyPath"`
 	LocalPrivkey     string `toml:"localPrivkey"`
-	MTU              int    `toml:"mtu"`    // of every tun; the default is WireGuard's 1420 minus melnode's 4-byte routing header
-	Fwmark           int    `toml:"fwmark"` // SO_MARK on the data plane's UDP socket; 0 (default) means unset
+	MTU              int    `toml:"mtu"`
+	Fwmark           int    `toml:"fwmark"`
 
-	// TunPrefix names the tuns: "<tunPrefix><peerid>" (e.g. "node-4").
 	TunPrefix string `toml:"tunPrefix"`
 
-	// TunCreateHookBin / TunDestroyHookBin, if set, are executables run as
-	// `<bin> <peerid> <ifname>` after a peer tun is created and brought
-	// up, and after it is deleted. "" disables. Hook failures are logged
-	// but never fatal.
 	TunCreateHookBin  string `toml:"tunCreateHookBin"`
 	TunDestroyHookBin string `toml:"tunDestroyHookBin"`
 
-	// IdentityPrefix is this node's own always-advertised prefix (a
-	// single /32 identity address, e.g. the node's own loopback --
-	// mirrors "melinoe"'s FRR `network <loopback>/32` statement), also
-	// assigned as the address of every tun. "" == none. Everything else
-	// this node advertises comes in dynamically via ControlSocket, from an
-	// external process.
 	IdentityPrefix string `toml:"identityPrefix"`
 
-	// ControlSocket, if set, is a filesystem path where the local HTTP
-	// control API (controlapi.go) listens, used to advertise/withdraw
-	// prefixes at runtime. "" (default) disables it entirely.
 	ControlSocket string `toml:"controlSocket"`
 
-	// IntrospectListen, if set, is a TCP listen address (e.g. ":60198")
-	// for a READ-ONLY HTTP API (introspectapi.go): the same "show ..."
-	// endpoints as the control socket, but never /advertise or /withdraw,
-	// and served from a snapshot rebuilt every IntrospectIntervalMs.
-	// Unauthenticated -- restrict reachability with the host firewall.
-	// "" (default) disables it.
-	IntrospectListen string `toml:"introspectListen"`
-	// IntrospectIntervalMs is how often the TCP API's snapshot is rebuilt
-	// (introspectapi.go): the most out of date its answers can be, and
-	// how often it reads the data plane whether or not anyone asks.
-	IntrospectIntervalMs int `toml:"introspectIntervalMs"`
+	IntrospectListen     string `toml:"introspectListen"`
+	IntrospectIntervalMs int    `toml:"introspectIntervalMs"`
 
 	Links []LinkConfig `toml:"link"`
 }
@@ -124,7 +74,6 @@ func parsePubKeyBase64(s string) ([32]byte, error) {
 	return key, nil
 }
 
-// privateKey returns the configured static private key.
 func (c *Config) privateKey() ([32]byte, error) {
 	if c.LocalPrivkeyPath == "" {
 		return parsePubKeyBase64(c.LocalPrivkey)
@@ -201,7 +150,6 @@ func (c *Config) validate() error {
 			return fmt.Errorf("[[link]] peerid %d prependCount must be >= 0, got %d", l.PeerID, l.PrependCount)
 		}
 		if l.PrependCount > pvMaxPathLen {
-			// Path lengths are a single byte on the wire (pathvector.go).
 			return fmt.Errorf("[[link]] peerid %d prependCount must be <= %d, got %d", l.PeerID, pvMaxPathLen, l.PrependCount)
 		}
 	}

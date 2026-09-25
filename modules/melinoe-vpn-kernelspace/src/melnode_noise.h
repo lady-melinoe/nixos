@@ -114,4 +114,4 @@ bool melnode_noise_received_with_keypair(struct melnode_keypairs *keypairs);
 void melnode_noise_handshake_clear(struct melnode_handshake *handshake);
 void melnode_noise_keypairs_clear(struct melnode_keypairs *keypairs);
 
-#endif /* _MELNODE_NOISE_H */
+#endif

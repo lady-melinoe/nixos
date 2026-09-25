@@ -12,78 +12,38 @@ import (
 	"melnode/dpproto"
 )
 
-// reconcile.go: level-triggered sync of the host's tuns and kernel routes
-// to what path-vector currently wants.
-//
-// Path-vector (pathvector.go) owns the *desired* state: pv.best (which dests
-// are reachable, via which link) and pv.prefixOwner (which peerid owns each
-// advertised prefix). Its event handlers only update that state in memory
-// and then Kick() the reconciler; they never talk to the data plane, run
-// hooks or touch netlink, so they can't stall the goroutines they run on
-// (which also process link-liveness packets).
-//
-// The reconciler is the only thing that touches the data plane and the host.
-// Each pass it compares desired with actual and fixes the difference in a
-// fixed order:
-//
-//  1. ask the data plane to create (and, once configured, start) a tun for
-//     every reachable dest that lacks one
-//  2. program the data plane's dst -> next-hop table to match
-//  3. ask the data plane to destroy tuns whose dest is no longer reachable
-//  4. install/repoint kernel routes for owned prefixes (only once the
-//     owner's tun exists), and remove proto-198 routes nobody wants
-//
-// Because it works from the difference and not from a stream of change
-// events, ordering is fixed by construction, a failed step is retried
-// (with backoff) instead of being forgotten, and drift caused by anything
-// else (a flushed table, a tun that vanished) heals on the next pass.
-
 const (
-	reconcileInterval   = 30 * time.Second // safety-net full pass
+	reconcileInterval   = 30 * time.Second
 	reconcileBackoffMin = time.Second
 	reconcileBackoffMax = 30 * time.Second
 
-	// rtTableMain is the main routing table. melnode-helper installs its own
-	// proto-198 routes in per-peer tables; those must never be touched here.
 	rtTableMain = 254
 )
 
-// hostOps is everything the reconciler does to the data plane and the machine.
-// realHost is the implementation; tests substitute a fake.
 type hostOps interface {
-	Ready() bool                                              // is a data plane attached? (if not, there is nothing to reconcile)
-	Tuns() ([]uint32, error)                                  // peerids that currently have a tun
-	TunName(peerID uint32) (string, bool)                     // interface name of that peer's tun
-	EnsureTun(peerID uint32) error                            // make the tun exist, configured (once per session) and started; cheap when it already is
-	DestroyTun(peerID uint32)                                 // close and remove the tun
-	ProgramRoutes(routes map[uint32]uint32, prune bool) error // add/repoint the data plane's next hops to match routes; with prune, also remove any others
-	ListRoutes() (map[pvPrefix]string, error)                 // our proto-198 main-table routes: prefix -> ifname
+	Ready() bool
+	Tuns() ([]uint32, error)
+	TunName(peerID uint32) (string, bool)
+	EnsureTun(peerID uint32) error
+	DestroyTun(peerID uint32)
+	ProgramRoutes(routes map[uint32]uint32, prune bool) error
+	ListRoutes() (map[pvPrefix]string, error)
 	ReplaceRoute(p pvPrefix, ifname string) error
 	DelRoute(p pvPrefix) error
 }
 
-// attachHold is how long after attaching to a data plane the reconciler
-// refrains from *removing* anything it inherited (tuns, next hops, kernel
-// prefix routes). On a control plane restart the data plane has been
-// forwarding all along, but path-vector starts empty and needs a moment to
-// re-learn the mesh; without this, the empty initial state would tear down
-// every tun only to recreate it a second later. Additions and repoints are
-// never held back. After the hold, anything still not wanted is removed.
 const attachHold = 10 * time.Second
 
-// reconciler state embedded in Router.
 type reconcilerState struct {
 	host            hostOps
-	desiredPrefixes func() map[pvPrefix]uint32 // set by PathVector
+	desiredPrefixes func() map[pvPrefix]uint32
 	kickCh          chan struct{}
-	reconMu         sync.Mutex   // one pass at a time
-	holdUntil       atomic.Int64 // unix nanos; removals are deferred until then, see attachHold
+	reconMu         sync.Mutex
+	holdUntil       atomic.Int64
 }
 
-// holding reports whether removals are still being deferred.
 func (s *reconcilerState) holding() bool { return time.Now().UnixNano() < s.holdUntil.Load() }
 
-// startHold defers removals for attachHold and arranges a pass when it ends.
 func (r *Router) startHold() {
 	r.holdUntil.Store(time.Now().Add(attachHold).UnixNano())
 	time.AfterFunc(attachHold+50*time.Millisecond, r.Kick)
@@ -94,7 +54,6 @@ func (s *reconcilerState) init(r *Router) {
 	s.kickCh = make(chan struct{}, 1)
 }
 
-// Kick asks for a reconcile pass soon. Never blocks; kicks coalesce.
 func (r *Router) Kick() {
 	select {
 	case r.kickCh <- struct{}{}:
@@ -102,10 +61,6 @@ func (r *Router) Kick() {
 	}
 }
 
-// SetRoutes replaces the dst-peerid -> next-hop table (what LookupRoute
-// reads on the data path) with routes, wholesale, and kicks the reconciler.
-// Callers derive routes from a fresh snapshot of path-vector's state under
-// their own lock, so the newest call always carries the newest state.
 func (r *Router) SetRoutes(routes map[uint32]uint32) {
 	r.mu.Lock()
 	old := r.routeTable
@@ -127,7 +82,6 @@ func (r *Router) SetRoutes(routes map[uint32]uint32) {
 	r.Kick()
 }
 
-// StartReconciler runs the reconcile loop until stop is closed.
 func (r *Router) StartReconciler(stop <-chan struct{}, wg *sync.WaitGroup) {
 	wg.Add(1)
 	go func() {
@@ -136,7 +90,7 @@ func (r *Router) StartReconciler(stop <-chan struct{}, wg *sync.WaitGroup) {
 		defer tick.Stop()
 		backoff := reconcileBackoffMin
 		var retry <-chan time.Time
-		r.Kick() // initial pass
+		r.Kick()
 		for {
 			select {
 			case <-stop:
@@ -158,15 +112,11 @@ func (r *Router) StartReconciler(stop <-chan struct{}, wg *sync.WaitGroup) {
 	}()
 }
 
-// reconcileOnce makes one pass and reports whether something couldn't be
-// fixed (so the caller should retry after a delay).
 func (r *Router) reconcileOnce() (retry bool) {
 	r.reconMu.Lock()
 	defer r.reconMu.Unlock()
 	h := r.host
 	if !h.Ready() {
-		// No data plane attached: nothing to reconcile against. Attaching
-		// kicks us (Router.attach), so there's no need to retry on a timer.
 		return false
 	}
 
@@ -180,10 +130,6 @@ func (r *Router) reconcileOnce() (retry bool) {
 	r.mu.RUnlock()
 	sort.Slice(wantDests, func(i, j int) bool { return wantDests[i] < wantDests[j] })
 
-	// 1. tuns for reachable dests. EnsureTun runs for existing tuns too: one
-	// adopted from before this session (control plane restart, or a kernel
-	// data plane that outlived a lost session) still needs its create hook
-	// re-run, and one left stopped (a failed TunStart) still needs starting.
 	haveTun := make(map[uint32]bool)
 	tuns, err := h.Tuns()
 	if err != nil {
@@ -200,7 +146,6 @@ func (r *Router) reconcileOnce() (retry bool) {
 		}
 	}
 
-	// 2. the data plane's next-hop table
 	r.mu.RLock()
 	routes := make(map[uint32]uint32, len(r.routeTable))
 	for d, nh := range r.routeTable {
@@ -213,14 +158,12 @@ func (r *Router) reconcileOnce() (retry bool) {
 		retry = true
 	}
 
-	// 3. tuns for dests that are gone
 	for id := range haveTun {
 		if !inTable[id] && !hold {
 			h.DestroyTun(id)
 		}
 	}
 
-	// 4. prefix routes
 	var want map[pvPrefix]uint32
 	if r.desiredPrefixes != nil {
 		want = r.desiredPrefixes()
@@ -232,8 +175,6 @@ func (r *Router) reconcileOnce() (retry bool) {
 	}
 	for p, owner := range want {
 		if owner == r.localID {
-			// Locally owned: whatever attached it has its own route. Drop
-			// any leftover we installed for a previous remote owner.
 			if _, ok := have[p]; ok {
 				if err := h.DelRoute(p); err != nil {
 					r.node.log.Errorf("router: removing stale kernel route %v: %v", p, err)
@@ -246,7 +187,7 @@ func (r *Router) reconcileOnce() (retry bool) {
 		}
 		name, ok := h.TunName(owner)
 		if !ok {
-			retry = true // owner's tun isn't up yet (already reported above)
+			retry = true
 			continue
 		}
 		if have[p] == name {
@@ -273,11 +214,8 @@ func (r *Router) reconcileOnce() (retry bool) {
 	return retry
 }
 
-// errNoDataplane is returned by realHost operations while no data plane
-// session is attached.
 var errNoDataplane = errors.New("no data plane attached")
 
-// realHost is hostOps backed by the data plane (over dpproto) and netlink.
 type realHost struct{ r *Router }
 
 func (h *realHost) client() (dpproto.Datapath, error) {
@@ -307,7 +245,7 @@ func (h *realHost) Tuns() ([]uint32, error) {
 		ids = append(ids, t.PeerID)
 	}
 	h.r.hostMu.Lock()
-	h.r.tunNames = names // the data plane is the source of truth for what exists
+	h.r.tunNames = names
 	h.r.started = started
 	h.r.hostMu.Unlock()
 	return ids, nil
@@ -320,23 +258,13 @@ func (h *realHost) TunName(peerID uint32) (string, bool) {
 	return n, ok
 }
 
-// EnsureTun makes dst's tun exist, be configured and carry traffic:
-//
-//  1. the data plane creates it (idempotent) but leaves it stopped;
-//  2. we bring the interface up, give it the node's identity address and run
-//     the create hook -- once per data plane session, including for tuns we
-//     find already existing (a control plane restart adopts them and re-runs
-//     the hook, which is what repopulates state flushed in the meantime,
-//     e.g. by an nftables reload);
-//  3. only then does the data plane start moving traffic through it, so
-//     nothing flows before the interface is fully set up.
 func (h *realHost) EnsureTun(peerID uint32) error {
 	h.r.hostMu.Lock()
 	_, exists := h.r.tunNames[peerID]
 	ready := exists && h.r.hooked[peerID] && h.r.started[peerID]
 	h.r.hostMu.Unlock()
 	if ready {
-		return nil // nothing to do: no data plane round trip
+		return nil
 	}
 
 	cl, err := h.client()
@@ -383,15 +311,11 @@ func (h *realHost) DestroyTun(peerID uint32) {
 			return
 		}
 	}
-	// Runs after the interface is gone, so it can never race the create hook.
 	if hadName {
 		h.r.runTunHook("destroy", h.r.tunDestroyHookBin, peerID, name)
 	}
 }
 
-// ProgramRoutes diffs the data plane's next-hop table against want and
-// applies the difference: add, repoint (no tun teardown needed) and, if prune,
-// remove.
 func (h *realHost) ProgramRoutes(want map[uint32]uint32, prune bool) error {
 	cl, err := h.client()
 	if err != nil {

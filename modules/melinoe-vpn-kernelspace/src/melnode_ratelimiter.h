@@ -8,4 +8,4 @@ int melnode_ratelimiter_init(void);
 void melnode_ratelimiter_uninit(void);
 bool melnode_ratelimiter_allow(const void *from_addr, int from_len);
 
-#endif /* _MELNODE_RATELIMITER_H */
+#endif

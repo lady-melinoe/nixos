@@ -11,4 +11,4 @@ bool melnode_replay_check(struct melnode_replay_counter *counter, u64 their_coun
 void melnode_transport_encrypt(u8 *dst, const u8 *plain, size_t plain_len,
 			       const u8 key[MELNODE_NOISE_SYMMETRIC_KEY_LEN], u64 counter);
 
-#endif /* _MELNODE_TRANSPORT_H */
+#endif

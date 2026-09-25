@@ -17,57 +17,28 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-/* Outbound flow
- *
- * 1. TUN queue
- * 2. Routing (sequential)
- * 3. Nonce assignment (sequential)
- * 4. Encryption (parallel)
- * 5. Transmission (sequential)
- *
- * The functions in this file occur (roughly) in the order in
- * which the packets are processed.
- *
- * Locking, Producers and Consumers
- *
- * The order of packets (per peer) must be maintained,
- * but encryption of packets happen out-of-order:
- *
- * The sequential consumers will attempt to take the lock,
- * workers release lock when they have completed work (encryption) on the packet.
- *
- * If the element is inserted into the "encryption queue",
- * the content is preceded by enough "junk" to contain the transport header
- * (to allow the construction of transport messages in-place)
- */
-
 type QueueOutboundElement struct {
-	buffer  *[MaxMessageSize]byte // slice holding the packet data
-	packet  []byte                // slice of "buffer" (always!)
-	nonce   uint64                // nonce for encryption
-	keypair *Keypair              // keypair for encryption
-	peer    *Peer                 // related peer
+	buffer  *[MaxMessageSize]byte
+	packet  []byte
+	nonce   uint64
+	keypair *Keypair
+	peer    *Peer
 }
 
 type QueueOutboundElementsContainer struct {
 	sync.Mutex
 	elems     []*QueueOutboundElement
-	isControl bool // liveness (proto=1) / path-vector (proto=2) vs routed data (proto=0) -- see StagePackets/drainStaged and PROJECT_STATE.md's backpressure section
-	forwarded bool // multi-hop forward (receive.go) rather than tun-originated: a full queue counts as rx_queue_full, like the kernel's deliver_or_forward
+	isControl bool
+	forwarded bool
 }
 
 func (device *Device) NewOutboundElement() *QueueOutboundElement {
 	elem := device.GetOutboundElement()
 	elem.buffer = device.GetMessageBuffer()
 	elem.nonce = 0
-	// keypair and peer were cleared (if necessary) by clearPointers.
 	return elem
 }
 
-// clearPointers clears elem fields that contain pointers.
-// This makes the garbage collector's life easier and
-// avoids accidentally keeping other objects around unnecessarily.
-// It also reduces the possible collateral damage from use-after-free bugs.
 func (elem *QueueOutboundElement) clearPointers() {
 	elem.buffer = nil
 	elem.packet = nil
@@ -75,8 +46,6 @@ func (elem *QueueOutboundElement) clearPointers() {
 	elem.peer = nil
 }
 
-/* Queues a keepalive if no packets are queued for peer
- */
 func (peer *Peer) SendKeepalive() {
 	if len(peer.queue.staged) == 0 && peer.isRunning.Load() {
 		elem := peer.device.NewOutboundElement()
@@ -98,13 +67,9 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 		peer.timers.handshakeAttempts.Store(0)
 	}
 	if !peer.isRunning.Load() {
-		return nil // LinkDel'd: a straggler must not start a new handshake
+		return nil
 	}
 
-	// Nowhere to send it (listen-only link we haven't heard from): do
-	// nothing, like the kernel's send_initiation -- no rate-limit stamp, no
-	// retry timer, no error logged. The first packet from the peer sets the
-	// endpoint and the next send attempt initiates.
 	if !peer.hasEndpoint() {
 		return nil
 	}
@@ -171,7 +136,6 @@ func (peer *Peer) SendHandshakeResponse() error {
 	peer.timersAnyAuthenticatedPacketTraversal()
 	peer.timersAnyAuthenticatedPacketSent()
 
-	// TODO: allocation could be avoided
 	err = peer.SendBuffers([][]byte{packet})
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to send handshake response: %v", peer, err)
@@ -180,7 +144,6 @@ func (peer *Peer) SendHandshakeResponse() error {
 }
 
 func (device *Device) SendHandshakeCookie(initiatingElem *QueueHandshakeElement) error {
-
 	sender := binary.LittleEndian.Uint32(initiatingElem.packet[4:8])
 	reply, err := device.cookieChecker.CreateReply(initiatingElem.packet, sender, initiatingElem.endpoint.DstToBytes())
 	if err != nil {
@@ -190,7 +153,6 @@ func (device *Device) SendHandshakeCookie(initiatingElem *QueueHandshakeElement)
 
 	packet := make([]byte, MessageCookieReplySize)
 	_ = reply.marshal(packet)
-	// TODO: allocation could be avoided
 	device.net.bind.Send([][]byte{packet}, initiatingElem.endpoint)
 
 	return nil
@@ -207,18 +169,6 @@ func (peer *Peer) keepKeyFreshSending() {
 	}
 }
 
-// RoutineReadFromTUN is the read-side goroutine for one peer's TUN
-// interface -- melnode has N tuns (one per [[peer]] entry), so unlike
-// wireguard-go (exactly one device-wide tun), this is parameterized per
-// peer-tun and started once per [[peer]] from main.go, same as
-// router.go's old runTunReader did.
-//
-// The IP-awareness wireguard-go had here (an allowedips.Lookup keyed off
-// the tunneled IP packet's destination address) is replaced with
-// melnode's own header + routeTable: peerID is this tun's own peerid
-// (the packet's ultimate destination, per melnode's header semantics --
-// see PROJECT_STATE.md), so the only thing needed per read-round is
-// resolving peerID's next hop and stamping our header on.
 func (device *Device) RoutineReadFromTUN(peerID uint32, devTun tun.Device) {
 	defer func() {
 		device.queue.encryption.wg.Done()
@@ -231,10 +181,7 @@ func (device *Device) RoutineReadFromTUN(peerID uint32, devTun tun.Device) {
 		bufs      = make([][]byte, batchSize)
 		count     = 0
 		sizes     = make([]int, batchSize)
-		// Leave room for both the transport header (stamped later by
-		// RoutineEncryption) and our own 4-byte routing header in front
-		// of the tunneled IP packet.
-		offset = MessageTransportHeaderSize + headerSize
+		offset    = MessageTransportHeaderSize + headerSize
 	)
 
 	for i := range elems {
@@ -252,7 +199,6 @@ func (device *Device) RoutineReadFromTUN(peerID uint32, devTun tun.Device) {
 	}()
 
 	for {
-		// read packets
 		count, readErr = devTun.Read(bufs, sizes, offset)
 		if count > 0 {
 			elemsForPeer := device.GetOutboundElementsContainer()
@@ -264,15 +210,7 @@ func (device *Device) RoutineReadFromTUN(peerID uint32, devTun tun.Device) {
 				elem := elems[i]
 				buf := elem.buffer[:]
 
-				// Stamp our own 4-byte routing header (proto=0, our
-				// header semantics -- see PROJECT_STATE.md) right
-				// in front of the tunneled IP packet wireguard-go's own
-				// device.tun.device.Read just wrote at `offset`. src is
-				// always us; dst is this tun's own peerid -- this is the
-				// only place a fresh packet's header is ever stamped
-				// (intermediate hops just forward it unchanged, see
-				// router.go's forwardToNextHop).
-				buf[offset-headerSize+0] = 0 // proto 0: routed IP packet
+				buf[offset-headerSize+0] = 0
 				buf[offset-headerSize+1] = byte(device.localID)
 				buf[offset-headerSize+2] = byte(peerID)
 				buf[offset-headerSize+hdrOffTTL] = defaultTTL
@@ -289,14 +227,10 @@ func (device *Device) RoutineReadFromTUN(peerID uint32, devTun tun.Device) {
 				device.stats.txNoRoute.Add(uint64(len(elemsForPeer.elems)))
 				device.freeOutbound(elemsForPeer)
 			}
-
 		}
 
 		if readErr != nil {
 			if errors.Is(readErr, tun.ErrTooManySegments) {
-				// TODO: record stat for this
-				// This will happen if MSS is surprisingly small (< 576)
-				// coincident with reasonably high throughput.
 				continue
 			}
 			if !device.isClosed() {
@@ -309,20 +243,6 @@ func (device *Device) RoutineReadFromTUN(peerID uint32, devTun tun.Device) {
 	}
 }
 
-// StagePackets enqueues one round's worth of outbound packets, routing
-// control (liveness/path-vector, elems.isControl) and routed data into
-// entirely separate per-peer channels -- this separation, kept all the
-// way through to submit()/RoutineSequentialSender below, is what
-// actually gives control traffic priority: it's never sitting in the
-// same FIFO behind a backlog of data, so a full data queue can't delay
-// it structurally, regardless of how congested data gets.
-//
-// When a queue is full, the newest batch is tail-dropped (an earlier
-// version of this instead evicted the *oldest* already-staged batch --
-// see PROJECT_STATE.md's backpressure section for why this changed:
-// tail-drop is the standard behavior for a congested queue in both
-// typical network hardware and Linux's own default qdisc, and is what
-// was asked for here).
 func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {
 	ch := peer.queue.staged
 	if elems.isControl {
@@ -338,10 +258,6 @@ func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {
 	peer.device.dropQueueFull(elems)
 }
 
-// dropQueueFull tail-drops a whole container because a queue was at
-// capacity, counting it the way the kernel does: a forward that can't be
-// queued is rx_queue_full (deliver_or_forward), anything else tx_queue_full
-// (tun xmit).
 func (device *Device) dropQueueFull(elems *QueueOutboundElementsContainer) {
 	n := uint64(len(elems.elems))
 	if elems.forwarded {
@@ -352,7 +268,6 @@ func (device *Device) dropQueueFull(elems *QueueOutboundElementsContainer) {
 	device.freeOutbound(elems)
 }
 
-// freeOutbound returns a container and its elements' buffers to the pools.
 func (device *Device) freeOutbound(elems *QueueOutboundElementsContainer) {
 	for _, elem := range elems.elems {
 		device.PutMessageBuffer(elem.buffer)
@@ -361,71 +276,6 @@ func (device *Device) freeOutbound(elems *QueueOutboundElementsContainer) {
 	device.PutOutboundElementsContainer(elems)
 }
 
-// submit hands a container off to this peer's ordered UDP-send queue
-// and to the encryption workers, using the control or data pair of
-// queues per elemsContainer's class (peer.queue.controlOutbound /
-// device.queue.controlEncryption vs their data equivalents -- kept
-// fully separate end-to-end, see StagePackets above).
-//
-// Only the outbound-queue send is non-blocking (tail-drop if full).
-// This is the fix for the cross-peer stall PROJECT_STATE.md describes:
-// without it, a slow/congested peer's own outbound queue filling up
-// could block whichever goroutine is submitting to it -- and for a
-// forwarded packet, that's a *different* peer's own
-// RoutineSequentialReceiver (receive.go's forwardsByNextHop), so a
-// congested next hop could stall a totally unrelated peer's own
-// control-packet processing.
-//
-// The encryption-queue send deliberately stays a blocking send, same
-// as before this change: it's a CPU-bound resource actively drained by
-// every encryption worker device-wide (RoutineEncryption), not a
-// specific peer's network link, so it's a much less likely bottleneck
-// for the scenario this exists to fix. Making it non-blocking too would
-// need real cross-channel atomicity -- device.queue.encryption.c and
-// peer.queue.outbound.c only work as the matched pair
-// RoutineSequentialSender expects if both sends always succeed
-// together; dropping one independently after the other already
-// succeeded either leaks a container forever-Locked in whichever queue
-// got it, or leaves RoutineSequentialSender permanently blocked
-// waiting on an Unlock that will never come. Not attempted here.
-// submit hands a container off to this peer's ordered UDP-send queue
-// and to the (shared, device-wide) encryption workers, atomically: both
-// sends succeed or neither does, checked-and-committed under one of
-// two device-wide mutexes (one per class -- see device.queue's own
-// doc comment). If either queue is at capacity, the whole batch is
-// tail-dropped (per PROJECT_STATE.md's backpressure section) rather
-// than blocking the caller on either queue individually.
-//
-// This used to leave the encryption-queue send as a plain blocking
-// channel send, on the theory that a CPU-bound resource actively
-// drained by every encryption worker device-wide was a much less
-// likely bottleneck than a specific peer's network link -- and that
-// avoiding an atomic two-channel commit (which needs this
-// device-wide serialization) was worth it. That reasoning turned out
-// to be wrong under real sustained multi-Gbit/s load (see
-// PROJECT_STATE.md): when encryption genuinely can't keep pace, even
-// briefly, that shared queue backs up toward its full capacity, and
-// since each queued container can hold many packets' worth of
-// MaxMessageSize (64KB) buffers, a queue that's merely "backed up, not
-// yet full" already means multiple GB of entirely legitimate, still-
-// referenced data in flight -- not a leak, but enough to force Go's GC
-// to keep raising its heap goal, and (more importantly for the
-// reported symptom) enough for the blocking send itself to stall
-// whichever goroutine was submitting, which for RoutineReadFromTUN
-// means no further tun.Read() calls until room appears. Tail-dropping
-// here instead means a real, momentary encryption bottleneck shows up
-// as bounded packet loss with bounded memory, not unbounded queueing
-// masquerading as a multi-second "ramp-up".
-//
-// The mutex serializes ALL peers' submissions of one class device-wide
-// (necessary since encQ.c is itself shared across peers, and only a
-// single lock lets "check both channels have room" and "send to both"
-// happen as one atomic step) -- a real scalability cost under many
-// concurrent peers, but the critical section is just two length checks
-// and two non-blocking sends, negligible next to the actual encryption
-// work. Given melnode's mesh sizes so far (see PROJECT_STATE.md), this
-// is judged an acceptable tradeoff against the alternative just
-// described.
 func (peer *Peer) submit(elemsContainer *QueueOutboundElementsContainer, isControl bool) {
 	outboundQ := peer.queue.outbound
 	encQ := peer.device.queue.encryption
@@ -445,26 +295,13 @@ func (peer *Peer) submit(elemsContainer *QueueOutboundElementsContainer, isContr
 		return
 	}
 	if !isControl {
-		peer.dataInFlight.Add(n) // released by RoutineSequentialSender
+		peer.dataInFlight.Add(n)
 	}
-	// Neither send below can actually block in steady-state operation:
-	// capacity on both channels was just confirmed under this same
-	// lock, and both channels are otherwise only ever written to under
-	// this same per-class lock (device-wide for encQ.c, which is
-	// shared; per-peer-but-still-under-this-lock for outboundQ.c). One
-	// narrow exception: peer.Stop() sends a nil sentinel directly into
-	// outboundQ.c, outside this lock, to unblock RoutineSequentialSender
-	// -- a one-time event at final shutdown, not a recurring source of
-	// contention, and not expected to coincide with this function still
-	// being called for the same peer.
 	outboundQ.c <- elemsContainer
 	encQ.c <- elemsContainer
 	mu.Unlock()
 }
 
-// SendStagedPackets drains the control queue fully before even looking
-// at data -- see drainStaged and this file's top comments on
-// StagePackets/submit for how that priority is actually enforced.
 func (peer *Peer) SendStagedPackets() {
 	if !peer.device.isUp() {
 		return
@@ -473,13 +310,6 @@ func (peer *Peer) SendStagedPackets() {
 	peer.drainStaged(peer.queue.staged, false)
 }
 
-// drainStaged is SendStagedPackets' original single-queue body,
-// parameterized by which queue (and therefore which class) it's
-// draining -- see submit() for where that class actually matters.
-// Behavior per container is otherwise unchanged from before the
-// control/data split: nonce assignment against the current keypair,
-// with any tail that outruns RejectAfterMessages re-staged
-// (peer.StagePackets) for the next keypair rather than dropped.
 func (peer *Peer) drainStaged(ch chan *QueueOutboundElementsContainer, isControl bool) {
 top:
 	if len(ch) == 0 {
@@ -519,7 +349,7 @@ top:
 			elemsContainer.elems = elemsContainer.elems[:i]
 
 			if elemsContainerOOO != nil {
-				peer.StagePackets(elemsContainerOOO) // XXX: Out of order, but we can't front-load go chans
+				peer.StagePackets(elemsContainerOOO)
 			}
 
 			if len(elemsContainer.elems) == 0 {
@@ -527,7 +357,6 @@ top:
 				goto top
 			}
 
-			// add to parallel and sequential queue
 			if peer.isRunning.Load() {
 				peer.submit(elemsContainer, isControl)
 			} else {
@@ -547,17 +376,12 @@ top:
 	}
 }
 
-// hasEndpoint reports whether we know where to send to (kernel:
-// link->has_endpoint).
 func (peer *Peer) hasEndpoint() bool {
 	peer.endpoint.Lock()
 	defer peer.endpoint.Unlock()
 	return peer.endpoint.val != nil
 }
 
-// sendKeypair returns the keypair to send with, or nil if there is no usable
-// session: no endpoint, no current keypair, or one that ran out of messages
-// or time. This is the kernel's send_now -ENOENT condition.
 func (peer *Peer) sendKeypair() *Keypair {
 	keypair := peer.keypairs.Current()
 	if keypair == nil || !peer.hasEndpoint() ||
@@ -568,13 +392,6 @@ func (peer *Peer) sendKeypair() *Keypair {
 	return keypair
 }
 
-// dropNoSession is what happens to staged packets when there is no session
-// to send them with. The kernel never holds packets back for a handshake:
-// outq_work_fn drops the item, counts it tx_no_route and calls
-// send_initiation, so this does the same instead of wireguard-go's "stage
-// until the handshake completes". Keepalives (empty elements) are dropped
-// silently, like the kernel's timer-driven send_now, whose error is ignored.
-// Control-class packets are injects: those count as inject_dropped.
 func (peer *Peer) dropNoSession(ch chan *QueueOutboundElementsContainer, isControl bool) {
 	initiate := false
 	for {
@@ -586,8 +403,6 @@ func (peer *Peer) dropNoSession(ch chan *QueueOutboundElementsContainer, isContr
 				}
 				initiate = true
 				if isControl {
-					// Inject counted it as sent when it found a session;
-					// that session went away before it could be used.
 					peer.device.stats.injectSent.Add(^uint64(0))
 					peer.device.stats.injectDropped.Add(1)
 				} else {
@@ -638,18 +453,12 @@ func calculatePaddingSize(packetSize, mtu int) int {
 	return paddedSize - lastUnit
 }
 
-/* Encrypts the elements in the queue
- * and marks them for sequential consumption (by releasing the mutex)
- *
- * Obs. One instance per core
- */
 func (device *Device) RoutineEncryption(id int) {
 	var paddingZeros [PaddingMultiple]byte
 	var nonce [chacha20poly1305.NonceSize]byte
 
 	process := func(elemsContainer *QueueOutboundElementsContainer) {
 		for _, elem := range elemsContainer.elems {
-			// populate header fields
 			header := elem.buffer[:MessageTransportHeaderSize]
 
 			fieldType := header[0:4]
@@ -660,17 +469,8 @@ func (device *Device) RoutineEncryption(id int) {
 			binary.LittleEndian.PutUint32(fieldReceiver, elem.keypair.remoteIndex)
 			binary.LittleEndian.PutUint64(fieldNonce, elem.nonce)
 
-			// pad content to multiple of 16. Bounded by the device-wide
-			// MTU (config: mtu, Device.mtu) rather than a per-tun MTU:
-			// RoutineEncryption is shared across every peer-tun, so unlike
-			// wireguard-go (one tun) there's no single "the" MTU to read
-			// here -- see PROJECT_STATE.md's "Padding" section. elem.packet
-			// still carries our own 4-byte routing header at this point, so
-			// the bound is the tun MTU plus headerSize.
 			paddingSize := calculatePaddingSize(len(elem.packet), device.mtu+headerSize)
 			elem.packet = append(elem.packet, paddingZeros[:paddingSize]...)
-
-			// encrypt content and release to consumer
 
 			binary.LittleEndian.PutUint64(nonce[4:], elem.nonce)
 			elem.packet = elem.keypair.send.Seal(
@@ -683,11 +483,6 @@ func (device *Device) RoutineEncryption(id int) {
 		elemsContainer.Unlock()
 	}
 
-	// Control (liveness/path-vector) is drained first, and fully,
-	// before data is even looked at -- same priority pattern as
-	// Peer.drainStaged/SendStagedPackets (send.go), applied here to the
-	// device-wide encryption step too, since it's shared across every
-	// peer. See PROJECT_STATE.md's backpressure section.
 	for {
 		select {
 		case elemsContainer, ok := <-device.queue.controlEncryption.c:
@@ -721,28 +516,15 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 
 	bufs := make([][]byte, 0, maxBatchSize)
 
-	// process handles one already-encrypted container: wait for the
-	// encryption worker's Unlock (this is what keeps packets in send
-	// order despite parallel encryption -- see RoutineEncryption),
-	// batch-send it, and return its resources to the pool. Returns true
-	// if the caller should stop (the nil sentinel from Peer.Stop()).
 	process := func(elemsContainer *QueueOutboundElementsContainer) (stop bool) {
 		bufs = bufs[:0]
 		if elemsContainer == nil {
 			return true
 		}
 		if !elemsContainer.isControl {
-			// Read before the container goes back to the pool (which
-			// empties it); isControl is fixed from staging onwards.
 			defer peer.dataInFlight.Add(-int64(len(elemsContainer.elems)))
 		}
 		if !peer.isRunning.Load() {
-			// peer has been stopped; return re-usable elems to the shared pool.
-			// This is an optimization only. It is possible for the peer to be stopped
-			// immediately after this check, in which case, elem will get processed.
-			// The timers and SendBuffers code are resilient to a few stragglers.
-			// TODO: rework peer shutdown order to ensure
-			// that we never accidentally keep timers alive longer than necessary.
 			elemsContainer.Lock()
 			for _, elem := range elemsContainer.elems {
 				device.PutMessageBuffer(elem.buffer)
@@ -787,11 +569,6 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 		return false
 	}
 
-	// Same priority pattern as everywhere else in the control/data
-	// split (send.go's StagePackets/drainStaged, RoutineEncryption
-	// above): controlOutbound is checked -- and, whenever it has
-	// anything, fully drained -- before outbound (data) is even looked
-	// at. See PROJECT_STATE.md's backpressure section.
 	for {
 		select {
 		case elemsContainer := <-peer.queue.controlOutbound.c:

@@ -10,16 +10,13 @@ import (
 	"melnode/dpproto"
 )
 
-// ---- the reconciler programs the data plane ----------------------------------------
-
-// Whatever path-vector wants as a next hop ends up in the data plane's table.
 func TestReconcileProgramsDataPlaneRoutes(t *testing.T) {
 	n := newPVNet(t, 1, 2, 3)
 	n.linkUp(1, 2)
 	n.linkUp(2, 3)
 
 	h := n.host(1)
-	want := map[uint32]uint32{2: 2, 3: 2} // node 3 is reached through node 2
+	want := map[uint32]uint32{2: 2, 3: 2}
 	if len(h.dpRoutes) != len(want) {
 		t.Fatalf("data plane routes = %v, want %v", h.dpRoutes, want)
 	}
@@ -40,16 +37,11 @@ func TestReconcileProgramsDataPlaneRoutes(t *testing.T) {
 	}
 }
 
-// After attaching, inherited state is not removed until the hold ends: a
-// control plane restart must not tear down tuns the data plane is still
-// forwarding on while path-vector re-learns the mesh. Additions still happen.
 func TestAttachHoldDefersRemovals(t *testing.T) {
 	n := newPVNet(t, 1, 2)
 	r := n.nodes[1].node.router
 	h := n.host(1)
 
-	// Inherited from "before the restart": a tun, a data plane next hop and a
-	// kernel prefix route, none of which path-vector knows about yet.
 	stray := mustPrefix(t, "10.9.9.9/32")
 	h.tuns[7] = true
 	h.dpRoutes = map[uint32]uint32{7: 7}
@@ -61,7 +53,6 @@ func TestAttachHoldDefersRemovals(t *testing.T) {
 		t.Fatalf("inherited state removed during hold: tuns=%v dp=%v routes=%v", h.tuns, h.dpRoutes, h.routes)
 	}
 
-	// New knowledge is applied immediately even during the hold.
 	p := mustPrefix(t, "10.9.0.5/32")
 	n.nodes[2].AdvertisePrefix(p)
 	n.linkUp(1, 2)
@@ -72,7 +63,6 @@ func TestAttachHoldDefersRemovals(t *testing.T) {
 		t.Fatal("inherited tun removed during hold")
 	}
 
-	// Hold over: what's still unwanted goes.
 	r.holdUntil.Store(0)
 	r.reconcileOnce()
 	if h.tuns[7] || len(h.dpRoutes) != 1 || h.dpRoutes[2] != 2 {
@@ -83,8 +73,6 @@ func TestAttachHoldDefersRemovals(t *testing.T) {
 	}
 }
 
-// ---- the punt path -----------------------------------------------------------------
-
 func livenessPunt(link uint32, st linkState, padding int) dpproto.Punt {
 	pkt := livenessPacket{
 		State:           st,
@@ -93,7 +81,7 @@ func livenessPunt(link uint32, st linkState, padding int) dpproto.Punt {
 		DesiredMinTX:    defaultDesiredMinTX,
 		RequiredMinRX:   defaultRequiredMinRX,
 	}
-	payload := append(pkt.encode(), make([]byte, padding)...) // the sender's encryption pads
+	payload := append(pkt.encode(), make([]byte, padding)...)
 	return dpproto.Punt{Ingress: link, Proto: livenessProto, Src: uint8(link), Dst: 1, TTL: linkLocalTTL, Payload: payload}
 }
 
@@ -114,21 +102,19 @@ func TestHandlePuntDispatch(t *testing.T) {
 	l.monitor.Start()
 	defer l.monitor.Stop()
 
-	// A padded liveness packet from a peer that is Down moves us Down -> Init.
 	n.handlePunt(livenessPunt(2, linkStateDown, 12))
 	if got := l.monitor.State(); got != linkStateInit {
 		t.Fatalf("state after liveness punt = %v, want Init", got)
 	}
 
-	// Garbage of every kind must be dropped without panicking or moving state.
 	for _, p := range []dpproto.Punt{
-		{Ingress: 2, Proto: livenessProto},                                                            // empty
-		{Ingress: 2, Proto: livenessProto, Payload: []byte{livenessVers1}},                            // truncated
-		{Ingress: 2, Proto: livenessProto, Payload: []byte{9, 0, 0, 0, 0, 24}},                        // unknown version
-		{Ingress: 2, Proto: livenessProto, Payload: []byte{livenessVers1, 0, 0, 0, 0xff, 0xff, 0, 0}}, // length beyond payload
-		{Ingress: 2, Proto: pvProto, Payload: []byte{pvVers1, 0, 0}},                                  // truncated path-vector
-		{Ingress: 2, Proto: 77, Payload: []byte{1, 2, 3, 4}},                                          // unknown proto
-		{Ingress: 99, Proto: livenessProto, Payload: []byte{1, 2, 3, 4, 5, 6, 7, 8}},                  // unconfigured link
+		{Ingress: 2, Proto: livenessProto},
+		{Ingress: 2, Proto: livenessProto, Payload: []byte{livenessVers1}},
+		{Ingress: 2, Proto: livenessProto, Payload: []byte{9, 0, 0, 0, 0, 24}},
+		{Ingress: 2, Proto: livenessProto, Payload: []byte{livenessVers1, 0, 0, 0, 0xff, 0xff, 0, 0}},
+		{Ingress: 2, Proto: pvProto, Payload: []byte{pvVers1, 0, 0}},
+		{Ingress: 2, Proto: 77, Payload: []byte{1, 2, 3, 4}},
+		{Ingress: 99, Proto: livenessProto, Payload: []byte{1, 2, 3, 4, 5, 6, 7, 8}},
 	} {
 		n.handlePunt(p)
 	}
@@ -137,33 +123,27 @@ func TestHandlePuntDispatch(t *testing.T) {
 	}
 }
 
-// A liveness punt that arrives while the monitor isn't running (before the
-// session's monitors start, or after they stop) is ignored, not a crash.
 func TestPuntToStoppedMonitorIsIgnored(t *testing.T) {
 	n := newTestNode(t)
 	l := newLink(n, 2, [32]byte{2}, "", 0)
 	n.links[2] = l
-	n.handlePunt(livenessPunt(2, linkStateDown, 0)) // never started
+	n.handlePunt(livenessPunt(2, linkStateDown, 0))
 	l.monitor.Start()
 	l.monitor.Stop()
-	l.monitor.Stop() // idempotent
+	l.monitor.Stop()
 	n.handlePunt(livenessPunt(2, linkStateDown, 0))
-	l.monitor.Start() // restartable
+	l.monitor.Start()
 	l.monitor.Stop()
 }
 
-// ---- sessions ---------------------------------------------------------------------
-
-// fakeDP is a data plane stand-in that records what the control plane asks of it.
 type fakeDP struct {
-	mu      sync.Mutex
-	id      uint32
-	links   map[uint32]dpproto.LinkAdd
-	injects chan dpproto.Inject
-	adds    []dpproto.LinkAdd
-	dels    []uint32
-	dev     *dpproto.DeviceSet
-	// deviceDels counts DeviceDel requests.
+	mu         sync.Mutex
+	id         uint32
+	links      map[uint32]dpproto.LinkAdd
+	injects    chan dpproto.Inject
+	adds       []dpproto.LinkAdd
+	dels       []uint32
+	dev        *dpproto.DeviceSet
 	deviceDels int
 }
 
@@ -198,7 +178,7 @@ func (f *fakeDP) LinkAdd(m dpproto.LinkAdd) error {
 	if old, ok := f.links[m.PeerID]; ok && old.PubKey != m.PubKey {
 		return dpproto.Errorf(dpproto.CodeExists, "link %d exists with another key", m.PeerID)
 	}
-	for id, l := range f.links { // like both real data planes: one peerid per key
+	for id, l := range f.links {
 		if id != m.PeerID && l.PubKey == m.PubKey {
 			return dpproto.Errorf(dpproto.CodeExists, "public key already used by link %d", id)
 		}
@@ -249,14 +229,9 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// One full session: the configured links are pushed to the data plane (and
-// ones it shouldn't have are removed, and a changed key replaced), the MTU is
-// learned, liveness flows both ways over the socket, and a deliberate stop
-// sends AdminDown on every link.
 func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "dp.sock")
 	dp := newFakeDP(1)
-	// Pre-existing state on the data plane: link 9 is stale, link 2 has an old key.
 	dp.links[9] = dpproto.LinkAdd{PeerID: 9, PubKey: [32]byte{9}}
 	dp.links[2] = dpproto.LinkAdd{PeerID: 2, PubKey: [32]byte{0xee}}
 
@@ -291,7 +266,6 @@ func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 		t.Fatal("stale link 9 not removed")
 	}
 
-	// The monitors are running: they inject liveness onto their links.
 	seen := map[uint32]bool{}
 	waitFor(t, "liveness injected on both links", func() bool {
 		for {
@@ -309,12 +283,9 @@ func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 		}
 	})
 
-	// A liveness punt from the data plane reaches the right monitor.
 	srv.Punt(livenessPunt(2, linkStateDown, 8))
 	waitFor(t, "punt delivered to link 2's monitor", func() bool { return n.links[2].monitor.State() == linkStateInit })
 
-	// Deliberate stop: AdminDown goes out on every link, and the data plane's
-	// links are left alone.
 	close(stop)
 	<-done
 	got := map[uint32]bool{}
@@ -339,8 +310,6 @@ func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 	}
 }
 
-// If the data plane goes away the control plane notices, takes its links down
-// (so path-vector withdraws everything) and re-attaches when it returns.
 func TestSessionSurvivesDataPlaneRestart(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "dp.sock")
 	start := func() *dpproto.Server {
@@ -380,9 +349,6 @@ func TestSessionSurvivesDataPlaneRestart(t *testing.T) {
 	waitFor(t, "re-attach", func() bool { c := n.dp(); return c != nil && c != first })
 }
 
-// A data plane configured differently than we want can't be changed live: the
-// attach fails and has it tear its device down, so the next attempt configures
-// it afresh (no process restart needed).
 func TestAttachReplacesMisconfiguredDataplane(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "dp.sock")
 	dp := newFakeDP(1)

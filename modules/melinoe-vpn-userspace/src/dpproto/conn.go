@@ -12,35 +12,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// CallTimeout bounds how long a request waits for its reply. The data plane
-// answers from memory (the slowest request is creating a tun), so hitting
-// this means the data plane is wedged, or (kernel data plane) its reply was
-// dropped from a full receive buffer (see DialKernel); either way the
-// session is then dropped.
 const CallTimeout = 5 * time.Second
 
-// puntQueueSize is how many punted packets may wait for the control plane to
-// read them before new ones are dropped. Control traffic is low-rate and
-// loss-tolerant (liveness and path-vector both retransmit by design).
 const puntQueueSize = 1024
 
-// Datapath is the control plane's view of a data plane, whichever kind it is:
-// this package's Client (the userspace data plane, over a unix socket) or,
-// later, one that speaks to the melnode kernel module over generic netlink.
-// Everything melnode-cp does to a data plane goes through this interface, so
-// swapping backends is a change to how it is dialed and nothing else.
 type Datapath interface {
-	// Hello describes the data plane and checks API compatibility.
 	Hello() (HelloReply, error)
-	// Attach makes this session the control plane: punts and events are
-	// delivered to it (replacing any previous one). Sessions that never
-	// Attach can still issue requests (tools, checks).
 	Attach() error
 
-	// DeviceSet configures the device: idempotent for identical settings,
-	// CodeExists if it is configured differently. DeviceDel returns it to
-	// unconfigured, dropping every link, tun and route (the way replacing a
-	// kernel device would).
 	DeviceSet(DeviceSet) (DeviceSetReply, error)
 	DeviceDel() error
 	Stats() ([]Stat, error)
@@ -49,8 +28,6 @@ type Datapath interface {
 	LinkDel(peerID uint32) error
 	LinkList() ([]LinkInfo, error)
 
-	// TunCreate makes (or finds) the tun for a destination; a new one is not
-	// started until TunStart. TunDestroy is idempotent.
 	TunCreate(peerID uint32, name string) (TunCreateReply, error)
 	TunStart(peerID uint32) error
 	TunDestroy(peerID uint32) error
@@ -60,36 +37,26 @@ type Datapath interface {
 	RouteDel(dst uint32) error
 	RouteList() ([]Route, error)
 
-	// Inject transmits a control packet. Best-effort, no reply.
 	Inject(Inject) error
 
-	// Done is closed when the session ends; Err says why. Close ends it.
 	Done() <-chan struct{}
 	Err() error
 	Close()
 }
 
-// Quitter is implemented by data planes that are processes: it asks the
-// process to exit. A kernel data plane has no such thing (DeviceDel is all
-// there is), so control plane code must treat this as optional.
 type Quitter interface {
 	Quit() error
 }
 
-// rawConn is what conn needs from its underlying socket: a unixpacket
-// *net.UnixConn (the userspace data plane) or a raw AF_NETLINK socket
-// wrapped as an *os.File (the kernel module, see DialKernel) both satisfy
-// it.
 type rawConn interface {
 	Read([]byte) (int, error)
 	Write([]byte) (int, error)
 	Close() error
 }
 
-// conn is one end of the socket.
 type conn struct {
 	c   rawConn
-	buf []byte // receive buffer; only the single reader goroutine touches it
+	buf []byte
 }
 
 func newConn(c rawConn) *conn { return &conn{c: c, buf: make([]byte, MaxMessage)} }
@@ -99,8 +66,6 @@ func (c *conn) send(msg []byte) error {
 	return err
 }
 
-// recv returns the netlink messages in the next datagram. They alias the
-// receive buffer and are only valid until the next recv.
 func (c *conn) recv() ([]nlmsg, error) {
 	n, err := c.c.Read(c.buf)
 	if err != nil {
@@ -109,10 +74,6 @@ func (c *conn) recv() ([]nlmsg, error) {
 	return splitMessages(c.buf[:n])
 }
 
-// ---- client (control plane side) ------------------------------------------------
-
-// result is a finished request: the reply/dump messages it produced (attribute
-// sets, copied out of the receive buffer) or its error.
 type result struct {
 	parts []attrs
 	err   error
@@ -123,13 +84,11 @@ type call struct {
 	ch    chan result
 }
 
-// Client is a Datapath - the userspace data plane (Dial) or the kernel
-// module (DialKernel). It is safe for concurrent use.
 type Client struct {
 	c             *conn
-	family        uint16 // the melnode family's message type, resolved on Dial
-	eventsGroupID uint32 // resolved alongside family; 0 if the reply had none
-	isKernel      bool   // dialed via DialKernel - see Quit()
+	family        uint16
+	eventsGroupID uint32
+	isKernel      bool
 	nextSeq       atomic.Uint32
 	onPunt        func(Punt)
 	onEvent       func(Event)
@@ -147,10 +106,6 @@ var (
 	_ Quitter  = (*Client)(nil)
 )
 
-// Dial connects to the data plane's socket. onPunt and onEvent (either may be
-// nil) are called from the client's single reader goroutine, in arrival
-// order, for every punted packet / event; they must not block (queue and
-// return). Nothing is delivered until Attach.
 func Dial(path string, onPunt func(Punt), onEvent func(Event)) (*Client, error) {
 	uc, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: path, Net: "unixpacket"})
 	if err != nil {
@@ -165,19 +120,11 @@ func Dial(path string, onPunt func(Punt), onEvent func(Event)) (*Client, error) 
 	return cl, nil
 }
 
-// DialKernel connects to the melnode kernel module (modules/melinoe-vpn-
-// kernel) over a real AF_NETLINK/NETLINK_GENERIC socket, instead of a
-// userspace data plane's unix socket. Otherwise identical to Dial: the same
-// Client, the same Datapath interface, the control plane can't tell which
-// kind it's talking to.
 func DialKernel(onPunt func(Punt), onEvent func(Event)) (*Client, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_GENERIC)
 	if err != nil {
 		return nil, fmt.Errorf("dpproto: netlink socket: %w", err)
 	}
-	// A non-blocking fd is what lets os.NewFile hand it to the Go
-	// runtime's netpoller instead of treating it as a blocking file (the
-	// same trick raw-netlink libraries like mdlayher/netlink use).
 	if err := unix.SetNonblock(fd, true); err != nil {
 		unix.Close(fd)
 		return nil, fmt.Errorf("dpproto: netlink setnonblock: %w", err)
@@ -186,11 +133,6 @@ func DialKernel(onPunt func(Punt), onEvent func(Event)) (*Client, error) {
 		unix.Close(fd)
 		return nil, fmt.Errorf("dpproto: netlink bind: %w", err)
 	}
-	// Punts and events are lossy by contract (API.md): an overrun must drop
-	// them, not surface as ENOBUFS from recvmsg, which readLoop would take
-	// for a dead session (detaching every link, mesh-wide). Replies share
-	// this socket's receive buffer, so an overrun can drop a reply too; its
-	// call then hits CallTimeout, which does end the session.
 	if err := unix.SetsockoptInt(fd, unix.SOL_NETLINK, unix.NETLINK_NO_ENOBUFS, 1); err != nil {
 		unix.Close(fd)
 		return nil, fmt.Errorf("dpproto: netlink NETLINK_NO_ENOBUFS: %w", err)
@@ -204,9 +146,6 @@ func DialKernel(onPunt func(Punt), onEvent func(Event)) (*Client, error) {
 		return nil, err
 	}
 	if cl.eventsGroupID != 0 {
-		// Setsockopt on the raw fd is safe alongside the os.File wrapper
-		// already in use for Read/Write above: it only touches socket
-		// options, not the read/write path or its buffering.
 		if err := unix.SetsockoptInt(fd, unix.SOL_NETLINK, unix.NETLINK_ADD_MEMBERSHIP, int(cl.eventsGroupID)); err != nil {
 			cl.Close()
 			return nil, fmt.Errorf("dpproto: joining %q multicast group: %w", eventsGroupName, err)
@@ -215,12 +154,6 @@ func DialKernel(onPunt func(Punt), onEvent func(Event)) (*Client, error) {
 	return cl, nil
 }
 
-// resolveFamily asks the genetlink controller for the melnode family's id
-// (and checks its version), as a client of the kernel module has to. The
-// userspace data plane answers this itself so both look the same. It also
-// resolves the "events" multicast group's id, needed by DialKernel to join
-// it (a unixpacket connection from Dial has no such concept: punts and
-// events just arrive on the same connected socket regardless).
 func (cl *Client) resolveFamily() error {
 	parts, err := cl.request(genlIDCtrl, ctrlCmdGetFamily, ctrlVersion, false, func(b *nlb) error {
 		b.str(ctrlAttrFamilyName, FamilyName)
@@ -271,13 +204,10 @@ func (cl *Client) fail(err error) {
 	})
 }
 
-// Done is closed when the session ends (data plane went away, or Close).
 func (cl *Client) Done() <-chan struct{} { return cl.done }
 
-// Err is why the session ended; only meaningful once Done is closed.
 func (cl *Client) Err() error { return cl.err }
 
-// Close ends the session.
 func (cl *Client) Close() { cl.fail(errors.New("dpproto: client closed")) }
 
 func (cl *Client) readLoop() {
@@ -285,10 +215,6 @@ func (cl *Client) readLoop() {
 		msgs, err := cl.c.recv()
 		if err != nil && len(msgs) == 0 {
 			if errors.Is(err, unix.ENOBUFS) {
-				// Belt and braces for NETLINK_NO_ENOBUFS: messages were
-				// dropped. For notifications the contract allows it; a
-				// dropped reply isn't retried, its call times out and
-				// fails the session (see CallTimeout).
 				continue
 			}
 			cl.fail(fmt.Errorf("dpproto: session lost: %w", err))
@@ -315,11 +241,11 @@ func (cl *Client) handle(m nlmsg) {
 		if m.typ == nlmsgError {
 			r.err = parseErrMessage(m)
 		}
-		p.ch <- r // buffered, never blocks
+		p.ch <- r
 	case m.typ >= 0x10 && m.seq == 0 && (m.cmd == CmdPunt || m.cmd == CmdEvent):
 		a, err := m.attrs()
 		if err != nil {
-			return // malformed notification: drop, keep the session
+			return
 		}
 		if m.cmd == CmdPunt {
 			var p Punt
@@ -333,7 +259,6 @@ func (cl *Client) handle(m nlmsg) {
 			}
 		}
 	case m.typ >= 0x10:
-		// A reply or one part of a dump. Copy it out of the receive buffer.
 		body := append([]byte(nil), m.body...)
 		a, err := parseAttrs(body[min(genlHdrLen, len(body)):])
 		if err != nil {
@@ -347,17 +272,13 @@ func (cl *Client) handle(m nlmsg) {
 	}
 }
 
-// do sends one request and waits for it to complete: for a plain request that
-// is its ACK, for a dump the end of the multipart reply. It returns the
-// messages the data plane sent back in between.
 func (cl *Client) do(cmd uint8, dump bool, put func(*nlb) error) ([]attrs, error) {
 	return cl.request(cl.family, cmd, uint8(Version), dump, put)
 }
 
-// request is do for any family (the melnode one, or the controller).
 func (cl *Client) request(family uint16, cmd, version uint8, dump bool, put func(*nlb) error) ([]attrs, error) {
 	seq := cl.nextSeq.Add(1)
-	if seq == 0 { // wrapped; 0 is reserved for notifications
+	if seq == 0 {
 		seq = cl.nextSeq.Add(1)
 	}
 	flags := uint16(nlmFRequest | nlmFAck)
@@ -399,7 +320,6 @@ func (cl *Client) request(family uint16, cmd, version uint8, dump bool, put func
 	}
 }
 
-// one runs a request that is expected to answer with exactly one message.
 func (cl *Client) one(cmd uint8, put func(*nlb) error) (attrs, error) {
 	parts, err := cl.do(cmd, false, put)
 	if err != nil {
@@ -416,9 +336,6 @@ func (cl *Client) ack(cmd uint8, put func(*nlb) error) error {
 	return err
 }
 
-// Inject sends a control packet for the data plane to transmit. There is no
-// reply: like a NIC transmit it is best-effort, and an error means only that
-// the session is gone.
 func (cl *Client) Inject(i Inject) error {
 	select {
 	case <-cl.done:
@@ -452,13 +369,6 @@ func (cl *Client) DeviceSet(m DeviceSet) (DeviceSetReply, error) {
 
 func (cl *Client) DeviceDel() error { return cl.ack(CmdDeviceDel, nil) }
 
-// Quit asks the data plane process to exit. It replies first, then goes away,
-// so expect the session to end shortly after a successful return. A no-op
-// for a kernel-dialed Client: it has no process to exit (API.md), and
-// X_QUIT isn't even a command the kernel module registers - callers that do
-// `if q, ok := cl.(Quitter); ok { q.Quit() }` (this always succeeds, since
-// *Client always implements Quitter regardless of transport) should see
-// this as "there was nothing to do", not an error.
 func (cl *Client) Quit() error {
 	if cl.isKernel {
 		return nil
@@ -506,9 +416,6 @@ func (cl *Client) LinkList() ([]LinkInfo, error) {
 	return out, nil
 }
 
-// TunCreate makes the tun for destination peerID, named name (idempotent). A new tun is
-// created but NOT started: it carries no traffic until TunStart, so the
-// control plane can address it and run its hooks first.
 func (cl *Client) TunCreate(peerID uint32, name string) (TunCreateReply, error) {
 	a, err := cl.one(CmdTunCreate, func(b *nlb) error { TunCreate{PeerID: peerID, Name: name}.put(b); return nil })
 	if err != nil {
@@ -522,7 +429,6 @@ func (cl *Client) TunStart(peerID uint32) error {
 	return cl.ack(CmdTunStart, func(b *nlb) error { putID(b, AttrPeerID, peerID); return nil })
 }
 
-// TunDestroy closes and removes the tun (idempotent: a missing tun is not an error).
 func (cl *Client) TunDestroy(peerID uint32) error {
 	return cl.ack(CmdTunDestroy, func(b *nlb) error { putID(b, AttrPeerID, peerID); return nil })
 }
@@ -543,12 +449,10 @@ func (cl *Client) TunList() ([]TunInfo, error) {
 	return out, nil
 }
 
-// RouteSet installs or changes the next hop for a destination.
 func (cl *Client) RouteSet(r Route) error {
 	return cl.ack(CmdRouteSet, func(b *nlb) error { r.put(b); return nil })
 }
 
-// RouteDel removes a destination's route (idempotent).
 func (cl *Client) RouteDel(dst uint32) error {
 	return cl.ack(CmdRouteDel, func(b *nlb) error { putID(b, AttrRouteDst, dst); return nil })
 }
@@ -569,21 +473,11 @@ func (cl *Client) RouteList() ([]Route, error) {
 	return out, nil
 }
 
-// ---- server (data plane side) ---------------------------------------------------
-
-// Handler is what the data plane implements. Requests from one session are
-// dispatched serially, in order. Returning an *Error (see Errorf) sends that
-// errno back; any other error becomes CodeInternal.
 type Handler interface {
 	Hello(Hello) (HelloReply, error)
 	DeviceSet(DeviceSet) (DeviceSetReply, error)
-	// DeviceDel tears the device down (links, tuns, routes, sockets) and
-	// returns the data plane to its unconfigured state, ready for another
-	// DeviceSet. Idempotent.
 	DeviceDel() error
 	Stats() ([]Stat, error)
-	// Quit is called after its reply has been sent; it should make the
-	// process exit. Userspace-only (CmdXQuit).
 	Quit()
 	LinkAdd(LinkAdd) error
 	LinkDel(peerID uint32) error
@@ -595,28 +489,21 @@ type Handler interface {
 	RouteSet(Route) error
 	RouteDel(dst uint32) error
 	RouteList() ([]Route, error)
-	// Inject must not block: it is called from the session's reader.
 	Inject(Inject)
 }
 
-// Server accepts the control plane on a unix seqpacket socket. Any number of
-// sessions may connect and issue requests; only one is the control plane at a
-// time, the one that most recently sent Attach (a new one replaces, closes,
-// the previous), like a single OpenFlow controller or the one socket an OVS
-// port's upcalls go to.
 type Server struct {
 	l *net.UnixListener
 	h Handler
 
 	mu  sync.Mutex
-	cur *session // the attached session
+	cur *session
 
 	puntDropped   atomic.Uint64
 	eventsDropped atomic.Uint64
 	puntsSent     atomic.Uint64
 }
 
-// NewServer listens on path (replacing a stale socket file), mode 0600.
 func NewServer(path string, h Handler) (*Server, error) {
 	_ = os.Remove(path)
 	l, err := net.ListenUnix("unixpacket", &net.UnixAddr{Name: path, Net: "unixpacket"})
@@ -630,7 +517,6 @@ func NewServer(path string, h Handler) (*Server, error) {
 	return &Server{l: l, h: h}, nil
 }
 
-// Run accepts sessions until Close. Call it in its own goroutine.
 func (s *Server) Run() {
 	for {
 		uc, err := s.l.AcceptUnix()
@@ -643,7 +529,6 @@ func (s *Server) Run() {
 	}
 }
 
-// Close stops accepting and drops the attached session.
 func (s *Server) Close() {
 	s.l.Close()
 	s.mu.Lock()
@@ -655,22 +540,16 @@ func (s *Server) Close() {
 	}
 }
 
-// Connected reports whether a control plane session is attached.
 func (s *Server) Connected() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.cur != nil
 }
 
-// PuntsSent counts punts queued for the control plane.
 func (s *Server) PuntsSent() uint64 { return s.puntsSent.Load() }
 
-// PuntDropped counts punts dropped because no control plane was attached or
-// its queue was full.
 func (s *Server) PuntDropped() uint64 { return s.puntDropped.Load() }
 
-// Punt hands a control packet to the control plane. It never blocks: with no
-// session attached, or a full queue, the packet is dropped (and counted).
 func (s *Server) Punt(p Punt) {
 	s.mu.Lock()
 	cur := s.cur
@@ -690,8 +569,6 @@ func (s *Server) Punt(p Punt) {
 	}
 }
 
-// Event queues an asynchronous notification for the control plane, with the
-// same drop-don't-block semantics as Punt (counted by EventsDropped).
 func (s *Server) Event(e Event) {
 	s.mu.Lock()
 	cur := s.cur
@@ -712,7 +589,6 @@ func (s *Server) Event(e Event) {
 	}
 }
 
-// EventsDropped counts events dropped for lack of a control plane or queue room.
 func (s *Server) EventsDropped() uint64 { return s.eventsDropped.Load() }
 
 type session struct {
@@ -749,7 +625,6 @@ func (ss *session) writeLoop() {
 	}
 }
 
-// attach makes ss the control plane, dropping the previous one.
 func (ss *session) attach() {
 	ss.srv.mu.Lock()
 	old := ss.srv.cur
@@ -775,10 +650,9 @@ func (ss *session) readLoop() {
 	}
 }
 
-// serve handles one request; false ends the session.
 func (ss *session) serve(m nlmsg) bool {
 	if m.typ < 0x10 || m.flags&nlmFRequest == 0 {
-		return true // core netlink message or not a request: ignore
+		return true
 	}
 	if m.typ == genlIDCtrl {
 		return ss.serveController(m)
@@ -849,7 +723,6 @@ func (ss *session) serve(m nlmsg) bool {
 
 func one(put func(*nlb) error) []func(*nlb) error { return []func(*nlb) error{put} }
 
-// dispatch runs one command and returns the messages of its reply.
 func (ss *session) dispatch(cmd uint8, a attrs) ([]func(*nlb) error, error) {
 	h := ss.srv.h
 	switch cmd {
@@ -882,7 +755,7 @@ func (ss *session) dispatch(cmd uint8, a attrs) ([]func(*nlb) error, error) {
 	case CmdDeviceDel:
 		return nil, h.DeviceDel()
 	case CmdXQuit:
-		return nil, nil // serve replies, then calls h.Quit
+		return nil, nil
 	case CmdStatsGet:
 		l, err := h.Stats()
 		if err != nil {
@@ -968,9 +841,6 @@ func (ss *session) dispatch(cmd uint8, a attrs) ([]func(*nlb) error, error) {
 	return nil, Errorf(CodeUnsupported, "unknown command %d", cmd)
 }
 
-// serveController answers the one genetlink controller query clients make:
-// CTRL_CMD_GETFAMILY for our family (by name), giving its id, version and
-// multicast groups, so a client cannot tell this data plane from a kernel one.
 func (ss *session) serveController(m nlmsg) bool {
 	a, err := m.attrs()
 	if m.cmd != ctrlCmdGetFamily || err != nil {
@@ -983,7 +853,7 @@ func (ss *session) serveController(m nlmsg) bool {
 	b.u16(ctrlAttrFamilyID, FamilyID).str(ctrlAttrFamilyName, FamilyName).u32(ctrlAttrVersion, uint32(Version))
 	b.u32(ctrlAttrHdrSize, 0).u32(ctrlAttrMaxAttr, uint32(AttrEvtTime))
 	b.nest(ctrlAttrMcastGroups, func(b *nlb) {
-		b.nest(1, func(b *nlb) { // entry 1
+		b.nest(1, func(b *nlb) {
 			b.str(ctrlAttrMcastGrpName, eventsGroupName).u32(ctrlAttrMcastGrpID, eventsGroupID)
 		})
 	})

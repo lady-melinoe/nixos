@@ -1,20 +1,5 @@
 package dpproto
 
-// nl.go: literal Linux (generic) netlink message framing.
-//
-// The data plane API is defined as a generic netlink family, "melnode", so the
-// control plane can talk to a kernel-module data plane with the same messages
-// it sends the userspace one. This file is the wire format shared by both:
-//
-//	struct nlmsghdr    { u32 len; u16 type; u16 flags; u32 seq; u32 pid; }
-//	struct genlmsghdr  { u8 cmd; u8 version; u16 reserved; }
-//	struct nlattr      { u16 len; u16 type; }  + payload, padded to 4 bytes
-//
-// All integers are host byte order, exactly as in the kernel. The userspace
-// data plane carries these messages over a unix SOCK_SEQPACKET socket (one
-// message per datagram); a kernel data plane would carry them over an
-// AF_NETLINK / NETLINK_GENERIC socket. Only the transport differs.
-
 import (
 	"encoding/binary"
 	"errors"
@@ -29,20 +14,16 @@ const (
 	nlmsgHdrLen  = 16
 	genlHdrLen   = 4
 	nlattrHdrLen = 4
-	// HeaderLen is nlmsghdr + genlmsghdr: everything before the attributes.
-	HeaderLen = nlmsgHdrLen + genlHdrLen
-	// MaxMessage bounds one datagram: a full 64KiB payload plus headers.
-	MaxMessage = 65535 + 256
+	HeaderLen    = nlmsgHdrLen + genlHdrLen
+	MaxMessage   = 65535 + 256
 )
 
-// Netlink message types below the family id range (linux/netlink.h).
 const (
 	nlmsgNoop  = 1
 	nlmsgError = 2
 	nlmsgDone  = 3
 )
 
-// Netlink message flags (linux/netlink.h).
 const (
 	nlmFRequest = 0x01
 	nlmFMulti   = 0x02
@@ -50,13 +31,10 @@ const (
 	nlmFRoot    = 0x100
 	nlmFMatch   = 0x200
 	nlmFDump    = nlmFRoot | nlmFMatch
-	// On an error message: the original request is truncated to its header,
-	// and extended-ack attributes follow (NLM_F_CAPPED, NLM_F_ACK_TLVS).
 	nlmFCapped  = 0x100
 	nlmFAckTLVs = 0x200
 )
 
-// nlattr type flags and the extended-ack attribute (linux/netlink.h).
 const (
 	nlaFNested      = 1 << 15
 	nlaFNetOrder    = 1 << 14
@@ -64,9 +42,6 @@ const (
 	nlmsgerrAttrMsg = 1
 )
 
-// The generic netlink controller: a family named "nlctrl" with the fixed id
-// 16 that maps family names to their (dynamically assigned) ids. Every genl
-// client starts by asking it about the family it wants (CTRL_CMD_GETFAMILY).
 const (
 	genlIDCtrl = 0x10
 
@@ -74,39 +49,27 @@ const (
 	ctrlCmdGetFamily = 3
 	ctrlVersion      = 2
 
-	ctrlAttrFamilyID    = 1 // u16
-	ctrlAttrFamilyName  = 2 // string
-	ctrlAttrVersion     = 3 // u32
-	ctrlAttrHdrSize     = 4 // u32
-	ctrlAttrMaxAttr     = 5 // u32
-	ctrlAttrMcastGroups = 7 // nested: one nested entry per group
+	ctrlAttrFamilyID    = 1
+	ctrlAttrFamilyName  = 2
+	ctrlAttrVersion     = 3
+	ctrlAttrHdrSize     = 4
+	ctrlAttrMaxAttr     = 5
+	ctrlAttrMcastGroups = 7
 
-	ctrlAttrMcastGrpName = 1 // string
-	ctrlAttrMcastGrpID   = 2 // u32
+	ctrlAttrMcastGrpName = 1
+	ctrlAttrMcastGrpID   = 2
 )
 
-// FamilyName is the family's registered name. FamilyID is the id the
-// userspace data plane gives it. A kernel family gets whatever id genetlink
-// hands out at registration, which is why clients never hardcode it: Dial
-// resolves it with CTRL_CMD_GETFAMILY exactly as they would against the
-// kernel, and the userspace data plane answers that query itself. (198, like
-// the routing protocol number, is arbitrary: any id from 16 up is valid.)
 const (
 	FamilyName = "melnode"
 	FamilyID   = 198
 
-	// eventsGroupID is the id the userspace data plane reports for the
-	// "events" multicast group. Only meaningful to a kernel backend, which
-	// joins the group; here events go to the attached session.
 	eventsGroupName = "events"
 	eventsGroupID   = 1
 )
 
 func align4(n int) int { return (n + 3) &^ 3 }
 
-// ---- building ---------------------------------------------------------------------
-
-// nlb builds one netlink message.
 type nlb struct{ b []byte }
 
 func newNL(typ, flags uint16, seq, pid uint32, cmd, version uint8) *nlb {
@@ -120,7 +83,6 @@ func newNL(typ, flags uint16, seq, pid uint32, cmd, version uint8) *nlb {
 	return m
 }
 
-// bytes finalizes and returns the message.
 func (m *nlb) bytes() []byte {
 	nativeEndian.PutUint32(m.b[0:], uint32(len(m.b)))
 	return m.b
@@ -146,8 +108,6 @@ func (m *nlb) u32(typ uint16, v uint32) *nlb {
 	return m.attr(typ, nativeEndian.AppendUint32(nil, v))
 }
 
-// u64 is nla_put_64bit: a 64-bit attribute's payload must be 8-byte aligned,
-// so a header-only padding attribute is emitted first when it wouldn't be.
 func (m *nlb) u64(typ uint16, v uint64) *nlb {
 	if (len(m.b)+nlattrHdrLen)%8 != 0 {
 		m.attr(AttrPad, nil)
@@ -155,7 +115,6 @@ func (m *nlb) u64(typ uint16, v uint64) *nlb {
 	return m.attr(typ, nativeEndian.AppendUint64(nil, v))
 }
 
-// nest appends a nested attribute, filled in by fill.
 func (m *nlb) nest(typ uint16, fill func(*nlb)) *nlb {
 	start := len(m.b)
 	m.attr(typ|nlaFNested, nil)
@@ -164,23 +123,18 @@ func (m *nlb) nest(typ uint16, fill func(*nlb)) *nlb {
 	return m
 }
 
-// str is a NUL-terminated string attribute (NLA_NUL_STRING).
 func (m *nlb) str(typ uint16, s string) *nlb {
 	return m.attr(typ, append([]byte(s), 0))
 }
 
-// ---- parsing ----------------------------------------------------------------------
-
 var errShort = errors.New("dpproto: truncated netlink message")
 
-// nlmsg is one parsed netlink message. Attribute payloads alias the buffer it
-// was parsed from.
 type nlmsg struct {
 	typ, flags uint16
 	seq, pid   uint32
 	cmd        uint8
 	version    uint8
-	body       []byte // after nlmsghdr; for generic messages includes genlmsghdr
+	body       []byte
 }
 
 func (m *nlmsg) attrs() (attrs, error) {
@@ -190,7 +144,6 @@ func (m *nlmsg) attrs() (attrs, error) {
 	return parseAttrs(m.body[genlHdrLen:])
 }
 
-// splitMessages parses a datagram as one or more netlink messages.
 func splitMessages(b []byte) ([]nlmsg, error) {
 	var out []nlmsg
 	for len(b) > 0 {
@@ -217,8 +170,6 @@ func splitMessages(b []byte) ([]nlmsg, error) {
 	return out, nil
 }
 
-// attrs is a parsed attribute list. Unknown attributes are kept and simply
-// never asked for, which is what makes adding one backward compatible.
 type attrs []attr
 
 type attr struct {
@@ -250,9 +201,6 @@ func (a attrs) get(typ uint16) ([]byte, bool) {
 	}
 	return nil, false
 }
-
-// The accessors return the zero value when the attribute is absent; want()
-// is how a handler insists on one. Wrong-sized attributes count as absent.
 
 func (a attrs) has(typ uint16) bool { _, ok := a.get(typ); return ok }
 
@@ -291,13 +239,11 @@ func (a attrs) key(typ uint16) (k [32]byte) {
 	return
 }
 
-// bin returns a copy of a binary attribute (the receive buffer is reused).
 func (a attrs) bin(typ uint16) []byte {
 	v, _ := a.get(typ)
 	return append([]byte(nil), v...)
 }
 
-// need reports which of the listed attributes are missing.
 func (a attrs) need(types ...uint16) error {
 	for _, t := range types {
 		if !a.has(t) {
@@ -307,23 +253,18 @@ func (a attrs) need(types ...uint16) error {
 	return nil
 }
 
-// ---- errors -----------------------------------------------------------------------
-
-// errMessage builds an NLMSG_ERROR reply: an ack when e is nil, else the
-// error's errno plus its text as an extended-ack message.
 func errMessage(req nlmsg, e *Error) []byte {
 	flags := uint16(0)
 	if e != nil {
 		flags = nlmFCapped | nlmFAckTLVs
 	}
 	m := newNL(nlmsgError, flags, req.seq, 0, 0, 0)
-	m.b = m.b[:nlmsgHdrLen] // no genl header on NLMSG_ERROR
+	m.b = m.b[:nlmsgHdrLen]
 	var code int32
 	if e != nil {
 		code = -int32(e.Code)
 	}
 	m.b = nativeEndian.AppendUint32(m.b, uint32(code))
-	// The original header, capped (we never echo the request body).
 	orig := make([]byte, nlmsgHdrLen)
 	nativeEndian.PutUint32(orig[0:], nlmsgHdrLen)
 	nativeEndian.PutUint16(orig[4:], req.typ)
@@ -337,7 +278,6 @@ func errMessage(req nlmsg, e *Error) []byte {
 	return m.bytes()
 }
 
-// parseErrMessage decodes an NLMSG_ERROR into nil (ack) or an *Error.
 func parseErrMessage(m nlmsg) error {
 	if len(m.body) < 4 {
 		return errShort
@@ -348,7 +288,6 @@ func parseErrMessage(m nlmsg) error {
 	}
 	e := &Error{Code: uint16(-code)}
 	rest := m.body[4:]
-	// The original message: header only when capped, else all of it.
 	if len(rest) >= nlmsgHdrLen {
 		n := nlmsgHdrLen
 		if m.flags&nlmFCapped == 0 {
@@ -367,10 +306,6 @@ func parseErrMessage(m nlmsg) error {
 	return e
 }
 
-// ---- sockaddr ---------------------------------------------------------------------
-
-// Endpoints travel as a struct sockaddr_in / sockaddr_in6 (what a kernel data
-// plane has at hand), not as text.
 const (
 	afINET  = 2
 	afINET6 = 10
