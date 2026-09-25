@@ -4,6 +4,7 @@
 
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
+#include <linux/rwsem.h>
 #include <linux/rcupdate.h>
 #include <linux/kref.h>
 #include <linux/ptr_ring.h>
@@ -40,6 +41,14 @@ struct melnode_link {
 	struct melnode_handshake handshake;
 	struct melnode_keypairs keypairs;
 	struct melnode_cookie cookie;
+
+	bool dead;
+	u64 keepalive_at;
+	u64 new_handshake_at;
+	u64 retry_at;
+	u64 attempt_started;
+	u64 wipe_at;
+	struct delayed_work timer;
 
 	struct ptr_ring outq;
 	struct work_struct outq_work;
@@ -92,6 +101,7 @@ struct melnode_device {
 
 	struct melnode_cookie_checker cookie_checker;
 
+	struct rw_semaphore sock_sem;
 	struct socket *sock4;
 	struct socket *sock6;
 	void (*orig_sk_data_ready4)(struct sock *sk);

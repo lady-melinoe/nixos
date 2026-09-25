@@ -3,6 +3,7 @@
 #define _MELNODE_NOISE_H
 
 #include <linux/types.h>
+#include <linux/ktime.h>
 
 #include "melnode_messages.h"
 
@@ -17,8 +18,15 @@ struct melnode_replay_counter {
 	unsigned long backtrack[MELNODE_COUNTER_BITS_TOTAL / BITS_PER_LONG];
 };
 
+static inline bool melnode_key_expired(const struct melnode_symmetric_key *key, u64 seconds)
+{
+	return (s64)(key->birthdate + seconds * NSEC_PER_SEC) <=
+	       (s64)ktime_get_coarse_boottime_ns();
+}
+
 struct melnode_keypair {
 	bool valid;
+	bool initiator;
 	__le32 local_index;
 	__le32 remote_index;
 
@@ -102,5 +110,8 @@ bool melnode_noise_handshake_begin_session(struct melnode_handshake *handshake,
 					   struct melnode_keypairs *keypairs);
 
 bool melnode_noise_received_with_keypair(struct melnode_keypairs *keypairs);
+
+void melnode_noise_handshake_clear(struct melnode_handshake *handshake);
+void melnode_noise_keypairs_clear(struct melnode_keypairs *keypairs);
 
 #endif /* _MELNODE_NOISE_H */

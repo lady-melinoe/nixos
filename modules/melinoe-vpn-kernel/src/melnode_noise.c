@@ -3,12 +3,12 @@
 #include <linux/string.h>
 #include <linux/ktime.h>
 #include <linux/kernel.h>
-#include <linux/unaligned.h>
 #include <crypto/curve25519.h>
 #include <crypto/chacha20poly1305.h>
 #include <crypto/blake2s.h>
 #include <crypto/utils.h>
 
+#include "melnode_compat.h"
 #include "melnode_noise.h"
 
 static const u8 handshake_name[37] __nonstring = "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s";
@@ -18,7 +18,7 @@ static u8 handshake_init_chaining_key[MELNODE_NOISE_HASH_LEN] __ro_after_init;
 
 void melnode_noise_init(void)
 {
-	struct blake2s_ctx blake;
+	melnode_blake2s_ctx blake;
 
 	blake2s(NULL, 0, handshake_name, sizeof(handshake_name), handshake_init_chaining_key,
 		MELNODE_NOISE_HASH_LEN);
@@ -55,7 +55,7 @@ static void handshake_zero(struct melnode_handshake *handshake)
 
 static void hmac(u8 *out, const u8 *in, const u8 *key, size_t inlen, size_t keylen)
 {
-	struct blake2s_ctx blake;
+	melnode_blake2s_ctx blake;
 	u8 x_key[BLAKE2S_BLOCK_SIZE] __aligned(__alignof__(u32)) = { 0 };
 	u8 i_hash[BLAKE2S_HASH_SIZE] __aligned(__alignof__(u32));
 	int i;
@@ -166,7 +166,7 @@ static bool __must_check mix_precomputed_dh(u8 chaining_key[MELNODE_NOISE_HASH_L
 
 static void mix_hash(u8 hash[MELNODE_NOISE_HASH_LEN], const u8 *src, size_t src_len)
 {
-	struct blake2s_ctx blake;
+	melnode_blake2s_ctx blake;
 
 	blake2s_init(&blake, MELNODE_NOISE_HASH_LEN);
 	blake2s_update(&blake, hash, MELNODE_NOISE_HASH_LEN);
@@ -451,6 +451,7 @@ bool melnode_noise_handshake_begin_session(struct melnode_handshake *handshake,
 
 	new_keypair.valid = true;
 	initiator = handshake->state == MELNODE_HANDSHAKE_CONSUMED_RESPONSE;
+	new_keypair.initiator = initiator;
 	new_keypair.remote_index = handshake->remote_index;
 	new_keypair.local_index = handshake->local_index;
 
@@ -484,4 +485,14 @@ bool melnode_noise_received_with_keypair(struct melnode_keypairs *keypairs)
 	keypairs->current_kp = keypairs->next_kp;
 	memset(&keypairs->next_kp, 0, sizeof(keypairs->next_kp));
 	return true;
+}
+
+void melnode_noise_handshake_clear(struct melnode_handshake *handshake)
+{
+	handshake_zero(handshake);
+}
+
+void melnode_noise_keypairs_clear(struct melnode_keypairs *keypairs)
+{
+	memzero_explicit(keypairs, sizeof(*keypairs));
 }

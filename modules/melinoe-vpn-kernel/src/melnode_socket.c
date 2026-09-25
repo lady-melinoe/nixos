@@ -7,6 +7,7 @@
 #include <net/sock.h>
 #include <net/net_namespace.h>
 
+#include "melnode_compat.h"
 #include "melnode_core.h"
 #include "melnode_socket.h"
 
@@ -58,21 +59,21 @@ static int open_one(struct melnode_device *dev, int family, u16 local_port, u32 
 	} else {
 		struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)&addr;
 
-		sk->sk_ipv6only = 1;
+		melnode_compat_sock_set_v6only(sk);
 		a6->sin6_family = AF_INET6;
 		a6->sin6_addr = in6addr_any;
 		a6->sin6_port = htons(local_port);
 		addr_len = sizeof(*a6);
 	}
 
-	err = kernel_bind(sock, (struct sockaddr_unsized *)&addr, addr_len);
+	err = melnode_compat_bind(sock, &addr, addr_len);
 	if (err) {
 		sock_release(sock);
 		return err;
 	}
 
 	lock_sock(sk);
-	WRITE_ONCE(sk->sk_mark, fwmark);
+	melnode_compat_sock_set_mark(sk, fwmark);
 	sk->sk_user_data = dev;
 	if (family == AF_INET) {
 		dev->orig_sk_data_ready4 = sk->sk_data_ready;
@@ -113,17 +114,21 @@ static void detach_socket(struct socket *sock, void (*orig_data_ready)(struct so
 
 void melnode_socket_close(struct melnode_device *dev)
 {
-	struct socket *sock4 = dev->sock4;
-	struct socket *sock6 = dev->sock6;
+	struct socket *sock4, *sock6;
 
+	down_write(&dev->sock_sem);
+	sock4 = dev->sock4;
+	sock6 = dev->sock6;
 	WRITE_ONCE(dev->sock4, NULL);
 	WRITE_ONCE(dev->sock6, NULL);
+	up_write(&dev->sock_sem);
 
 	if (sock4)
 		detach_socket(sock4, dev->orig_sk_data_ready4);
 	if (sock6)
 		detach_socket(sock6, dev->orig_sk_data_ready6);
 
+	synchronize_rcu();
 	cancel_work_sync(&dev->rx_work);
 
 	if (sock4)
@@ -139,16 +144,10 @@ int melnode_socket_send(struct melnode_device *dev, const void *buf, size_t len,
 	struct msghdr msg = { 0 };
 	struct socket *sock;
 	struct kvec iov;
+	int ret;
 
-	if (sa->sa_family == AF_INET)
-		sock = READ_ONCE(dev->sock4);
-	else if (sa->sa_family == AF_INET6)
-		sock = READ_ONCE(dev->sock6);
-	else
+	if (sa->sa_family != AF_INET && sa->sa_family != AF_INET6)
 		return -EAFNOSUPPORT;
-
-	if (!sock)
-		return -ENETUNREACH;
 
 	iov.iov_base = (void *)buf;
 	iov.iov_len = len;
@@ -156,7 +155,11 @@ int melnode_socket_send(struct melnode_device *dev, const void *buf, size_t len,
 	msg.msg_namelen = addr_len;
 	msg.msg_flags = MSG_DONTWAIT;
 
-	return kernel_sendmsg(sock, &msg, &iov, 1, len);
+	down_read(&dev->sock_sem);
+	sock = sa->sa_family == AF_INET ? dev->sock4 : dev->sock6;
+	ret = sock ? kernel_sendmsg(sock, &msg, &iov, 1, len) : -ENETUNREACH;
+	up_read(&dev->sock_sem);
+	return ret;
 }
 
 static void drain_socket(struct socket *sock, u8 *buf)
