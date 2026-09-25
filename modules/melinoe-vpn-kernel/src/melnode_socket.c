@@ -213,24 +213,32 @@ int melnode_socket_send(struct melnode_device *dev, const void *buf, size_t len,
 	return ret;
 }
 
-static void parse_pktinfo(struct msghdr *msg, struct melnode_endpoint *ep)
+static void parse_pktinfo(const u8 *buf, size_t len, struct melnode_endpoint *ep)
 {
-	struct cmsghdr *cmsg;
+	size_t off = 0;
 
-	for (cmsg = CMSG_FIRSTHDR(msg); cmsg; cmsg = CMSG_NXTHDR(msg, cmsg)) {
-		if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO) {
+	while (len - off >= sizeof(struct cmsghdr)) {
+		const struct cmsghdr *cmsg = (const struct cmsghdr *)(buf + off);
+
+		if (cmsg->cmsg_len < sizeof(*cmsg) || cmsg->cmsg_len > len - off)
+			break;
+
+		if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO &&
+		    cmsg->cmsg_len >= CMSG_LEN(sizeof(struct in_pktinfo))) {
 			const struct in_pktinfo *pi = (const struct in_pktinfo *)CMSG_DATA(cmsg);
 
 			ep->src.v4 = pi->ipi_addr.s_addr;
 			ep->src_ifindex = pi->ipi_ifindex;
 			ep->has_src = true;
-		} else if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO) {
+		} else if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO &&
+			   cmsg->cmsg_len >= CMSG_LEN(sizeof(struct in6_pktinfo))) {
 			const struct in6_pktinfo *pi = (const struct in6_pktinfo *)CMSG_DATA(cmsg);
 
 			ep->src.v6 = pi->ipi6_addr;
 			ep->src_ifindex = pi->ipi6_ifindex;
 			ep->has_src = true;
 		}
+		off += CMSG_ALIGN(cmsg->cmsg_len);
 	}
 }
 
@@ -252,6 +260,7 @@ static void drain_socket(struct socket *sock, u8 *buf)
 		iov.iov_len = MELNODE_RECV_BUF_SIZE;
 		msg.msg_name = &from;
 		msg.msg_namelen = sizeof(from);
+		memset(&cbuf, 0, sizeof(cbuf));
 		msg.msg_control = cbuf.raw;
 		msg.msg_controllen = sizeof(cbuf.raw);
 
@@ -266,7 +275,7 @@ static void drain_socket(struct socket *sock, u8 *buf)
 		memset(&ep, 0, sizeof(ep));
 		memcpy(ep.addr, &from, msg.msg_namelen);
 		ep.addr_len = msg.msg_namelen;
-		parse_pktinfo(&msg, &ep);
+		parse_pktinfo(cbuf.raw, sizeof(cbuf.raw) - msg.msg_controllen, &ep);
 
 		melnode_handle_datagram(buf, ret, &ep);
 		cond_resched();
