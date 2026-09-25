@@ -26,6 +26,8 @@
   ];
   nix.distributedBuilds = true;
   nix.settings.builders-use-substitutes = true;
+  melinoe.services.melnode.kernelDataplane.enable = true;
+  melinoe.services.melnode.dataplane = "kernel";
   melinoe.node.remoteBuildOn = [
     {
       hostName = "hecate.infra.melinoe.xyz";
