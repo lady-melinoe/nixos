@@ -514,32 +514,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				continue
 			}
 			proto, src, dst := elem.packet[0], elem.packet[1], elem.packet[2]
-			switch proto {
-			case 0:
-				// proto 0 == tunneled IP packet: its own declared length
-				// is free traffic-analysis-padding-trim information, so
-				// use it instead of inventing a length field of our own.
-				ip := elem.packet[headerSize:]
-				switch {
-				case len(ip) >= 20 && ip[0]>>4 == 4:
-					length := binary.BigEndian.Uint16(ip[IPv4offsetTotalLength : IPv4offsetTotalLength+2])
-					if int(length) > len(ip) || int(length) < 20 {
-						device.stats.rxBad.Add(1)
-						continue
-					}
-					elem.packet = elem.packet[:headerSize+int(length)]
-				case len(ip) >= 40 && ip[0]>>4 == 6:
-					length := binary.BigEndian.Uint16(ip[IPv6offsetPayloadLength:IPv6offsetPayloadLength+2]) + 40
-					if int(length) > len(ip) {
-						device.stats.rxBad.Add(1)
-						continue
-					}
-					elem.packet = elem.packet[:headerSize+int(length)]
-				default:
-					device.stats.rxBad.Add(1)
-					continue
-				}
-			default:
+			if proto != 0 {
 				// Any non-zero proto is a control packet (link
 				// liveness, path-vector routing, whatever comes
 				// next). The data plane deliberately knows nothing
@@ -558,12 +533,17 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				continue
 			}
 
-			if uint32(dst) == device.localID {
+			// proto 0, a tunneled IP packet: trim, then deliver locally
+			// or forward, decided by deliverOrForward (routing.go).
+			result, pkt, nextHop := device.deliverOrForward(elem.packet)
+			switch result {
+			case fwdLocal:
 				w, ok := device.router.LookupTunWriter(uint32(src))
 				if !ok {
 					device.stats.rxNoTun.Add(1)
 					continue
 				}
+				elem.packet = pkt
 				localByPeer[w] = append(localByPeer[w], tunWriteItem{buffer: elem.buffer, packet: elem.packet})
 				// nil it out here, same as the forwarding branch below --
 				// ownership of the buffer now belongs to the tun writer
@@ -571,39 +551,24 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				// function's trailing flush), not to this function's own
 				// per-elem cleanup loop at the end of the round.
 				elem.buffer = nil
-			} else {
+			case fwdForward:
 				// Multi-hop forward: hand the whole still-proto=0-headed
 				// packet back into the outbound path for re-encryption
-				// onto the next link. Resolve the next hop right here
-				// (a plain map lookup -- see router.go's resolveNextHop)
-				// and steal elem.buffer outright rather than copying
-				// (inbound/outbound elements share one buffer pool, so
-				// this is a pointer handoff, not a copy -- see this
-				// function's earlier comment on the same trick for
-				// local delivery). Batch into one
-				// QueueOutboundElementsContainer per next-hop peer per
-				// round (forwardsByNextHop) instead of staging each
-				// packet individually -- see the comment where that map
-				// is declared for why that matters.
-				// TTL check first: a forwarded packet must have at
-				// least one hop left. Decrement in place -- the header
-				// is plaintext here and gets re-encrypted on the way out.
-				if elem.packet[hdrOffTTL] <= 1 {
-					device.stats.rxTTL.Add(1)
-					continue
-				}
-				nextHop := device.router.resolveNextHop(uint32(dst))
-				if nextHop == nil {
-					device.stats.rxNoRoute.Add(1)
-					continue // already logged by resolveNextHop
-				}
-				elem.packet[hdrOffTTL]--
+				// onto the next link, stealing elem.buffer outright
+				// rather than copying (inbound/outbound elements share
+				// one buffer pool, so this is a pointer handoff). Batch
+				// into one QueueOutboundElementsContainer per next-hop
+				// peer per round (forwardsByNextHop) instead of staging
+				// each packet individually -- see the comment where that
+				// map is declared for why that matters.
+				elem.packet = pkt
 				outElem := device.GetOutboundElement() // NewOutboundElement would also fetch a *fresh* buffer, which we don't want -- we already have one
 				outElem.buffer = elem.buffer
 				outElem.packet = elem.packet
 				fc, ok := forwardsByNextHop[nextHop]
 				if !ok {
 					fc = device.GetOutboundElementsContainer()
+					fc.forwarded = true
 					forwardsByNextHop[nextHop] = fc
 				}
 				fc.elems = append(fc.elems, outElem)
