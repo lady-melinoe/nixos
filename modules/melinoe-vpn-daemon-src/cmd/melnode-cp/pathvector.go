@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -206,6 +207,12 @@ type PathVector struct {
 	// for in-memory work.
 	tblMu sync.Mutex
 
+	// sendMu[neighborID] serializes "work out what to tell this neighbor,
+	// send it" (see flushTo), so what it hears last is always what we
+	// currently think. Lock order: a neighbor's sendMu, then mu. Created
+	// on demand under mu, never removed (peerids are 0-255).
+	sendMu map[uint32]*sync.Mutex
+
 	mu sync.Mutex
 	// learned[dest][neighborPeerID] = that neighbor's currently
 	// advertised route to dest. Kept per-neighbor (not just the winner)
@@ -226,9 +233,15 @@ type PathVector struct {
 	// (and the too-long-path guard) *withdraw* a previously-advertised
 	// route when it stops being advertisable to that neighbor, instead of
 	// silently skipping it and leaving a stale learned[dest][us] entry in
-	// the neighbor's table -- see suppressLocked / propagateAnnounce.
-	// Cleared for a neighbor whenever its link goes down or comes up.
+	// the neighbor's table -- see flushTo. Cleared for a neighbor whenever
+	// its link goes down or comes up.
 	advertised map[uint32]map[uint32]bool
+
+	// dirty[neighborID][dest] = dest changed since we last told that
+	// neighbor about it. Changes only mark dests here; flushTo works out
+	// what to send from the state at the time it sends, so an update that
+	// was overtaken by a newer one can never be the last one sent.
+	dirty map[uint32]map[uint32]bool
 
 	// localPrefixes is this node's own claimed set: IdentityPrefix
 	// (config, always present if set) plus whatever's been added via
@@ -264,6 +277,8 @@ func newPathVector(node *Node, localID uint32) *PathVector {
 		best:          make(map[uint32]pvRoute),
 		neighbors:     make(map[uint32]*Link),
 		advertised:    make(map[uint32]map[uint32]bool),
+		dirty:         make(map[uint32]map[uint32]bool),
+		sendMu:        make(map[uint32]*sync.Mutex),
 		localPrefixes: make(map[pvPrefix]bool),
 		prefixClaims:  make(map[pvPrefix]map[uint32]bool),
 		prefixOwner:   make(map[pvPrefix]uint32),
@@ -346,6 +361,7 @@ func (pv *PathVector) OnLinkUp(peer *Link) {
 	pv.mu.Lock()
 	pv.neighbors[peer.id] = peer
 	delete(pv.advertised, peer.id) // fresh session: the neighbor knows nothing of ours
+	delete(pv.dirty, peer.id)      // fullSyncTo below covers everything
 	pv.mu.Unlock()
 	pv.node.log.Verbosef("pathvector: neighbor %v up, sending full table", peer)
 	pv.fullSyncTo(peer)
@@ -361,14 +377,9 @@ func (pv *PathVector) OnLinkDown(peer *Link) {
 	pv.mu.Lock()
 	delete(pv.neighbors, peer.id)
 	delete(pv.advertised, peer.id) // it drops everything we told it on its own link-down
+	delete(pv.dirty, peer.id)
 
-	type change struct {
-		dest       uint32
-		newBest    pvRoute
-		reachable  bool
-		wasChanged bool
-	}
-	var changes []change
+	changed := false
 	affectedPrefixes := make(map[pvPrefix]bool)
 
 	for dest, byNeighbor := range pv.learned {
@@ -383,15 +394,17 @@ func (pv *PathVector) OnLinkDown(peer *Link) {
 		old, hadOld := pv.best[dest]
 		if !ok {
 			delete(pv.best, dest)
-			changes = append(changes, change{dest: dest, reachable: false, wasChanged: hadOld})
 			if hadOld {
+				changed = true
+				pv.markDirtyLocked(dest)
 				for p := range pv.updatePrefixClaimsLocked(dest, old.prefixes, nil) {
 					affectedPrefixes[p] = true
 				}
 			}
 		} else if !hadOld || !pathsEqual(old.path, newBest.path) || !prefixesEqual(old.prefixes, newBest.prefixes) {
 			pv.best[dest] = newBest
-			changes = append(changes, change{dest: dest, newBest: newBest, reachable: true, wasChanged: true})
+			changed = true
+			pv.markDirtyLocked(dest)
 			var oldPrefixes []pvPrefix
 			if hadOld {
 				oldPrefixes = old.prefixes
@@ -405,17 +418,8 @@ func (pv *PathVector) OnLinkDown(peer *Link) {
 	neighbors := pv.neighborsSnapshotLocked()
 	pv.mu.Unlock()
 
-	for _, c := range changes {
-		if !c.wasChanged {
-			continue
-		}
-		if !c.reachable {
-			pv.propagateWithdraw(c.dest, neighbors, nil)
-		} else {
-			pv.propagateAnnounce(c.dest, c.newBest, neighbors, nil)
-		}
-	}
-	if len(changes) > 0 || len(prefixChanges) > 0 {
+	pv.flushAll(neighbors)
+	if changed || len(prefixChanges) > 0 {
 		pv.syncKernel()
 	}
 }
@@ -435,15 +439,7 @@ func (pv *PathVector) handlePacket(from *Link, payload []byte) {
 		pv.node.log.Verbosef("%v - pathvector: link not up, dropping", from)
 		return
 	}
-	var announceChanges []struct {
-		dest  uint32
-		route pvRoute
-	}
-	var withdrawChanges []struct {
-		dest      uint32
-		newBest   pvRoute
-		reachable bool
-	}
+	changed := false
 	affectedPrefixes := make(map[pvPrefix]bool)
 
 	for _, a := range announces {
@@ -476,10 +472,8 @@ func (pv *PathVector) handlePacket(from *Link, payload []byte) {
 		old, hadOld := pv.best[a.dest]
 		if !hadOld || !pathsEqual(old.path, newBest.path) || !prefixesEqual(old.prefixes, newBest.prefixes) {
 			pv.best[a.dest] = newBest
-			announceChanges = append(announceChanges, struct {
-				dest  uint32
-				route pvRoute
-			}{a.dest, newBest})
+			changed = true
+			pv.markDirtyLocked(a.dest)
 			var oldPrefixes []pvPrefix
 			if hadOld {
 				oldPrefixes = old.prefixes
@@ -507,22 +501,16 @@ func (pv *PathVector) handlePacket(from *Link, payload []byte) {
 		if !ok {
 			delete(pv.best, dest)
 			if hadOld {
-				withdrawChanges = append(withdrawChanges, struct {
-					dest      uint32
-					newBest   pvRoute
-					reachable bool
-				}{dest, pvRoute{}, false})
+				changed = true
+				pv.markDirtyLocked(dest)
 				for p := range pv.updatePrefixClaimsLocked(dest, old.prefixes, nil) {
 					affectedPrefixes[p] = true
 				}
 			}
 		} else if !hadOld || !pathsEqual(old.path, newBest.path) || !prefixesEqual(old.prefixes, newBest.prefixes) {
 			pv.best[dest] = newBest
-			withdrawChanges = append(withdrawChanges, struct {
-				dest      uint32
-				newBest   pvRoute
-				reachable bool
-			}{dest, newBest, true})
+			changed = true
+			pv.markDirtyLocked(dest)
 			var oldPrefixes []pvPrefix
 			if hadOld {
 				oldPrefixes = old.prefixes
@@ -537,17 +525,8 @@ func (pv *PathVector) handlePacket(from *Link, payload []byte) {
 	neighbors := pv.neighborsSnapshotLocked()
 	pv.mu.Unlock()
 
-	for _, c := range announceChanges {
-		pv.propagateAnnounce(c.dest, c.route, neighbors, from)
-	}
-	for _, c := range withdrawChanges {
-		if c.reachable {
-			pv.propagateAnnounce(c.dest, c.newBest, neighbors, from)
-		} else {
-			pv.propagateWithdraw(c.dest, neighbors, from)
-		}
-	}
-	if len(announceChanges) > 0 || len(withdrawChanges) > 0 || len(prefixChanges) > 0 {
+	pv.flushAll(neighbors)
+	if changed || len(prefixChanges) > 0 {
 		pv.syncKernel()
 	}
 }
@@ -591,8 +570,8 @@ func (pv *PathVector) setLocalPrefix(p pvPrefix, advertise bool) {
 	newPrefixes := pv.localPrefixesListLocked()
 	affected := pv.updatePrefixClaimsLocked(pv.localID, oldPrefixes, newPrefixes)
 	prefixChanges := pv.reconcilePrefixesLocked(affected)
+	pv.markDirtyLocked(pv.localID)
 	neighbors := pv.neighborsSnapshotLocked()
-	route := pvRoute{path: []uint32{pv.localID}, prefixes: newPrefixes}
 	pv.mu.Unlock()
 
 	if advertise {
@@ -603,7 +582,7 @@ func (pv *PathVector) setLocalPrefix(p pvPrefix, advertise bool) {
 	if len(prefixChanges) > 0 {
 		pv.syncKernel()
 	}
-	pv.propagateAnnounce(pv.localID, route, neighbors, nil)
+	pv.flushAll(neighbors)
 }
 
 func (pv *PathVector) localPrefixesListLocked() []pvPrefix {
@@ -730,114 +709,141 @@ func (pv *PathVector) neighborsSnapshotLocked() []*Link {
 	return out
 }
 
-// propagateAnnounce sends dest's new best route to every neighbor,
-// except that a neighbor for whom the route can't (or shouldn't) be
-// advertised -- it's skipSource (who just told us about it, pointless to
-// echo back), it already appears in the path (split-horizon/loop-
-// avoidance, see this file's top comment), or the path would be too long
-// to encode -- instead gets a *withdraw* if we'd previously advertised
-// dest to it. Silently skipping (the original behavior) left the
-// neighbor holding our older, now-wrong route as a stale alternative,
-// which it would happily fall back to on its own next failure and
-// forward straight back at us.
-func (pv *PathVector) propagateAnnounce(dest uint32, route pvRoute, neighbors []*Link, skipSource *Link) {
-	for _, n := range neighbors {
-		var fwd []uint32
-		suppress := (skipSource != nil && n.id == skipSource.id) || route.contains(n.id)
-		if !suppress {
-			fwd = pv.forwardPath(route.path, n)
-			suppress = len(fwd) > pvMaxPathLen
+// markDirtyLocked records that dest changed, for every current neighbor;
+// the next flushTo for each works out what (if anything) to tell it.
+// Caller holds pv.mu.
+func (pv *PathVector) markDirtyLocked(dest uint32) {
+	for nid := range pv.neighbors {
+		d := pv.dirty[nid]
+		if d == nil {
+			d = make(map[uint32]bool)
+			pv.dirty[nid] = d
 		}
-		if suppress {
-			if pv.clearAdvertised(n.id, dest) {
-				pv.sendTo(n, nil, []uint32{dest})
-			}
-			continue
-		}
-		pv.markAdvertised(n.id, dest)
-		pv.sendTo(n, []pvAnnouncement{{dest: dest, path: fwd, prefixes: route.prefixes}}, nil)
+		d[dest] = true
 	}
 }
 
-// propagateWithdraw tells every neighbor we'd advertised dest to that it's
-// gone. That includes skipSource: if we had advertised dest to the
-// neighbor that just withdrew it from us, its copy is stale too.
-func (pv *PathVector) propagateWithdraw(dest uint32, neighbors []*Link, skipSource *Link) {
-	for _, n := range neighbors {
-		if pv.clearAdvertised(n.id, dest) {
-			pv.sendTo(n, nil, []uint32{dest})
-		}
+// entryForLocked is what neighbor n should currently hear about dest: an
+// announcement, or ok=false when dest may not be advertised to n -- it's
+// unreachable, n is already in its path (split horizon; the receiver would
+// reject it as a loop anyway), or the path would be too long to encode --
+// in which case a previous advertisement has to be withdrawn. Our own
+// self-origination is sent as-is: forwardPath is only for relayed routes.
+// Caller holds pv.mu.
+func (pv *PathVector) entryForLocked(dest uint32, n *Link) (pvAnnouncement, bool) {
+	if dest == pv.localID {
+		return pvAnnouncement{dest: dest, path: []uint32{pv.localID}, prefixes: pv.localPrefixesListLocked()}, true
 	}
+	route, ok := pv.best[dest]
+	if !ok || route.contains(n.id) {
+		return pvAnnouncement{}, false
+	}
+	fwd := pv.forwardPath(route.path, n)
+	if len(fwd) > pvMaxPathLen {
+		return pvAnnouncement{}, false
+	}
+	return pvAnnouncement{dest: dest, path: fwd, prefixes: route.prefixes}, true
 }
 
-func (pv *PathVector) markAdvertised(nid, dest uint32) {
+func (pv *PathVector) sendLock(nid uint32) *sync.Mutex {
 	pv.mu.Lock()
 	defer pv.mu.Unlock()
-	m := pv.advertised[nid]
-	if m == nil {
-		m = make(map[uint32]bool)
-		pv.advertised[nid] = m
+	l := pv.sendMu[nid]
+	if l == nil {
+		l = &sync.Mutex{}
+		pv.sendMu[nid] = l
 	}
-	m[dest] = true
+	return l
 }
 
-// clearAdvertised reports whether dest had been advertised to nid.
-func (pv *PathVector) clearAdvertised(nid, dest uint32) bool {
-	pv.mu.Lock()
-	defer pv.mu.Unlock()
-	m := pv.advertised[nid]
-	if !m[dest] {
-		return false
-	}
-	delete(m, dest)
-	return true
-}
+// flushTo sends peer an update for every dest marked dirty for it, built
+// from the state at that moment: an announcement for what's advertisable,
+// a withdraw for what we'd advertised and now can't. The peer's send lock
+// is held from reading that state until the packet is out, so two flushes
+// can't cross on the wire: whatever is sent last reflects the newest state.
+// A change that lands while one flush is sending marks its dest dirty
+// again, and the flush that follows sends it. Without this, updates were
+// worked out under pv.mu but sent after dropping it, from whichever
+// goroutine made the change, so an older one could arrive last and stick
+// until the next full sync (proto=2 isn't acked).
+func (pv *PathVector) flushTo(peer *Link) {
+	l := pv.sendLock(peer.id)
+	l.Lock()
+	defer l.Unlock()
 
-// fullSyncTo sends every currently-selected best route (split-horizoned
-// for this recipient) plus our own self-origin entry, in one packet.
-// Used both for a brand-new neighbor's initial table dump and for the
-// periodic resync. Anything we'd previously advertised to this neighbor
-// that isn't in that set any more is withdrawn in the same packet, so
-// the periodic resync also heals a lost withdraw (proto=2 isn't
-// acked/retransmitted). sendTo chunks it to the MTU.
-func (pv *PathVector) fullSyncTo(peer *Link) {
 	max := pv.pvMaxPayload()
 	pv.mu.Lock()
-	entries := make([]pvAnnouncement, 0, len(pv.best)+1)
-	sent := make(map[uint32]bool, len(pv.best)+1)
-	// An entry sendTo will refuse (it logs why) is not advertised: leaving
-	// it out of sent withdraws any older route we had advertised for it,
-	// instead of recording it as current.
-	self := pvAnnouncement{dest: pv.localID, path: []uint32{pv.localID}, prefixes: pv.localPrefixesListLocked()}
-	entries = append(entries, self)
-	sent[pv.localID] = pvEntrySendable(self, max)
-	for dest, route := range pv.best {
-		if route.contains(peer.id) {
-			continue // split horizon (withdrawn below if previously advertised)
-		}
-		fwd := pv.forwardPath(route.path, peer)
-		if len(fwd) > pvMaxPathLen {
+	dirty := pv.dirty[peer.id]
+	delete(pv.dirty, peer.id)
+	if len(dirty) == 0 {
+		pv.mu.Unlock()
+		return
+	}
+	dests := make([]uint32, 0, len(dirty))
+	for dest := range dirty {
+		dests = append(dests, dest)
+	}
+	sort.Slice(dests, func(i, j int) bool { return dests[i] < dests[j] })
+
+	adv := pv.advertised[peer.id]
+	if adv == nil {
+		adv = make(map[uint32]bool)
+		pv.advertised[peer.id] = adv
+	}
+	var announces []pvAnnouncement
+	var withdraws []uint32
+	for _, dest := range dests {
+		a, ok := pv.entryForLocked(dest, peer)
+		if ok && pvEntrySendable(a, max) {
+			adv[dest] = true
+			announces = append(announces, a)
 			continue
 		}
-		a := pvAnnouncement{dest: dest, path: fwd, prefixes: route.prefixes}
-		entries = append(entries, a)
-		sent[dest] = pvEntrySendable(a, max)
-	}
-	var withdraws []uint32
-	for dest := range pv.advertised[peer.id] {
-		if !sent[dest] {
+		// An entry sendTo will refuse is still handed to it (it logs
+		// why), but isn't advertised: withdraw any older route we had
+		// advertised for it rather than recording it as current.
+		if ok {
+			announces = append(announces, a)
+		}
+		if adv[dest] {
+			delete(adv, dest)
 			withdraws = append(withdraws, dest)
 		}
 	}
-	for dest, ok := range sent {
-		if !ok {
-			delete(sent, dest)
-		}
-	}
-	pv.advertised[peer.id] = sent
 	pv.mu.Unlock()
 
-	pv.sendTo(peer, entries, withdraws)
+	pv.sendTo(peer, announces, withdraws)
+}
+
+func (pv *PathVector) flushAll(neighbors []*Link) {
+	for _, n := range neighbors {
+		pv.flushTo(n)
+	}
+}
+
+// fullSyncTo sends every currently-selected best route (split-horizoned
+// for this recipient) plus our own self-origin entry, and withdraws
+// anything we'd previously advertised to this neighbor that isn't in that
+// set any more, so the periodic resync also heals a lost withdraw (proto=2
+// isn't acked/retransmitted). Used both for a brand-new neighbor's initial
+// table dump and for the periodic resync. sendTo chunks it to the MTU.
+func (pv *PathVector) fullSyncTo(peer *Link) {
+	pv.mu.Lock()
+	d := pv.dirty[peer.id]
+	if d == nil {
+		d = make(map[uint32]bool)
+		pv.dirty[peer.id] = d
+	}
+	d[pv.localID] = true
+	for dest := range pv.best {
+		d[dest] = true
+	}
+	for dest := range pv.advertised[peer.id] {
+		d[dest] = true
+	}
+	pv.mu.Unlock()
+
+	pv.flushTo(peer)
 }
 
 // pvMaxPayload is the most path-vector payload one packet may carry: the

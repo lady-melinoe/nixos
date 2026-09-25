@@ -212,7 +212,12 @@ static int melnode_netlink_notifier_call(struct notifier_block *nb, unsigned lon
 {
 	struct netlink_notify *notify = _notify;
 
-	if (state != NETLINK_URELEASE || notify->protocol != NETLINK_GENERIC)
+	/* Portids are only unique per netns, and the family lives in init_net:
+	 * a socket closing anywhere else (a container, a PrivateNetwork=
+	 * service) must not detach the control plane.
+	 */
+	if (state != NETLINK_URELEASE || notify->protocol != NETLINK_GENERIC ||
+	    !net_eq(notify->net, &init_net))
 		return NOTIFY_DONE;
 
 	spin_lock_bh(&melnode_dev.attach_lock);
