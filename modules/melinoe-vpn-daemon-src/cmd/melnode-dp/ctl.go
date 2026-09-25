@@ -23,6 +23,10 @@ type ctlHandler struct {
 	mu     sync.Mutex
 	dev    *Device // nil until DeviceSet
 	params dpproto.DeviceSet
+
+	// linkMu serializes LinkAdd/LinkDel: each is a lookup-then-mutate, and
+	// requests from different control sessions run concurrently.
+	linkMu sync.Mutex
 }
 
 var _ dpproto.Handler = (*ctlHandler)(nil)
@@ -175,6 +179,8 @@ func (h *ctlHandler) LinkAdd(m dpproto.LinkAdd) error {
 	if m.PeerID == d.localID {
 		return dpproto.Errorf(dpproto.CodeInvalid, "peerid %d is this node itself", m.PeerID)
 	}
+	h.linkMu.Lock()
+	defer h.linkMu.Unlock()
 	pk := NoisePublicKey(m.PubKey)
 
 	var endpoint conn.Endpoint
@@ -221,6 +227,8 @@ func (h *ctlHandler) LinkDel(id uint32) error {
 	if err != nil {
 		return err
 	}
+	h.linkMu.Lock()
+	defer h.linkMu.Unlock()
 	p := d.lookupPeerByID(id)
 	if p == nil {
 		return dpproto.Errorf(dpproto.CodeNotFound, "no link %d", id)

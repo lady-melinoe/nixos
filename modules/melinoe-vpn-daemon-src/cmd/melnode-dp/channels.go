@@ -91,6 +91,9 @@ func (device *Device) flushInboundQueue(q *autodrainingInboundQueue) {
 	for {
 		select {
 		case elemsContainer := <-q.c:
+			if elemsContainer == nil {
+				continue // a stop sentinel, not a container
+			}
 			elemsContainer.Lock()
 			for _, elem := range elemsContainer.elems {
 				device.PutMessageBuffer(elem.buffer)
@@ -124,6 +127,9 @@ func (device *Device) flushOutboundQueue(q *autodrainingOutboundQueue) {
 	for {
 		select {
 		case elemsContainer := <-q.c:
+			if elemsContainer == nil {
+				continue // a stop sentinel, not a container
+			}
 			elemsContainer.Lock()
 			for _, elem := range elemsContainer.elems {
 				device.PutMessageBuffer(elem.buffer)

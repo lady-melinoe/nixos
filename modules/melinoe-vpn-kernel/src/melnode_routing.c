@@ -245,8 +245,12 @@ int melnode_routing_send_now(struct melnode_link *link, const u8 *plain, size_t 
 		kfree(out);
 		return -ENOENT;
 	}
-	rekey = kp->initiator && (kp->sending_counter >= MELNODE_REKEY_AFTER_MESSAGES ||
-				  melnode_key_expired(&kp->sending, MELNODE_REKEY_AFTER_TIME));
+	/* Like WireGuard's keep_key_fresh: either side rekeys on the message
+	 * count; only the initiator rekeys on age (avoids both sides
+	 * initiating at once when the session gets old).
+	 */
+	rekey = kp->sending_counter >= MELNODE_REKEY_AFTER_MESSAGES ||
+		(kp->initiator && melnode_key_expired(&kp->sending, MELNODE_REKEY_AFTER_TIME));
 	counter = kp->sending_counter++;
 	link->keepalive_at = 0;
 	if (plain_len && !link->new_handshake_at) {
