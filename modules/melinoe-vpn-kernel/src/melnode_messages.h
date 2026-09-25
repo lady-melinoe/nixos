@@ -1,16 +1,4 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/*
- * melnode's Noise transport wire format.
- *
- * melnode's Noise implementation (cmd/melnode-dp/noise-*.go, cookie.go,
- * keypair.go) is an unmodified fork of wireguard-go's device/ package
- * (diff shows only `package device` -> `package main` and two removed log
- * lines) - so the wire protocol here is exactly WireGuard's Noise_IKpsk2
- * construction. This header is adapted from
- * drivers/net/wireguard/messages.h (Jason A. Donenfeld, GPL-2.0): same
- * structs and constants, renamed to melnode's naming and trimmed to what
- * this module currently uses.
- */
 #ifndef _MELNODE_MESSAGES_H
 #define _MELNODE_MESSAGES_H
 
@@ -45,10 +33,7 @@ enum melnode_counter_values {
 };
 
 enum melnode_noise_limits {
-	MELNODE_REKEY_AFTER_MESSAGES = 1ULL << 60,
 	MELNODE_REJECT_AFTER_MESSAGES = U64_MAX - MELNODE_COUNTER_WINDOW_SIZE - 1,
-	MELNODE_REKEY_AFTER_TIME = 120,
-	MELNODE_REJECT_AFTER_TIME = 180,
 	MELNODE_REKEY_TIMEOUT = 5,
 	MELNODE_INITIATIONS_PER_SECOND = 50,
 };
@@ -62,16 +47,12 @@ enum melnode_wire_message_type {
 };
 
 struct melnode_wire_header {
-	/* type is a u8 followed by 3 zero bytes; little-endian lets us treat
-	 * the whole thing as one u32 (same trick as WireGuard's
-	 * message_header).
-	 */
 	__le32 type;
 };
 
 struct melnode_wire_macs {
 	u8 mac1[MELNODE_COOKIE_LEN];
-	u8 mac2[MELNODE_COOKIE_LEN]; /* always zero - no cookie-reply support yet */
+	u8 mac2[MELNODE_COOKIE_LEN];
 };
 
 struct melnode_wire_handshake_initiation {
@@ -105,8 +86,5 @@ struct melnode_wire_data {
 	__le64 counter;
 	u8 encrypted_data[];
 };
-
-#define melnode_wire_data_len(plain_len) \
-	(melnode_noise_encrypted_len(plain_len) + sizeof(struct melnode_wire_data))
 
 #endif /* _MELNODE_MESSAGES_H */

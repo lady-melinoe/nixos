@@ -1,10 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/*
- * mac1/mac2 + cookie-reply. Ported from drivers/net/wireguard/cookie.c
- * (Jason A. Donenfeld, GPL-2.0) - see melnode_cookie.h for the locking
- * (a per-checker secret_lock plus each link's own lock for its
- * struct melnode_cookie) and the overall design.
- */
 
 #include <linux/string.h>
 #include <linux/ktime.h>
@@ -28,8 +22,8 @@ static bool birthdate_has_expired(u64 birthdate_ns, u64 expiration_seconds)
 }
 
 static void precompute_key(u8 key[MELNODE_NOISE_SYMMETRIC_KEY_LEN],
-			    const u8 pubkey[MELNODE_NOISE_PUBLIC_KEY_LEN],
-			    const u8 label[COOKIE_KEY_LABEL_LEN])
+			   const u8 pubkey[MELNODE_NOISE_PUBLIC_KEY_LEN],
+			   const u8 label[COOKIE_KEY_LABEL_LEN])
 {
 	struct blake2s_ctx blake;
 
@@ -48,14 +42,14 @@ void melnode_cookie_checker_init(struct melnode_cookie_checker *checker)
 }
 
 void melnode_cookie_checker_precompute_device_keys(struct melnode_cookie_checker *checker,
-						    const u8 device_static_public[MELNODE_NOISE_PUBLIC_KEY_LEN])
+						   const u8 device_static_public[MELNODE_NOISE_PUBLIC_KEY_LEN])
 {
 	precompute_key(checker->cookie_encryption_key, device_static_public, cookie_key_label);
 	precompute_key(checker->message_mac1_key, device_static_public, mac1_key_label);
 }
 
 void melnode_cookie_precompute_peer_keys(struct melnode_cookie *cookie,
-					  const u8 peer_static_public[MELNODE_NOISE_PUBLIC_KEY_LEN])
+					 const u8 peer_static_public[MELNODE_NOISE_PUBLIC_KEY_LEN])
 {
 	precompute_key(cookie->cookie_decryption_key, peer_static_public, cookie_key_label);
 	precompute_key(cookie->message_mac1_key, peer_static_public, mac1_key_label);
@@ -67,29 +61,21 @@ void melnode_cookie_init(struct melnode_cookie *cookie)
 }
 
 static void compute_mac1(u8 mac1[MELNODE_COOKIE_LEN], const void *message, size_t len,
-			  const u8 key[MELNODE_NOISE_SYMMETRIC_KEY_LEN])
+			 const u8 key[MELNODE_NOISE_SYMMETRIC_KEY_LEN])
 {
 	len = len - sizeof(struct melnode_wire_macs) + offsetof(struct melnode_wire_macs, mac1);
 	blake2s(key, MELNODE_NOISE_SYMMETRIC_KEY_LEN, message, len, mac1, MELNODE_COOKIE_LEN);
 }
 
 static void compute_mac2(u8 mac2[MELNODE_COOKIE_LEN], const void *message, size_t len,
-			  const u8 cookie[MELNODE_COOKIE_LEN])
+			 const u8 cookie[MELNODE_COOKIE_LEN])
 {
 	len = len - sizeof(struct melnode_wire_macs) + offsetof(struct melnode_wire_macs, mac2);
 	blake2s(cookie, MELNODE_COOKIE_LEN, message, len, mac2, MELNODE_COOKIE_LEN);
 }
 
-/* secret/secret_birthdate are guarded by checker->secret_lock, not by
- * whatever lock the caller holds on its own link/table state - see
- * melnode_cookie.h's header comment. Read-locked for the common case
- * (using the current secret); briefly escalated to a write lock only when
- * the secret has actually expired, matching
- * drivers/net/wireguard/cookie.c's own wg_make_cookie(). Runs from
- * softirq-reachable contexts (handshake RX), hence the _bh variants.
- */
 static void make_cookie(u8 cookie[MELNODE_COOKIE_LEN], const void *from_addr, int from_len,
-			 struct melnode_cookie_checker *checker)
+			struct melnode_cookie_checker *checker)
 {
 	const struct sockaddr *sa = from_addr;
 	struct blake2s_ctx blake;
@@ -98,9 +84,6 @@ static void make_cookie(u8 cookie[MELNODE_COOKIE_LEN], const void *from_addr, in
 	if (unlikely(birthdate_has_expired(checker->secret_birthdate, MELNODE_COOKIE_SECRET_MAX_AGE))) {
 		read_unlock_bh(&checker->secret_lock);
 		write_lock_bh(&checker->secret_lock);
-		/* Re-check: another caller may have already rotated the secret
-		 * while this one was waiting for the write lock.
-		 */
 		if (birthdate_has_expired(checker->secret_birthdate, MELNODE_COOKIE_SECRET_MAX_AGE)) {
 			checker->secret_birthdate = ktime_get_coarse_boottime_ns();
 			get_random_bytes(checker->secret, MELNODE_NOISE_HASH_LEN);
@@ -111,6 +94,7 @@ static void make_cookie(u8 cookie[MELNODE_COOKIE_LEN], const void *from_addr, in
 
 	blake2s_init_key(&blake, MELNODE_COOKIE_LEN, checker->secret, MELNODE_NOISE_HASH_LEN);
 	read_unlock_bh(&checker->secret_lock);
+
 	if (sa->sa_family == AF_INET && from_len >= sizeof(struct sockaddr_in)) {
 		const struct sockaddr_in *a4 = from_addr;
 
@@ -126,9 +110,9 @@ static void make_cookie(u8 cookie[MELNODE_COOKIE_LEN], const void *from_addr, in
 }
 
 enum melnode_cookie_mac_state melnode_cookie_validate_packet(struct melnode_cookie_checker *checker,
-							       const void *message, size_t len,
-							       const void *from_addr, int from_len,
-							       bool check_cookie)
+							      const void *message, size_t len,
+							      const void *from_addr, int from_len,
+							      bool check_cookie)
 {
 	const struct melnode_wire_macs *macs =
 		(const struct melnode_wire_macs *)((const u8 *)message + len - sizeof(*macs));
@@ -156,7 +140,8 @@ enum melnode_cookie_mac_state melnode_cookie_validate_packet(struct melnode_cook
 
 void melnode_cookie_add_mac_to_packet(void *message, size_t len, struct melnode_cookie *cookie)
 {
-	struct melnode_wire_macs *macs = (struct melnode_wire_macs *)((u8 *)message + len - sizeof(*macs));
+	struct melnode_wire_macs *macs =
+		(struct melnode_wire_macs *)((u8 *)message + len - sizeof(*macs));
 
 	compute_mac1(macs->mac1, message, len, cookie->message_mac1_key);
 	memcpy(cookie->last_mac1_sent, macs->mac1, MELNODE_COOKIE_LEN);
@@ -164,15 +149,15 @@ void melnode_cookie_add_mac_to_packet(void *message, size_t len, struct melnode_
 
 	if (cookie->is_valid &&
 	    !birthdate_has_expired(cookie->birthdate,
-				    MELNODE_COOKIE_SECRET_MAX_AGE - MELNODE_COOKIE_SECRET_LATENCY))
+				   MELNODE_COOKIE_SECRET_MAX_AGE - MELNODE_COOKIE_SECRET_LATENCY))
 		compute_mac2(macs->mac2, message, len, cookie->cookie);
 	else
 		memset(macs->mac2, 0, MELNODE_COOKIE_LEN);
 }
 
 void melnode_cookie_message_create(struct melnode_wire_handshake_cookie *dst, const void *message,
-				    size_t message_len, const void *from_addr, int from_len,
-				    __le32 receiver_index, struct melnode_cookie_checker *checker)
+				   size_t message_len, const void *from_addr, int from_len,
+				   __le32 receiver_index, struct melnode_cookie_checker *checker)
 {
 	const struct melnode_wire_macs *macs =
 		(const struct melnode_wire_macs *)((const u8 *)message + message_len - sizeof(*macs));
@@ -184,23 +169,24 @@ void melnode_cookie_message_create(struct melnode_wire_handshake_cookie *dst, co
 
 	make_cookie(cookie, from_addr, from_len, checker);
 	xchacha20poly1305_encrypt(dst->encrypted_cookie, cookie, MELNODE_COOKIE_LEN, macs->mac1,
-				   MELNODE_COOKIE_LEN, dst->nonce, checker->cookie_encryption_key);
+				  MELNODE_COOKIE_LEN, dst->nonce, checker->cookie_encryption_key);
 }
 
 void melnode_cookie_message_consume(const struct melnode_wire_handshake_cookie *src,
-				     struct melnode_cookie *cookie)
+				    struct melnode_cookie *cookie)
 {
 	u8 plain_cookie[MELNODE_COOKIE_LEN];
 
 	if (!cookie->have_sent_mac1)
 		return;
 
-	if (xchacha20poly1305_decrypt(plain_cookie, src->encrypted_cookie,
+	if (!xchacha20poly1305_decrypt(plain_cookie, src->encrypted_cookie,
 				       sizeof(src->encrypted_cookie), cookie->last_mac1_sent,
-				       MELNODE_COOKIE_LEN, src->nonce, cookie->cookie_decryption_key)) {
-		memcpy(cookie->cookie, plain_cookie, MELNODE_COOKIE_LEN);
-		cookie->birthdate = ktime_get_coarse_boottime_ns();
-		cookie->is_valid = true;
-		cookie->have_sent_mac1 = false;
-	}
+				       MELNODE_COOKIE_LEN, src->nonce, cookie->cookie_decryption_key))
+		return;
+
+	memcpy(cookie->cookie, plain_cookie, MELNODE_COOKIE_LEN);
+	cookie->birthdate = ktime_get_coarse_boottime_ns();
+	cookie->is_valid = true;
+	cookie->have_sent_mac1 = false;
 }

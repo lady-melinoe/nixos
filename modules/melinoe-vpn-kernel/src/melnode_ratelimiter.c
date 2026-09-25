@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/*
- * Per-source-IP token bucket. Ported from drivers/net/wireguard/
- * ratelimiter.c (Jason A. Donenfeld, GPL-2.0) - same algorithm and
- * constants, with the per-`struct net` dimension dropped (melnode is one
- * device in init_net; WireGuard supports many devices across many netns
- * and needs to ratelimit each independently).
- */
 
 #include <linux/siphash.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
+#include <linux/mutex.h>
 #include <linux/rcupdate.h>
 #include <linux/workqueue.h>
 #include <linux/in.h>
@@ -19,9 +13,9 @@
 
 static struct kmem_cache *entry_cache;
 static hsiphash_key_t key;
-static spinlock_t table_lock = __SPIN_LOCK_UNLOCKED("melnode_ratelimiter_table_lock");
+static DEFINE_SPINLOCK(table_lock);
 static DEFINE_MUTEX(init_lock);
-static u64 init_refcnt; /* protected by init_lock */
+static u64 init_refcnt;
 static atomic_t total_entries = ATOMIC_INIT(0);
 static unsigned int max_entries, table_size;
 static void ratelimiter_gc_entries(struct work_struct *);
@@ -57,7 +51,6 @@ static void entry_uninit(struct ratelimiter_entry *entry)
 	call_rcu(&entry->rcu, entry_free);
 }
 
-/* Calling with work == NULL uninitializes every entry (module teardown). */
 static void ratelimiter_gc_entries(struct work_struct *work)
 {
 	const u64 now = ktime_get_coarse_boottime_ns();
@@ -102,10 +95,8 @@ bool melnode_ratelimiter_allow(const void *from_addr, int from_len)
 	else if (sa->sa_family == AF_INET6 && from_len >= sizeof(struct sockaddr_in6)) {
 		const struct sockaddr_in6 *a6 = from_addr;
 
-		/* Ratelimit the whole /64, like WireGuard does. */
 		memcpy(&ip, &a6->sin6_addr, sizeof(ip));
-		bucket = &table_v6[hsiphash_2u32((u32)(ip >> 32), (u32)ip, &key) &
-				    (table_size - 1)];
+		bucket = &table_v6[hsiphash_2u32((u32)(ip >> 32), (u32)ip, &key) & (table_size - 1)];
 	}
 #endif
 	else
@@ -162,9 +153,6 @@ int melnode_ratelimiter_init(void)
 	if (!entry_cache)
 		goto err;
 
-	/* Same table-sizing heuristic as WireGuard's ratelimiter.c, borrowed
-	 * from xt_hashlimit.c: scale with RAM, cap at 8192 buckets.
-	 */
 	table_size = (totalram_pages() > (1U << 30) / PAGE_SIZE) ?
 			     8192 :
 			     max_t(unsigned long, 16,
@@ -184,8 +172,8 @@ int melnode_ratelimiter_init(void)
 	}
 #endif
 
-	queue_delayed_work(system_power_efficient_wq, &gc_work, HZ);
 	get_random_bytes(&key, sizeof(key));
+	queue_delayed_work(system_power_efficient_wq, &gc_work, HZ);
 out:
 	mutex_unlock(&init_lock);
 	return 0;
