@@ -8,6 +8,7 @@
 #include <crypto/chacha20poly1305.h>
 #include <crypto/utils.h>
 
+#include "melnode_compat.h"
 #include "melnode_cookie.h"
 #include "melnode_ratelimiter.h"
 
@@ -25,7 +26,7 @@ static void precompute_key(u8 key[MELNODE_NOISE_SYMMETRIC_KEY_LEN],
 			   const u8 pubkey[MELNODE_NOISE_PUBLIC_KEY_LEN],
 			   const u8 label[COOKIE_KEY_LABEL_LEN])
 {
-	struct blake2s_ctx blake;
+	melnode_blake2s_ctx blake;
 
 	blake2s_init(&blake, MELNODE_NOISE_SYMMETRIC_KEY_LEN);
 	blake2s_update(&blake, label, COOKIE_KEY_LABEL_LEN);
@@ -78,7 +79,7 @@ static void make_cookie(u8 cookie[MELNODE_COOKIE_LEN], const void *from_addr, in
 			struct melnode_cookie_checker *checker)
 {
 	const struct sockaddr *sa = from_addr;
-	struct blake2s_ctx blake;
+	melnode_blake2s_ctx blake;
 
 	read_lock_bh(&checker->secret_lock);
 	if (unlikely(birthdate_has_expired(checker->secret_birthdate, MELNODE_COOKIE_SECRET_MAX_AGE))) {

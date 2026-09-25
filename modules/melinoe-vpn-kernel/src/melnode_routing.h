@@ -24,4 +24,8 @@ void melnode_routing_deliver_or_forward(u8 src, u8 dst, u8 ttl, u8 *plain, size_
 
 void melnode_send_initiation(struct melnode_link *link);
 
+void melnode_link_arm_timer_locked(struct melnode_link *link);
+void melnode_link_session_established_locked(struct melnode_link *link);
+void melnode_link_shutdown(struct melnode_link *link);
+
 #endif /* _MELNODE_ROUTING_H */

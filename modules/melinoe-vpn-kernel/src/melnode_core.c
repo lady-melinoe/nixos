@@ -19,6 +19,7 @@
 #include <crypto/curve25519.h>
 #include <crypto/chacha20poly1305.h>
 
+#include "melnode_compat.h"
 #include "melnode_core.h"
 #include "melnode_routing.h"
 #include "melnode_socket.h"
@@ -31,6 +32,7 @@
 struct melnode_device melnode_dev = {
 	.config_lock = __MUTEX_INITIALIZER(melnode_dev.config_lock),
 	.tables_mutex = __MUTEX_INITIALIZER(melnode_dev.tables_mutex),
+	.sock_sem = __RWSEM_INITIALIZER(melnode_dev.sock_sem),
 	.key_lock = __SPIN_LOCK_UNLOCKED(melnode_dev.key_lock),
 	.attach_lock = __SPIN_LOCK_UNLOCKED(melnode_dev.attach_lock),
 	.pending_teardown_lock = __SPIN_LOCK_UNLOCKED(melnode_dev.pending_teardown_lock),
@@ -420,6 +422,7 @@ static void melnode_teardown_device(void)
 	mutex_unlock(&melnode_dev.tables_mutex);
 
 	list_for_each_entry_safe(link, link_tmp, &dead_links, teardown_node) {
+		melnode_link_shutdown(link);
 		flush_work(&link->outq_work);
 		list_del(&link->teardown_node);
 		melnode_link_put(link);
@@ -565,6 +568,7 @@ static int melnode_nl_link_del(struct sk_buff *skb, struct genl_info *info)
 	if (!link)
 		return -ENOENT;
 
+	melnode_link_shutdown(link);
 	melnode_link_put(link);
 	return 0;
 }
@@ -732,8 +736,13 @@ void melnode_send_initiation(struct melnode_link *link)
 
 	created = melnode_noise_handshake_create_initiation(&msg, &link->handshake, local_pub,
 							    melnode_gen_index(link->peer_id));
-	if (created)
+	if (created) {
 		melnode_cookie_add_mac_to_packet(&msg, sizeof(msg), &link->cookie);
+		link->retry_at = now + (u64)MELNODE_REKEY_TIMEOUT * NSEC_PER_SEC;
+		if (!link->attempt_started)
+			link->attempt_started = now;
+		melnode_link_arm_timer_locked(link);
+	}
 	spin_unlock_bh(&link->lock);
 
 	if (created)
@@ -846,7 +855,7 @@ static int melnode_nl_tun_create(struct sk_buff *skb, struct genl_info *info)
 		return err;
 	if (!info->attrs[MELNODE_A_TUN_NAME])
 		return -EINVAL;
-	nla_strscpy(name, info->attrs[MELNODE_A_TUN_NAME], sizeof(name));
+	melnode_compat_nla_strscpy(name, info->attrs[MELNODE_A_TUN_NAME], sizeof(name));
 
 	rcu_read_lock();
 	tun = rcu_dereference(melnode_dev.tuns[peer_id]);
@@ -948,14 +957,17 @@ static int melnode_nl_tun_start(struct sk_buff *skb, struct genl_info *info)
 	rtnl_lock();
 	err = dev_open(dev, NULL);
 	rtnl_unlock();
-	dev_put(dev);
-	if (err)
+	if (err) {
+		dev_put(dev);
 		return err;
+	}
 
 	rcu_read_lock();
-	if (rcu_dereference(melnode_dev.tuns[peer_id]) == tun)
+	tun = rcu_dereference(melnode_dev.tuns[peer_id]);
+	if (tun && tun->dev == dev)
 		WRITE_ONCE(tun->state, MELNODE_TUN_STARTED);
 	rcu_read_unlock();
+	dev_put(dev);
 	return 0;
 }
 
@@ -1141,6 +1153,7 @@ static void melnode_handle_handshake_initiation(u8 *data, size_t len, const void
 		melnode_cookie_add_mac_to_packet(&resp, sizeof(resp), &link->cookie);
 		melnode_noise_handshake_begin_session(&link->handshake, &link->keypairs);
 		link->last_handshake_unix_ns = ktime_get_real_ns();
+		melnode_link_session_established_locked(link);
 	}
 	spin_unlock_bh(&link->lock);
 	if (!ok)
@@ -1184,6 +1197,7 @@ static void melnode_handle_handshake_response(u8 *data, size_t len, const void *
 		melnode_link_set_endpoint(link, from, from_len);
 		melnode_noise_handshake_begin_session(&link->handshake, &link->keypairs);
 		link->last_handshake_unix_ns = ktime_get_real_ns();
+		melnode_link_session_established_locked(link);
 	}
 	spin_unlock_bh(&link->lock);
 	if (!ok)
@@ -1238,7 +1252,7 @@ static void melnode_handle_data(u8 *data, size_t len)
 	struct melnode_keypair *kp;
 	struct melnode_link *link;
 	size_t cipher_len, plain_len;
-	bool is_next;
+	bool is_next, rekey;
 	u8 peer_id;
 	u64 counter;
 	u8 *plain;
@@ -1256,7 +1270,8 @@ static void melnode_handle_data(u8 *data, size_t len)
 
 	spin_lock_bh(&link->lock);
 	kp = melnode_find_keypair(link, msg->receiver_index, &is_next);
-	if (!kp || !kp->receiving.is_valid) {
+	if (!kp || !kp->receiving.is_valid ||
+	    melnode_key_expired(&kp->receiving, MELNODE_REJECT_AFTER_TIME)) {
 		spin_unlock_bh(&link->lock);
 		goto bad_packet;
 	}
@@ -1285,10 +1300,22 @@ static void melnode_handle_data(u8 *data, size_t len)
 		kfree(plain);
 		goto bad_packet;
 	}
-	if (is_next)
-		melnode_noise_received_with_keypair(&link->keypairs);
+	if (is_next && melnode_noise_received_with_keypair(&link->keypairs))
+		kp = &link->keypairs.current_kp;
+	rekey = kp == &link->keypairs.current_kp && kp->initiator &&
+		melnode_key_expired(&kp->sending, MELNODE_REJECT_AFTER_TIME -
+						       MELNODE_KEEPALIVE_TIMEOUT -
+						       MELNODE_REKEY_TIMEOUT);
 	atomic64_add(plain_len, &link->rx_bytes);
+	link->new_handshake_at = 0;
+	if (plain_len && !link->keepalive_at) {
+		link->keepalive_at = ktime_get_coarse_boottime_ns() +
+				     (u64)MELNODE_KEEPALIVE_TIMEOUT * NSEC_PER_SEC;
+		melnode_link_arm_timer_locked(link);
+	}
 	spin_unlock_bh(&link->lock);
+	if (rekey)
+		melnode_send_initiation(link);
 	melnode_link_put(link);
 
 	if (!plain_len) {
@@ -1346,7 +1373,7 @@ void melnode_handle_datagram(u8 *data, size_t len, const void *from_addr, int fr
 static int melnode_pre_doit(const struct genl_split_ops *ops, struct sk_buff *skb,
 			    struct genl_info *info)
 {
-	switch (ops->cmd) {
+	switch (melnode_compat_genl_cmd(ops)) {
 	case MELNODE_CMD_HELLO:
 	case MELNODE_CMD_ATTACH:
 	case MELNODE_CMD_DEVICE_SET:

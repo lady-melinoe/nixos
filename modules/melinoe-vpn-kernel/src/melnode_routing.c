@@ -7,22 +7,30 @@
 #include <linux/if_ether.h>
 #include <net/gro_cells.h>
 
+#include "melnode_compat.h"
 #include "melnode_core.h"
 #include "melnode_routing.h"
 #include "melnode_socket.h"
 #include "melnode_transport.h"
 
 struct melnode_routing_item {
-	struct melnode_link *link;
 	u8 *plain;
 	size_t plain_len;
 };
+
+static void item_free(void *ptr)
+{
+	struct melnode_routing_item *item = ptr;
+
+	kfree(item->plain);
+	kfree(item);
+}
 
 static void link_release(struct kref *kref)
 {
 	struct melnode_link *link = container_of(kref, struct melnode_link, kref);
 
-	ptr_ring_cleanup(&link->outq, NULL);
+	ptr_ring_cleanup(&link->outq, item_free);
 	kfree_rcu(link, rcu);
 }
 
@@ -43,6 +51,100 @@ void melnode_link_put(struct melnode_link *link)
 	kref_put(&link->kref, link_release);
 }
 
+#define SECS_TO_NS(s) ((u64)(s) * NSEC_PER_SEC)
+
+void melnode_link_arm_timer_locked(struct melnode_link *link)
+{
+	u64 now = ktime_get_coarse_boottime_ns();
+	u64 deadlines[] = { link->keepalive_at, link->new_handshake_at, link->retry_at,
+			    link->wipe_at };
+	u64 next = 0;
+	int i;
+
+	if (link->dead)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(deadlines); i++) {
+		if (deadlines[i] && (!next || deadlines[i] < next))
+			next = deadlines[i];
+	}
+	if (!next)
+		return;
+
+	kref_get(&link->kref);
+	if (mod_delayed_work(system_wq, &link->timer,
+			     next > now ? nsecs_to_jiffies64(next - now) + 1 : 0))
+		melnode_link_put(link);
+}
+
+void melnode_link_session_established_locked(struct melnode_link *link)
+{
+	link->retry_at = 0;
+	link->attempt_started = 0;
+	link->new_handshake_at = 0;
+	link->wipe_at = ktime_get_coarse_boottime_ns() + SECS_TO_NS(3 * MELNODE_REJECT_AFTER_TIME);
+	melnode_link_arm_timer_locked(link);
+}
+
+void melnode_link_shutdown(struct melnode_link *link)
+{
+	spin_lock_bh(&link->lock);
+	link->dead = true;
+	spin_unlock_bh(&link->lock);
+
+	if (cancel_delayed_work_sync(&link->timer))
+		melnode_link_put(link);
+}
+
+static bool deadline_due(u64 *deadline, u64 now)
+{
+	if (!*deadline || *deadline > now)
+		return false;
+	*deadline = 0;
+	return true;
+}
+
+static void link_timer_fn(struct work_struct *work)
+{
+	struct melnode_link *link = container_of(to_delayed_work(work), struct melnode_link, timer);
+	bool keepalive = false, initiate = false;
+	u64 now = ktime_get_coarse_boottime_ns();
+
+	spin_lock_bh(&link->lock);
+	if (link->dead) {
+		spin_unlock_bh(&link->lock);
+		goto out;
+	}
+
+	if (deadline_due(&link->wipe_at, now)) {
+		melnode_noise_keypairs_clear(&link->keypairs);
+		melnode_noise_handshake_clear(&link->handshake);
+		link->keepalive_at = 0;
+		link->new_handshake_at = 0;
+		link->retry_at = 0;
+		link->attempt_started = 0;
+	}
+	keepalive = deadline_due(&link->keepalive_at, now);
+	initiate = deadline_due(&link->new_handshake_at, now);
+	if (deadline_due(&link->retry_at, now)) {
+		if (now - link->attempt_started >= SECS_TO_NS(MELNODE_REKEY_ATTEMPT_TIME)) {
+			link->attempt_started = 0;
+			melnode_noise_handshake_clear(&link->handshake);
+		} else {
+			initiate = true;
+		}
+	}
+	melnode_link_arm_timer_locked(link);
+	spin_unlock_bh(&link->lock);
+
+	if (keepalive)
+		melnode_routing_send_now(link, NULL, 0);
+	if (initiate)
+		melnode_send_initiation(link);
+out:
+	melnode_link_put(link);
+}
+
 int melnode_routing_send_now(struct melnode_link *link, const u8 *plain, size_t plain_len)
 {
 	u8 endpoint[sizeof(struct sockaddr_in6)];
@@ -52,6 +154,7 @@ int melnode_routing_send_now(struct melnode_link *link, const u8 *plain, size_t 
 	struct melnode_keypair *kp;
 	__le32 remote_index;
 	int endpoint_len;
+	bool rekey;
 	u64 counter;
 	int ret = 0;
 
@@ -62,12 +165,22 @@ int melnode_routing_send_now(struct melnode_link *link, const u8 *plain, size_t 
 	spin_lock_bh(&link->lock);
 	kp = &link->keypairs.current_kp;
 	if (!link->has_endpoint || !kp->valid || !kp->sending.is_valid ||
-	    kp->sending_counter >= MELNODE_REJECT_AFTER_MESSAGES) {
+	    kp->sending_counter >= MELNODE_REJECT_AFTER_MESSAGES ||
+	    melnode_key_expired(&kp->sending, MELNODE_REJECT_AFTER_TIME)) {
 		spin_unlock_bh(&link->lock);
 		kfree(out);
 		return -ENOENT;
 	}
+	rekey = kp->initiator && (kp->sending_counter >= MELNODE_REKEY_AFTER_MESSAGES ||
+				  melnode_key_expired(&kp->sending, MELNODE_REKEY_AFTER_TIME));
 	counter = kp->sending_counter++;
+	link->keepalive_at = 0;
+	if (plain_len && !link->new_handshake_at) {
+		link->new_handshake_at = ktime_get_coarse_boottime_ns() +
+					 SECS_TO_NS(MELNODE_KEEPALIVE_TIMEOUT +
+						    MELNODE_REKEY_TIMEOUT);
+		melnode_link_arm_timer_locked(link);
+	}
 	remote_index = kp->remote_index;
 	memcpy(key, kp->sending.key, sizeof(key));
 	endpoint_len = link->endpoint_len;
@@ -86,6 +199,8 @@ int melnode_routing_send_now(struct melnode_link *link, const u8 *plain, size_t 
 		atomic64_add(plain_len, &link->tx_bytes);
 
 	kfree(out);
+	if (rekey)
+		melnode_send_initiation(link);
 	return ret;
 }
 
@@ -101,11 +216,10 @@ static void outq_work_fn(struct work_struct *work)
 			melnode_send_initiation(link);
 			melnode_stat_inc(MELNODE_STAT_TX_QUEUE_FULL);
 		}
-		kfree(item->plain);
-		melnode_link_put(link);
-		kfree(item);
+		item_free(item);
 		cond_resched();
 	}
+	melnode_link_put(link);
 }
 
 int melnode_routing_link_init(struct melnode_link *link)
@@ -114,6 +228,7 @@ int melnode_routing_link_init(struct melnode_link *link)
 	spin_lock_init(&link->lock);
 	INIT_LIST_HEAD(&link->teardown_node);
 	INIT_WORK(&link->outq_work, outq_work_fn);
+	INIT_DELAYED_WORK(&link->timer, link_timer_fn);
 	return ptr_ring_init(&link->outq, MELNODE_LINK_OUTQ_SIZE, GFP_KERNEL);
 }
 
@@ -134,17 +249,19 @@ static int send_via_link(u8 link_peer_id, u8 *plain, size_t plain_len)
 		kfree(plain);
 		return -ENOMEM;
 	}
-	item->link = link;
 	item->plain = plain;
 	item->plain_len = plain_len;
 
 	if (ptr_ring_produce_bh(&link->outq, item)) {
 		melnode_link_put(link);
-		kfree(plain);
-		kfree(item);
+		item_free(item);
 		return -ENOSPC;
 	}
-	schedule_work(&link->outq_work);
+
+	kref_get(&link->kref);
+	if (!schedule_work(&link->outq_work))
+		melnode_link_put(link);
+	melnode_link_put(link);
 	return 0;
 }
 
@@ -192,31 +309,29 @@ static void deliver_local(u8 src, u8 *plain, size_t plain_len)
 		goto out_free;
 	}
 
-	rcu_read_lock();
-	tun = rcu_dereference(melnode_dev.tuns[src]);
-	if (!tun || READ_ONCE(tun->state) != MELNODE_TUN_STARTED) {
-		rcu_read_unlock();
-		melnode_stat_inc(MELNODE_STAT_RX_NO_TUN);
-		goto out_free;
-	}
-	dev = tun->dev;
-	dev_hold(dev);
-	rcu_read_unlock();
-
-	skb = netdev_alloc_skb(dev, len);
+	skb = alloc_skb(len, GFP_KERNEL);
 	if (!skb) {
-		dev_put(dev);
 		melnode_stat_inc(MELNODE_STAT_RX_QUEUE_FULL);
 		goto out_free;
 	}
 	skb_put_data(skb, data, len);
 	skb->protocol = proto;
 	skb_reset_network_header(skb);
-	skb->dev = dev;
 
+	rcu_read_lock();
+	tun = rcu_dereference(melnode_dev.tuns[src]);
+	if (!tun || READ_ONCE(tun->state) != MELNODE_TUN_STARTED) {
+		rcu_read_unlock();
+		kfree_skb(skb);
+		melnode_stat_inc(MELNODE_STAT_RX_NO_TUN);
+		goto out_free;
+	}
+	dev = tun->dev;
+	skb->dev = dev;
 	priv = netdev_priv(dev);
+
 	local_bh_disable();
-	if (gro_cells_receive(&priv->gcells, skb) == NET_RX_DROP) {
+	if (melnode_compat_gro_receive(&priv->gcells, skb) == NET_RX_DROP) {
 		melnode_stat_inc(MELNODE_STAT_RX_QUEUE_FULL);
 		DEV_STATS_INC(dev, rx_dropped);
 	} else {
@@ -224,8 +339,8 @@ static void deliver_local(u8 src, u8 *plain, size_t plain_len)
 		DEV_STATS_ADD(dev, rx_bytes, len);
 	}
 	local_bh_enable();
+	rcu_read_unlock();
 
-	dev_put(dev);
 out_free:
 	kfree(plain);
 }
