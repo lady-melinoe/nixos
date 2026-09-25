@@ -1,47 +1,85 @@
 package main
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // introspectapi.go serves melnode's read-only "show ..." endpoints
 // (introspect.go) over TCP, so an operator on any node can look at any
-// other node's view of the mesh (curl http://<node-host-addr>:60198/links).
+// other node's view of the mesh (curl http://<node-host-addr>:60198/links),
+// and so monitoring has something to scrape.
 //
 // This is deliberately a *separate* http.Server with its own mux, not the
-// control socket exposed on a TCP port: the mux built here only ever gets
-// registerReadEndpoints, so /advertise and /withdraw do not exist on this
-// listener at all (they 404), and every read handler is additionally
-// GET-only. There is no authentication; reachability is restricted by the
-// host firewall (nftables specialHostAccess: host range only).
+// control socket exposed on a TCP port: only the read endpoints are mounted
+// here, so /advertise and /withdraw do not exist on this listener at all
+// (they 404), and every handler is additionally GET-only. There is no
+// authentication; reachability is restricted by the host firewall
+// (nftables specialHostAccess: host range only).
+//
+// Requests are served from a snapshot, not the live state: one goroutine
+// rebuilds every view every interval (config: introspectIntervalMs) and
+// swaps it in whole, JSON already encoded. A request takes no locks and
+// never reaches the data plane, so however many arrive, they can't slow
+// the control plane's own data plane calls (or push one past
+// dpproto.CallTimeout, which would drop the session). Each response says
+// how old it is: an Age header (seconds) and X-Melnode-Generated-At, and
+// /summary carries generated_at itself.
 type introspectAPI struct {
 	pv       *PathVector
 	listener net.Listener
 	server   *http.Server
+	interval time.Duration
+
+	snap atomic.Pointer[introspectSnapshot]
+	stop chan struct{}
+	wg   sync.WaitGroup
 }
 
-func newIntrospectAPI(pv *PathVector, addr string) (*introspectAPI, error) {
+// introspectSnapshot is one generation of every view, as served.
+type introspectSnapshot struct {
+	generatedAt time.Time
+	bodies      map[string][]byte // readPaths -> encoded JSON
+}
+
+func newIntrospectAPI(pv *PathVector, addr string, interval time.Duration) (*introspectAPI, error) {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
+	a := &introspectAPI{pv: pv, listener: l, interval: interval, stop: make(chan struct{})}
 	mux := http.NewServeMux()
-	registerReadEndpoints(mux, pv, false)
-	return &introspectAPI{
-		pv:       pv,
-		listener: l,
-		server: &http.Server{
-			Handler:           mux,
-			ReadHeaderTimeout: 5 * time.Second,
-			ReadTimeout:       10 * time.Second,
-			IdleTimeout:       60 * time.Second,
-		},
-	}, nil
+	for _, path := range readPaths {
+		mux.HandleFunc(path, getOnly(a.serve(path)))
+	}
+	mux.HandleFunc("/", getOnly(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, map[string]any{"read": readPaths})
+	}))
+	a.server = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	return a, nil
 }
 
+// Start takes the first snapshot (so there is always one to serve), then
+// keeps it fresh and starts serving.
 func (a *introspectAPI) Start() {
+	a.refresh()
+	a.wg.Add(1)
+	go a.refreshLoop()
 	go func() {
 		if err := a.server.Serve(a.listener); err != nil && err != http.ErrServerClosed {
 			a.pv.node.log.Errorf("introspect API: Serve failed: %v", err)
@@ -51,4 +89,59 @@ func (a *introspectAPI) Start() {
 
 func (a *introspectAPI) Stop() {
 	_ = a.server.Close() // also closes a.listener
+	close(a.stop)
+	a.wg.Wait()
+}
+
+func (a *introspectAPI) refreshLoop() {
+	defer a.wg.Done()
+	tick := time.NewTicker(a.interval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-a.stop:
+			return
+		case <-tick.C:
+			a.refresh()
+		}
+	}
+}
+
+// refresh rebuilds the snapshot. It waits for the data plane gate rather
+// than skipping it, so a snapshot never lacks the data plane's details just
+// because a query on the control socket held the gate at that moment. If a
+// data plane call fails, the previous snapshot stays (its age shows it's
+// stale) instead of being replaced by one with those details missing.
+func (a *introspectAPI) refresh() {
+	v := a.pv.node.readDP(true)
+	if v.err != nil && a.snap.Load() != nil {
+		a.pv.node.log.Verbosef("introspect API: keeping the previous snapshot: %v", v.err)
+		return
+	}
+	views := a.pv.buildViews(v)
+	s := &introspectSnapshot{generatedAt: views.generatedAt, bodies: make(map[string][]byte, len(views.byPath))}
+	for path, view := range views.byPath {
+		b, err := json.MarshalIndent(view, "", "  ")
+		if err != nil {
+			a.pv.node.log.Errorf("introspect API: encoding %s: %v", path, err)
+			return
+		}
+		s.bodies[path] = append(b, '\n')
+	}
+	a.snap.Store(s)
+}
+
+func (a *introspectAPI) serve(path string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		s := a.snap.Load()
+		if s == nil {
+			http.Error(w, "no snapshot yet", http.StatusServiceUnavailable)
+			return
+		}
+		h := w.Header()
+		h.Set("Content-Type", "application/json")
+		h.Set("Age", strconv.Itoa(int(time.Since(s.generatedAt).Seconds())))
+		h.Set("X-Melnode-Generated-At", s.generatedAt.UTC().Format(time.RFC3339Nano))
+		_, _ = w.Write(s.bodies[path])
+	}
 }

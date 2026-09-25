@@ -14,7 +14,9 @@ import (
 
 // CallTimeout bounds how long a request waits for its reply. The data plane
 // answers from memory (the slowest request is creating a tun), so hitting
-// this means the data plane is wedged; the session is then dropped.
+// this means the data plane is wedged, or (kernel data plane) its reply was
+// dropped from a full receive buffer (see DialKernel); either way the
+// session is then dropped.
 const CallTimeout = 5 * time.Second
 
 // puntQueueSize is how many punted packets may wait for the control plane to
@@ -186,7 +188,9 @@ func DialKernel(onPunt func(Punt), onEvent func(Event)) (*Client, error) {
 	}
 	// Punts and events are lossy by contract (API.md): an overrun must drop
 	// them, not surface as ENOBUFS from recvmsg, which readLoop would take
-	// for a dead session (detaching every link, mesh-wide).
+	// for a dead session (detaching every link, mesh-wide). Replies share
+	// this socket's receive buffer, so an overrun can drop a reply too; its
+	// call then hits CallTimeout, which does end the session.
 	if err := unix.SetsockoptInt(fd, unix.SOL_NETLINK, unix.NETLINK_NO_ENOBUFS, 1); err != nil {
 		unix.Close(fd)
 		return nil, fmt.Errorf("dpproto: netlink NETLINK_NO_ENOBUFS: %w", err)
@@ -281,9 +285,10 @@ func (cl *Client) readLoop() {
 		msgs, err := cl.c.recv()
 		if err != nil && len(msgs) == 0 {
 			if errors.Is(err, unix.ENOBUFS) {
-				// Belt and braces for NETLINK_NO_ENOBUFS: notifications
-				// were dropped, which the contract allows. Replies are
-				// unaffected (a lost one times out its own call).
+				// Belt and braces for NETLINK_NO_ENOBUFS: messages were
+				// dropped. For notifications the contract allows it; a
+				// dropped reply isn't retried, its call times out and
+				// fails the session (see CallTimeout).
 				continue
 			}
 			cl.fail(fmt.Errorf("dpproto: session lost: %w", err))

@@ -13,9 +13,11 @@ import (
 // introspect.go is melnode's read-only "show ..." surface -- the
 // equivalent of `vtysh -c 'show ip bgp'` / `show bfd peers` -- served as
 // JSON over the same local Unix control socket as the advertise/withdraw
-// API (controlapi.go). Every handler works from a point-in-time snapshot
-// taken under the owning component's own lock, never holding one lock
-// while taking another, so a slow client can't stall the data path.
+// API (controlapi.go), live on every request, and over TCP from a snapshot
+// refreshed on a timer (introspectapi.go). Both build every view from one
+// read of the data plane (readDP) plus point-in-time copies taken under
+// the owning component's own lock, never holding one lock while taking
+// another, so a slow client can't stall the data path.
 //
 //	GET /            list of endpoints
 //	GET /summary     this node at a glance
@@ -28,6 +30,61 @@ import (
 // (Try: curl --unix-socket /run/melnode/control.sock http://x/links)
 
 var processStart = time.Now()
+
+// dpView is one read of the data plane's state, shared by every view built
+// from it (buildViews) so they agree with each other. A nil field means
+// unknown: no data plane attached, introspection busy, or that call failed.
+type dpView struct {
+	attached bool
+	links    map[uint32]dpproto.LinkInfo
+	tuns     []dpproto.TunInfo
+	routes   map[uint32]uint32 // dst -> next hop
+	stats    []dpproto.Stat
+	err      error // the first call that failed, if any
+}
+
+// readDP reads the data plane through the introspection gate
+// (introspectDP). With wait, it queues for the gate instead of giving up
+// when another query holds it.
+func (n *Node) readDP(wait bool) dpView {
+	v := dpView{attached: n.dp() != nil}
+	var cl dpproto.Datapath
+	var release func()
+	if wait {
+		cl, release = n.introspectDPWait()
+	} else {
+		cl, release = n.introspectDP()
+	}
+	defer release()
+	if cl == nil {
+		return v
+	}
+	ok := func(err error) bool {
+		if err != nil && v.err == nil {
+			v.err = err
+		}
+		return err == nil
+	}
+	if list, err := cl.LinkList(); ok(err) {
+		v.links = make(map[uint32]dpproto.LinkInfo, len(list))
+		for _, li := range list {
+			v.links[li.PeerID] = li
+		}
+	}
+	if tuns, err := cl.TunList(); ok(err) {
+		v.tuns = tuns
+	}
+	if rl, err := cl.RouteList(); ok(err) {
+		v.routes = make(map[uint32]uint32, len(rl))
+		for _, rt := range rl {
+			v.routes[rt.Dst] = rt.NextHop
+		}
+	}
+	if stats, err := cl.Stats(); ok(err) {
+		v.stats = stats
+	}
+	return v
+}
 
 // ---- links ----------------------------------------------------------------
 
@@ -86,21 +143,11 @@ func (l *Link) linkInfo(dp *dpproto.LinkInfo) linkInfo {
 	return info
 }
 
-func (n *Node) linksSnapshot() []linkInfo {
-	byID := map[uint32]dpproto.LinkInfo{}
-	cl, release := n.introspectDP()
-	defer release()
-	if cl != nil {
-		if list, err := cl.LinkList(); err == nil {
-			for _, li := range list {
-				byID[li.PeerID] = li
-			}
-		}
-	}
+func (n *Node) linksFrom(v dpView) []linkInfo {
 	out := make([]linkInfo, 0, len(n.links))
 	for _, l := range n.links {
 		var dp *dpproto.LinkInfo
-		if li, ok := byID[l.id]; ok {
+		if li, ok := v.links[l.id]; ok {
 			dp = &li
 		}
 		out = append(out, l.linkInfo(dp))
@@ -121,28 +168,13 @@ type tunInfo struct {
 	Started bool    `json:"started"`  // false only in the moment between the tun being created and configured
 }
 
-// tunsSnapshot lists the data plane's tuns with the next hop we want for
-// each. Empty while no data plane is attached.
-func (r *Router) tunsSnapshot() []tunInfo {
-	out := []tunInfo{}
-	cl, release := r.node.introspectDP()
-	defer release()
-	if cl == nil {
-		return out
-	}
-	tuns, err := cl.TunList()
-	if err != nil {
-		return out
-	}
-	routes := map[uint32]uint32{}
-	if rl, err := cl.RouteList(); err == nil {
-		for _, rt := range rl {
-			routes[rt.Dst] = rt.NextHop
-		}
-	}
-	for _, t := range tuns {
+// tunsFrom lists the data plane's tuns with the next hop it currently
+// forwards each over. Empty while no data plane is attached.
+func tunsFrom(v dpView) []tunInfo {
+	out := make([]tunInfo, 0, len(v.tuns))
+	for _, t := range v.tuns {
 		ti := tunInfo{PeerID: t.PeerID, Name: t.Name, MTU: int(t.MTU), Started: t.Started}
-		if nh, ok := routes[t.PeerID]; ok {
+		if nh, ok := v.routes[t.PeerID]; ok {
 			ti.NextHop = &nh
 		}
 		out = append(out, ti)
@@ -184,7 +216,7 @@ func prefixStrings(ps []pvPrefix) []string {
 	return out
 }
 
-func (pv *PathVector) routesSnapshot() []routeInfo {
+func (pv *PathVector) routesFrom(tuns []tunInfo) []routeInfo {
 	pv.mu.Lock()
 	out := make([]routeInfo, 0, len(pv.learned))
 	for dest, byNeighbor := range pv.learned {
@@ -218,7 +250,7 @@ func (pv *PathVector) routesSnapshot() []routeInfo {
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Dest < out[j].Dest })
 	names := make(map[uint32]string)
-	for _, t := range pv.node.router.tunsSnapshot() {
+	for _, t := range tuns {
 		names[t.PeerID] = t.Name
 	}
 	for i := range out {
@@ -286,41 +318,42 @@ func (pv *PathVector) prefixesSnapshot() []prefixInfo {
 // ---- summary --------------------------------------------------------------
 
 type summaryInfo struct {
-	LocalID           uint32  `json:"local_id"`
-	PublicKey         string  `json:"public_key"` // empty until the data plane has been attached at least once
-	DataplaneAttached bool    `json:"dataplane_attached"`
-	UptimeSeconds     float64 `json:"uptime_seconds"`
-	MTU               int     `json:"mtu"`
-	IdentityPrefix    string  `json:"identity_prefix,omitempty"`
-	LinksTotal        int     `json:"links_total"`
-	LinksUp           int     `json:"links_up"`
-	Destinations      int     `json:"destinations"` // peerids currently reachable
-	Tuns              int     `json:"tuns"`
-	Prefixes          int     `json:"prefixes"`
+	LocalID           uint32    `json:"local_id"`
+	GeneratedAt       time.Time `json:"generated_at"` // when this was read (the TCP API serves snapshots, see introspectapi.go)
+	PublicKey         string    `json:"public_key"`   // empty until the data plane has been attached at least once
+	DataplaneAttached bool      `json:"dataplane_attached"`
+	UptimeSeconds     float64   `json:"uptime_seconds"`
+	MTU               int       `json:"mtu"`
+	IdentityPrefix    string    `json:"identity_prefix,omitempty"`
+	LinksTotal        int       `json:"links_total"`
+	LinksUp           int       `json:"links_up"`
+	Destinations      int       `json:"destinations"` // peerids currently reachable
+	Tuns              int       `json:"tuns"`
+	Prefixes          int       `json:"prefixes"`
 }
 
-func (pv *PathVector) summarySnapshot() summaryInfo {
+func (pv *PathVector) summaryFrom(v dpView, links []linkInfo, tuns []tunInfo, at time.Time) summaryInfo {
 	n := pv.node
 	s := summaryInfo{
-		LocalID:       n.localID,
-		UptimeSeconds: time.Since(processStart).Seconds(),
-		MTU:           int(n.mtu.Load()),
+		LocalID:           n.localID,
+		GeneratedAt:       at,
+		UptimeSeconds:     at.Sub(processStart).Seconds(),
+		MTU:               int(n.mtu.Load()),
+		DataplaneAttached: v.attached,
+		LinksTotal:        len(links),
+		Tuns:              len(tuns),
 	}
 	if pk := n.pubkey.Load(); pk != nil {
 		s.PublicKey = keyToBase64(pk[:])
 	}
-	s.DataplaneAttached = n.dp() != nil
 	if n.router != nil && n.router.identityPrefix != nil {
 		s.IdentityPrefix = n.router.identityPrefix.String()
 	}
-	links := n.linksSnapshot()
-	s.LinksTotal = len(links)
 	for _, l := range links {
 		if l.State == linkStateUp.String() {
 			s.LinksUp++
 		}
 	}
-	s.Tuns = len(n.router.tunsSnapshot())
 	pv.mu.Lock()
 	s.Destinations = len(pv.best)
 	s.Prefixes = len(pv.prefixClaims)
@@ -335,21 +368,15 @@ type dataplaneInfo struct {
 	Stats    map[string]uint64 `json:"stats,omitempty"` // the data plane's own counters, by name
 }
 
-// dataplaneSnapshot dumps the data plane's counters (drops by cause, control
+// dataplaneFrom dumps the data plane's counters (drops by cause, control
 // packets punted/injected). Empty while no data plane is attached.
-func (n *Node) dataplaneSnapshot() dataplaneInfo {
-	info := dataplaneInfo{Attached: n.dp() != nil}
-	cl, release := n.introspectDP()
-	defer release()
-	if cl == nil {
+func dataplaneFrom(v dpView) dataplaneInfo {
+	info := dataplaneInfo{Attached: v.attached}
+	if v.stats == nil {
 		return info
 	}
-	stats, err := cl.Stats()
-	if err != nil {
-		return info
-	}
-	info.Stats = make(map[string]uint64, len(stats))
-	for _, s := range stats {
+	info.Stats = make(map[string]uint64, len(v.stats))
+	for _, s := range v.stats {
 		name, ok := dpproto.StatName[s.ID]
 		if !ok {
 			name = "stat_" + itoa(uint32(s.ID)) // a counter newer than this control plane
@@ -357,6 +384,34 @@ func (n *Node) dataplaneSnapshot() dataplaneInfo {
 		info.Stats[name] = s.Value
 	}
 	return info
+}
+
+// ---- all views ----------------------------------------------------------------
+
+// readPaths are the read-only endpoints, on both the control socket and TCP.
+var readPaths = []string{"/summary", "/links", "/routes", "/prefixes", "/tuns", "/dataplane"}
+
+// introspectViews is every read-only view, built together from one dpView.
+type introspectViews struct {
+	generatedAt time.Time
+	byPath      map[string]any // readPaths -> that endpoint's JSON value
+}
+
+func (pv *PathVector) buildViews(v dpView) introspectViews {
+	at := time.Now()
+	links := pv.node.linksFrom(v)
+	tuns := tunsFrom(v)
+	return introspectViews{
+		generatedAt: at,
+		byPath: map[string]any{
+			"/summary":   pv.summaryFrom(v, links, tuns, at),
+			"/links":     links,
+			"/routes":    pv.routesFrom(tuns),
+			"/prefixes":  pv.prefixesSnapshot(),
+			"/tuns":      tuns,
+			"/dataplane": dataplaneFrom(v),
+		},
+	}
 }
 
 // ---- HTTP -----------------------------------------------------------------
@@ -378,37 +433,26 @@ func getOnly(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// registerIntrospection mounts the read-only endpoints on the control API's mux.
+// registerIntrospection mounts the read-only endpoints on the control API's
+// mux: live, read from the data plane on every request. (The TCP listener
+// serves snapshots instead, see introspectapi.go.)
 func (c *controlAPI) registerIntrospection(mux *http.ServeMux) {
-	registerReadEndpoints(mux, c.pv, true)
-}
-
-// registerReadEndpoints mounts the read-only "show ..." endpoints on mux.
-// withWrite only controls whether the index at "/" advertises the
-// /advertise and /withdraw endpoints; it does NOT mount them. The TCP
-// introspection listener (introspectapi.go) passes false, so it never
-// serves anything but GETs of the snapshots below.
-func registerReadEndpoints(mux *http.ServeMux, pv *PathVector, withWrite bool) {
-	mux.HandleFunc("/summary", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.summarySnapshot()) }))
-	mux.HandleFunc("/links", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.node.linksSnapshot()) }))
-	mux.HandleFunc("/routes", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.routesSnapshot()) }))
-	mux.HandleFunc("/prefixes", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.prefixesSnapshot()) }))
-	mux.HandleFunc("/dataplane", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.node.dataplaneSnapshot()) }))
-	mux.HandleFunc("/tuns", getOnly(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, pv.node.router.tunsSnapshot()) }))
+	for _, path := range readPaths {
+		mux.HandleFunc(path, getOnly(func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, c.pv.buildViews(c.pv.node.readDP(false)).byPath[path])
+		}))
+	}
 	mux.HandleFunc("/", getOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
-		index := map[string]any{
-			"read": []string{"/summary", "/links", "/routes", "/prefixes", "/tuns", "/dataplane"},
-		}
-		if withWrite {
-			index["write"] = map[string]string{
+		writeJSON(w, map[string]any{
+			"read": readPaths,
+			"write": map[string]string{
 				"/advertise": `POST {"prefix": "a.b.c.d/n"}`,
 				"/withdraw":  `POST {"prefix": "a.b.c.d/n"}`,
-			}
-		}
-		writeJSON(w, index)
+			},
+		})
 	}))
 }

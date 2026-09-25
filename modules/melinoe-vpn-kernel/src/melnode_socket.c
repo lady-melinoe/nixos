@@ -118,11 +118,22 @@ static int open_one(struct melnode_device *dev, int family, u16 local_port, u32 
 
 int melnode_socket_open(struct melnode_device *dev, u16 local_port, u32 fwmark)
 {
+	u8 *buf;
 	int err;
 
+	/* Before any socket exists to queue rx_work. */
+	buf = kvmalloc(MELNODE_RECV_BUF_SIZE, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+	WRITE_ONCE(dev->rx_buf, buf);
+
 	err = open_one(dev, AF_INET, local_port, fwmark, &dev->sock4);
-	if (err)
+	if (err) {
+		cancel_work_sync(&dev->rx_work);
+		WRITE_ONCE(dev->rx_buf, NULL);
+		kvfree(buf);
 		return err;
+	}
 
 	if (open_one(dev, AF_INET6, local_port, fwmark, &dev->sock6))
 		dev->sock6 = NULL;
@@ -158,6 +169,12 @@ void melnode_socket_close(struct melnode_device *dev)
 
 	synchronize_rcu();
 	cancel_work_sync(&dev->rx_work);
+
+	/* rx_work is neither queued nor running (cancel_work_sync also covers
+	 * it requeueing itself), and nothing can queue it any more.
+	 */
+	kvfree(dev->rx_buf);
+	WRITE_ONCE(dev->rx_buf, NULL);
 
 	if (sock4)
 		sock_release(sock4);
@@ -292,20 +309,15 @@ static bool drain_socket(struct socket *sock, u8 *buf)
 static void melnode_rx_work_fn(struct work_struct *work)
 {
 	struct melnode_device *dev = container_of(work, struct melnode_device, rx_work);
+	u8 *buf = READ_ONCE(dev->rx_buf);
 	bool more;
-	u8 *buf;
 
-	buf = kvmalloc(MELNODE_RECV_BUF_SIZE, GFP_KERNEL);
-	if (!buf) {
-		/* Nothing else would wake us for datagrams already queued. */
-		queue_work(melnode_wq, &dev->rx_work);
+	if (!buf) /* no sockets, so nothing to read */
 		return;
-	}
 
 	more = drain_socket(READ_ONCE(dev->sock4), buf);
 	more |= drain_socket(READ_ONCE(dev->sock6), buf);
 
-	kvfree(buf);
 	if (more)
 		queue_work(melnode_wq, &dev->rx_work);
 }
