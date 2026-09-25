@@ -1,34 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/*
- * melnode's Noise_IKpsk2 handshake state machine.
- *
- * The KDF/mix/encrypt primitives and the initiation/response create/consume
- * control flow are ported line-for-line from drivers/net/wireguard/noise.c
- * (Jason A. Donenfeld, GPL-2.0) - see melnode_noise.h for what's simplified
- * (no RCU/kref/index-hashtable) and why that's safe here. melnode-dp's Go
- * implementation is an unmodified fork of wireguard-go, so this must match
- * it bit-for-bit.
- *
- * melnode currently has no preshared-key concept (LINK_ADD only carries a
- * public key), so the "psk" input to Noise_IKpsk2 is always the all-zero
- * key - mix_psk() still runs (it's part of the fixed construction string
- * "Noise_IKpsk2_..."), just with an all-zero psk, identical to how
- * WireGuard itself behaves when a peer has no preshared key configured.
- *
- * consume_initiation is split into two phases here, unlike WireGuard's
- * single wg_noise_handshake_consume_initiation(): WireGuard identifies the
- * peer via a pubkey hashtable lookup *in the middle* of the Noise steps
- * (after decrypting the sender's static key, before the "ss" step, which
- * needs that peer's precomputed_static_static). melnode.c does that lookup
- * as a linear scan over its <=256-entry link table instead, so the split
- * happens at exactly that point: phase 1 needs only our own static key and
- * produces the decrypted remote static key; the caller looks up the link;
- * phase 2 takes that link's handshake state and finishes the exchange.
- */
 
 #include <linux/string.h>
 #include <linux/ktime.h>
 #include <linux/kernel.h>
+#include <linux/unaligned.h>
 #include <crypto/curve25519.h>
 #include <crypto/chacha20poly1305.h>
 #include <crypto/blake2s.h>
@@ -36,11 +11,6 @@
 
 #include "melnode_noise.h"
 
-/* Identical strings to WireGuard's own - this is still literally the
- * Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s construction (see noise-protocol.go:
- * NoiseConstruction / WGIdentifier), so the derived init hash/chaining key
- * must match exactly.
- */
 static const u8 handshake_name[37] __nonstring = "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s";
 static const u8 identifier_name[34] __nonstring = "WireGuard v1 zx2c4 Jason@zx2c4.com";
 static u8 handshake_init_hash[MELNODE_NOISE_HASH_LEN] __ro_after_init;
@@ -71,11 +41,6 @@ void melnode_noise_handshake_init(struct melnode_handshake *handshake,
 {
 	memset(handshake, 0, sizeof(*handshake));
 	memcpy(handshake->remote_static, peer_public_key, MELNODE_NOISE_PUBLIC_KEY_LEN);
-	handshake->state = MELNODE_HANDSHAKE_ZEROED;
-	/* precomputed_static_static is filled in by a separate call to
-	 * melnode_noise_precompute_static_static() (it needs the device's
-	 * private key, which this function deliberately doesn't take).
-	 */
 }
 
 static void handshake_zero(struct melnode_handshake *handshake)
@@ -87,15 +52,6 @@ static void handshake_zero(struct melnode_handshake *handshake)
 	handshake->remote_index = 0;
 	handshake->state = MELNODE_HANDSHAKE_ZEROED;
 }
-
-void melnode_noise_handshake_clear(struct melnode_handshake *handshake)
-{
-	handshake_zero(handshake);
-}
-
-/* ------------------------------------------------------------------------
- * KDF/mix primitives - verbatim math from wg-noise.c.
- * ------------------------------------------------------------------------ */
 
 static void hmac(u8 *out, const u8 *in, const u8 *key, size_t inlen, size_t keylen)
 {
@@ -133,7 +89,6 @@ static void hmac(u8 *out, const u8 *in, const u8 *key, size_t inlen, size_t keyl
 	memzero_explicit(i_hash, BLAKE2S_HASH_SIZE);
 }
 
-/* Hugo Krawczyk's HKDF: https://eprint.iacr.org/2010/264.pdf */
 static void kdf(u8 *first_dst, u8 *second_dst, u8 *third_dst, const u8 *data, size_t first_len,
 		 size_t second_len, size_t third_len, size_t data_len,
 		 const u8 chaining_key[MELNODE_NOISE_HASH_LEN])
@@ -243,7 +198,7 @@ static void message_encrypt(u8 *dst_ciphertext, const u8 *src_plaintext, size_t 
 			     u8 key[MELNODE_NOISE_SYMMETRIC_KEY_LEN], u8 hash[MELNODE_NOISE_HASH_LEN])
 {
 	chacha20poly1305_encrypt(dst_ciphertext, src_plaintext, src_len, hash,
-				  MELNODE_NOISE_HASH_LEN, 0 /* always zero for Noise_IK */, key);
+				  MELNODE_NOISE_HASH_LEN, 0, key);
 	mix_hash(hash, dst_ciphertext, melnode_noise_encrypted_len(src_len));
 }
 
@@ -251,7 +206,7 @@ static bool message_decrypt(u8 *dst_plaintext, const u8 *src_ciphertext, size_t 
 			     u8 key[MELNODE_NOISE_SYMMETRIC_KEY_LEN], u8 hash[MELNODE_NOISE_HASH_LEN])
 {
 	if (!chacha20poly1305_decrypt(dst_plaintext, src_ciphertext, src_len, hash,
-				       MELNODE_NOISE_HASH_LEN, 0 /* always zero for Noise_IK */, key))
+				       MELNODE_NOISE_HASH_LEN, 0, key))
 		return false;
 	mix_hash(hash, src_ciphertext, src_len);
 	return true;
@@ -273,23 +228,15 @@ static void tai64n_now(u8 output[MELNODE_NOISE_TIMESTAMP_LEN])
 	struct timespec64 now;
 
 	ktime_get_real_ts64(&now);
-	/* Round down to the same granularity WireGuard uses, to avoid an
-	 * infoleak from a precise clock.
-	 */
 	now.tv_nsec = ALIGN_DOWN(now.tv_nsec,
 				  rounddown_pow_of_two(NSEC_PER_SEC / MELNODE_INITIATIONS_PER_SECOND));
-	*(__be64 *)output = cpu_to_be64(0x400000000000000aULL + now.tv_sec);
-	*(__be32 *)(output + sizeof(__be64)) = cpu_to_be32(now.tv_nsec);
+	put_unaligned_be64(0x400000000000000aULL + now.tv_sec, output);
+	put_unaligned_be32(now.tv_nsec, output + sizeof(__be64));
 }
-
-/* ------------------------------------------------------------------------
- * Handshake message create/consume.
- * ------------------------------------------------------------------------ */
 
 bool melnode_noise_handshake_create_initiation(struct melnode_wire_handshake_initiation *dst,
 						struct melnode_handshake *handshake,
 						const u8 local_static_public[MELNODE_NOISE_PUBLIC_KEY_LEN],
-						const u8 local_static_private[MELNODE_NOISE_PUBLIC_KEY_LEN],
 						u32 local_index)
 {
 	u8 timestamp[MELNODE_NOISE_TIMESTAMP_LEN];
@@ -300,27 +247,22 @@ bool melnode_noise_handshake_create_initiation(struct melnode_wire_handshake_ini
 
 	handshake_init(handshake->chaining_key, handshake->hash, handshake->remote_static);
 
-	/* e */
 	curve25519_generate_secret(handshake->ephemeral_private);
 	if (!curve25519_generate_public(dst->unencrypted_ephemeral, handshake->ephemeral_private))
 		goto out;
 	message_ephemeral(dst->unencrypted_ephemeral, dst->unencrypted_ephemeral,
 			   handshake->chaining_key, handshake->hash);
 
-	/* es */
 	if (!mix_dh(handshake->chaining_key, key, handshake->ephemeral_private,
 		    handshake->remote_static))
 		goto out;
 
-	/* s */
 	message_encrypt(dst->encrypted_static, local_static_public, MELNODE_NOISE_PUBLIC_KEY_LEN,
 			 key, handshake->hash);
 
-	/* ss */
 	if (!mix_precomputed_dh(handshake->chaining_key, key, handshake->precomputed_static_static))
 		goto out;
 
-	/* {t} */
 	tai64n_now(timestamp);
 	message_encrypt(dst->encrypted_timestamp, timestamp, MELNODE_NOISE_TIMESTAMP_LEN, key,
 			 handshake->hash);
@@ -331,16 +273,11 @@ bool melnode_noise_handshake_create_initiation(struct melnode_wire_handshake_ini
 	ret = true;
 
 out:
-	(void)local_static_private;
 	memzero_explicit(key, MELNODE_NOISE_SYMMETRIC_KEY_LEN);
 	memzero_explicit(timestamp, MELNODE_NOISE_TIMESTAMP_LEN);
 	return ret;
 }
 
-/* Phase 1: needs only our own static key. Produces the peer's decrypted
- * static key (for the caller to look up) and the in-progress chaining_key/
- * hash/remote_ephemeral/remote_index, none of which are peer-specific yet.
- */
 bool melnode_noise_handshake_consume_initiation1(const struct melnode_wire_handshake_initiation *src,
 						  const u8 local_static_public[MELNODE_NOISE_PUBLIC_KEY_LEN],
 						  const u8 local_static_private[MELNODE_NOISE_PUBLIC_KEY_LEN],
@@ -352,15 +289,12 @@ bool melnode_noise_handshake_consume_initiation1(const struct melnode_wire_hands
 
 	handshake_init(pre->chaining_key, pre->hash, local_static_public);
 
-	/* e */
 	message_ephemeral(pre->remote_ephemeral, src->unencrypted_ephemeral, pre->chaining_key,
 			   pre->hash);
 
-	/* es */
 	if (!mix_dh(pre->chaining_key, key, local_static_private, pre->remote_ephemeral))
 		goto out;
 
-	/* s */
 	if (!message_decrypt(remote_static_out, src->encrypted_static,
 			      sizeof(src->encrypted_static), key, pre->hash))
 		goto out;
@@ -373,14 +307,6 @@ out:
 	return ret;
 }
 
-/* Phase 2: caller has identified the peer (remote_static_out from phase 1
- * matched a known link) and hands us that peer's own handshake state, for
- * precomputed_static_static and the persistent replay/flood-gating fields
- * (latest_timestamp, last_initiation_consumption). The {t} ciphertext is
- * re-derived from *pre* rather than threaded through as a separate
- * argument, since decrypting it needs pre->hash/chaining_key up to the "ss"
- * step - so this takes the original wire message too.
- */
 bool melnode_noise_handshake_consume_initiation2(const struct melnode_wire_handshake_initiation *src,
 						  const struct melnode_handshake_precursor *pre,
 						  struct melnode_handshake *handshake)
@@ -395,28 +321,19 @@ bool melnode_noise_handshake_consume_initiation2(const struct melnode_wire_hands
 	memcpy(chaining_key, pre->chaining_key, MELNODE_NOISE_HASH_LEN);
 	memcpy(hash, pre->hash, MELNODE_NOISE_HASH_LEN);
 
-	/* ss */
 	if (!mix_precomputed_dh(chaining_key, key, handshake->precomputed_static_static))
 		goto out;
 
-	/* {t} */
 	if (!message_decrypt(timestamp, src->encrypted_timestamp, sizeof(src->encrypted_timestamp),
 			      key, hash))
 		goto out;
 
-	/* Replay and flood gating, exactly as wg_noise_handshake_consume_
-	 * initiation(): a strictly-increasing timestamp per peer, and a
-	 * minimum spacing between accepted initiations from the same peer.
-	 * This is per-peer bookkeeping, distinct from the global
-	 * cookie/ratelimiter DoS mitigation in melnode_cookie.c, which
-	 * limits by *source address* before we even get this far.
-	 */
 	now = ktime_get_coarse_boottime_ns();
 	if (memcmp(timestamp, handshake->latest_timestamp, MELNODE_NOISE_TIMESTAMP_LEN) <= 0)
-		goto out; /* replay */
+		goto out;
 	if ((s64)handshake->last_initiation_consumption + NSEC_PER_SEC / MELNODE_INITIATIONS_PER_SECOND >
 	    (s64)now)
-		goto out; /* flood from this peer specifically */
+		goto out;
 
 	memcpy(handshake->remote_ephemeral, pre->remote_ephemeral, MELNODE_NOISE_PUBLIC_KEY_LEN);
 	memcpy(handshake->latest_timestamp, timestamp, MELNODE_NOISE_TIMESTAMP_LEN);
@@ -449,27 +366,22 @@ bool melnode_noise_handshake_create_response(struct melnode_wire_handshake_respo
 	dst->header.type = cpu_to_le32(MELNODE_WIRE_MSG_HANDSHAKE_RESPONSE);
 	dst->receiver_index = handshake->remote_index;
 
-	/* e */
 	curve25519_generate_secret(handshake->ephemeral_private);
 	if (!curve25519_generate_public(dst->unencrypted_ephemeral, handshake->ephemeral_private))
 		goto out;
 	message_ephemeral(dst->unencrypted_ephemeral, dst->unencrypted_ephemeral,
 			   handshake->chaining_key, handshake->hash);
 
-	/* ee */
 	if (!mix_dh(handshake->chaining_key, NULL, handshake->ephemeral_private,
 		    handshake->remote_ephemeral))
 		goto out;
 
-	/* se */
 	if (!mix_dh(handshake->chaining_key, NULL, handshake->ephemeral_private,
 		    handshake->remote_static))
 		goto out;
 
-	/* psk (always zero - melnode has no preshared-key concept yet) */
 	mix_psk(handshake->chaining_key, handshake->hash, key, zero_psk);
 
-	/* {} */
 	message_encrypt(dst->encrypted_nothing, NULL, 0, key, handshake->hash);
 
 	dst->sender_index = cpu_to_le32(local_index);
@@ -487,39 +399,30 @@ bool melnode_noise_handshake_consume_response(const struct melnode_wire_handshak
 					       struct melnode_handshake *handshake)
 {
 	static const u8 zero_psk[MELNODE_NOISE_SYMMETRIC_KEY_LEN];
-	enum melnode_handshake_state state = handshake->state;
 	u8 key[MELNODE_NOISE_SYMMETRIC_KEY_LEN];
 	u8 hash[MELNODE_NOISE_HASH_LEN];
 	u8 chaining_key[MELNODE_NOISE_HASH_LEN];
 	u8 e[MELNODE_NOISE_PUBLIC_KEY_LEN];
 	bool ret = false;
 
-	if (state != MELNODE_HANDSHAKE_CREATED_INITIATION)
+	if (handshake->state != MELNODE_HANDSHAKE_CREATED_INITIATION)
 		return false;
 
 	memcpy(hash, handshake->hash, MELNODE_NOISE_HASH_LEN);
 	memcpy(chaining_key, handshake->chaining_key, MELNODE_NOISE_HASH_LEN);
 
-	/* e */
 	message_ephemeral(e, src->unencrypted_ephemeral, chaining_key, hash);
 
-	/* ee */
 	if (!mix_dh(chaining_key, NULL, handshake->ephemeral_private, e))
 		goto out;
 
-	/* se */
 	if (!mix_dh(chaining_key, NULL, local_static_private, e))
 		goto out;
 
-	/* psk */
 	mix_psk(chaining_key, hash, key, zero_psk);
 
-	/* {} */
 	if (!message_decrypt(NULL, src->encrypted_nothing, sizeof(src->encrypted_nothing), key, hash))
 		goto out;
-
-	if (handshake->state != state)
-		goto out; /* raced with something else touching this handshake */
 
 	memcpy(handshake->remote_ephemeral, e, MELNODE_NOISE_PUBLIC_KEY_LEN);
 	memcpy(handshake->hash, hash, MELNODE_NOISE_HASH_LEN);
@@ -536,37 +439,29 @@ out:
 	return ret;
 }
 
-/* Slots the freshly derived keypair into current/previous/next, exactly as
- * wg_noise_handshake_begin_session() / add_new_keypair() do - see the
- * comment on struct melnode_keypairs. Caller holds the relevant link's own
- * lock (melnode_link.lock - see melnode_core.h).
- */
 bool melnode_noise_handshake_begin_session(struct melnode_handshake *handshake,
 					    struct melnode_keypairs *keypairs)
 {
 	struct melnode_keypair new_keypair = { 0 };
+	bool initiator;
 
 	if (handshake->state != MELNODE_HANDSHAKE_CREATED_RESPONSE &&
 	    handshake->state != MELNODE_HANDSHAKE_CONSUMED_RESPONSE)
 		return false;
 
 	new_keypair.valid = true;
-	new_keypair.i_am_the_initiator = handshake->state == MELNODE_HANDSHAKE_CONSUMED_RESPONSE;
+	initiator = handshake->state == MELNODE_HANDSHAKE_CONSUMED_RESPONSE;
 	new_keypair.remote_index = handshake->remote_index;
 	new_keypair.local_index = handshake->local_index;
-	atomic64_set(&new_keypair.sending_counter, 0);
 
-	if (new_keypair.i_am_the_initiator)
+	if (initiator)
 		derive_keys(&new_keypair.sending, &new_keypair.receiving, handshake->chaining_key);
 	else
 		derive_keys(&new_keypair.receiving, &new_keypair.sending, handshake->chaining_key);
 
 	handshake_zero(handshake);
 
-	if (new_keypair.i_am_the_initiator) {
-		/* We sent the initiation, got a response: this keypair is
-		 * immediately usable for sending.
-		 */
+	if (initiator) {
 		if (keypairs->next_kp.valid) {
 			keypairs->previous_kp = keypairs->next_kp;
 			memset(&keypairs->next_kp, 0, sizeof(keypairs->next_kp));
@@ -575,19 +470,15 @@ bool melnode_noise_handshake_begin_session(struct melnode_handshake *handshake,
 		}
 		keypairs->current_kp = new_keypair;
 	} else {
-		/* We're the responder: not trusted for sending until the
-		 * first successfully decrypted data packet confirms the
-		 * initiator has it too (melnode_noise_received_with_keypair).
-		 */
 		keypairs->next_kp = new_keypair;
 		memset(&keypairs->previous_kp, 0, sizeof(keypairs->previous_kp));
 	}
 	return true;
 }
 
-bool melnode_noise_received_with_keypair(struct melnode_keypairs *keypairs, bool decrypted_with_next)
+bool melnode_noise_received_with_keypair(struct melnode_keypairs *keypairs)
 {
-	if (!decrypted_with_next || !keypairs->next_kp.valid)
+	if (!keypairs->next_kp.valid)
 		return false;
 	keypairs->previous_kp = keypairs->current_kp;
 	keypairs->current_kp = keypairs->next_kp;
