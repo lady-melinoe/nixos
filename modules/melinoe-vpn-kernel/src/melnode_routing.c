@@ -33,6 +33,13 @@ static void link_release(struct kref *kref)
 	struct melnode_link *link = container_of(kref, struct melnode_link, kref);
 
 	ptr_ring_cleanup(&link->outq, item_free);
+	/* No references left, and RCU readers that can still see the link
+	 * only touch kref and public_key: safe to wipe the secrets now
+	 * (kfree_rcu can't do it for us).
+	 */
+	memzero_explicit(&link->keypairs, sizeof(link->keypairs));
+	memzero_explicit(&link->handshake, sizeof(link->handshake));
+	memzero_explicit(&link->cookie, sizeof(link->cookie));
 	kfree_rcu(link, rcu);
 }
 
@@ -294,8 +301,11 @@ static void outq_work_fn(struct work_struct *work)
 		int err = melnode_routing_send_now(link, item->plain, item->plain_len);
 
 		if (err == -ENOENT) {
+			/* No session on the link: counted like a link that
+			 * isn't running (tx_no_route), not as a full queue.
+			 */
 			melnode_send_initiation(link, false);
-			melnode_stat_inc(MELNODE_STAT_TX_QUEUE_FULL);
+			melnode_stat_inc(MELNODE_STAT_TX_NO_ROUTE);
 		}
 		item_free(item);
 		cond_resched();
@@ -340,7 +350,7 @@ static int send_via_link(u8 link_peer_id, u8 *plain, size_t plain_len)
 	}
 
 	kref_get(&link->kref);
-	if (!schedule_work(&link->outq_work))
+	if (!queue_work(melnode_wq, &link->outq_work))
 		melnode_link_put(link);
 	melnode_link_put(link);
 	return 0;

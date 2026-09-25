@@ -305,6 +305,12 @@ in
       ];
       stopIfChanged = false;
       serviceConfig = {
+        # Coming from dataplane = "kernel": a still-loaded module keeps its
+        # device configured (the UDP port and the node-<id> tuns), so
+        # melnode-dp could never bind. Unloading it tears that down. The "-"
+        # ignores the failure when it isn't loaded; "+" runs it with full
+        # privileges (the service only has CAP_NET_ADMIN).
+        ExecStartPre = "-+${pkgs.kmod}/bin/rmmod melnode";
         ExecStart = "${dpBin} -socket ${dpSocket}";
         Restart = "always";
         RestartSec = 1;

@@ -54,6 +54,25 @@ type Node struct {
 	// the first is still coming up. See spawn.go.
 	childMu sync.Mutex
 	child   chan struct{}
+
+	// introspectMu admits one introspection request at a time to the data
+	// plane (see introspectDP); zero value ready.
+	introspectMu sync.Mutex
+}
+
+// introspectDP returns the data plane for a read-only introspection query,
+// plus the func that releases it, or nil when detached or another query is
+// already running. Introspection is reachable over TCP and shares the
+// control plane's session: unbounded concurrent queries against an already
+// slow data plane could push a call past dpproto.CallTimeout, which drops
+// the session (and with it every link). Busy just means answering without
+// the data plane's live details this time.
+func (n *Node) introspectDP() (dpproto.Datapath, func()) {
+	cl := n.dp()
+	if cl == nil || !n.introspectMu.TryLock() {
+		return nil, func() {}
+	}
+	return cl, n.introspectMu.Unlock
 }
 
 // dp returns the attached data plane, or nil.

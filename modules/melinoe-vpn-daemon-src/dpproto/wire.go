@@ -231,7 +231,7 @@ const (
 	StatRxNoTun       uint16 = 7  // packets for this node dropped: no started tun for the sender
 	StatRxTunFull     uint16 = 8  // packets for this node dropped: tun writer queue full
 	StatRxBadPacket   uint16 = 9  // decrypted packets dropped: short header or invalid inner IP
-	StatTxNoRoute     uint16 = 10 // packets read from a tun dropped: no route or link not running
+	StatTxNoRoute     uint16 = 10 // outbound packets dropped: no route, link not running, or no session on it yet
 	StatTxQueueFull   uint16 = 11 // outbound batches tail-dropped: staged or encryption queue full
 	StatEventsDropped uint16 = 12 // events dropped: no control plane attached, or its queue was full
 	StatRxQueueFull   uint16 = 13 // received batches tail-dropped: decryption queue full

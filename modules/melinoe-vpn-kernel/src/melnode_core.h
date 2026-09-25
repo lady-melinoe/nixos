@@ -154,6 +154,12 @@ struct melnode_device {
 
 extern struct melnode_device melnode_dev;
 
+/* The module's own workqueue (receive, handshakes, link send queues, tun
+ * teardown): keeps the data path off system_wq, and destroy_workqueue() at
+ * unload waits for every item still queued on it.
+ */
+extern struct workqueue_struct *melnode_wq;
+
 void melnode_stat_inc(enum melnode_stat id);
 void melnode_get_keys(u8 public_key[32], u8 private_key[32]);
 void melnode_handle_datagram(u8 *data, size_t len, const struct melnode_endpoint *from);

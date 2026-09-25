@@ -13,6 +13,10 @@
 #include "melnode_socket.h"
 
 #define MELNODE_RECV_BUF_SIZE 65535
+/* Datagrams one rx_work pass takes from each socket before requeueing
+ * itself, so a busy socket can't starve the other one or hog a worker.
+ */
+#define MELNODE_RX_BUDGET 256
 
 union melnode_cmsg_buf {
 	u8 raw[CMSG_SPACE(sizeof(struct in6_pktinfo)) + CMSG_SPACE(sizeof(int))];
@@ -40,7 +44,7 @@ static void melnode_data_ready4(struct sock *sk)
 		return;
 	if (dev->orig_sk_data_ready4)
 		dev->orig_sk_data_ready4(sk);
-	schedule_work(&dev->rx_work);
+	queue_work(melnode_wq, &dev->rx_work);
 }
 
 static void melnode_data_ready6(struct sock *sk)
@@ -51,7 +55,7 @@ static void melnode_data_ready6(struct sock *sk)
 		return;
 	if (dev->orig_sk_data_ready6)
 		dev->orig_sk_data_ready6(sk);
-	schedule_work(&dev->rx_work);
+	queue_work(melnode_wq, &dev->rx_work);
 }
 
 static int open_one(struct melnode_device *dev, int family, u16 local_port, u32 fwmark,
@@ -242,19 +246,21 @@ static void parse_pktinfo(const u8 *buf, size_t len, struct melnode_endpoint *ep
 	}
 }
 
-static void drain_socket(struct socket *sock, u8 *buf)
+/* Returns true if the budget ran out with datagrams possibly still queued. */
+static bool drain_socket(struct socket *sock, u8 *buf)
 {
 	struct sockaddr_storage from;
 	union melnode_cmsg_buf cbuf;
 	struct melnode_endpoint ep;
 	struct msghdr msg;
 	struct kvec iov;
+	int budget = MELNODE_RX_BUDGET;
 	int ret;
 
 	if (!sock)
-		return;
+		return false;
 
-	for (;;) {
+	while (budget--) {
 		memset(&msg, 0, sizeof(msg));
 		iov.iov_base = buf;
 		iov.iov_len = MELNODE_RECV_BUF_SIZE;
@@ -266,7 +272,7 @@ static void drain_socket(struct socket *sock, u8 *buf)
 
 		ret = kernel_recvmsg(sock, &msg, &iov, 1, MELNODE_RECV_BUF_SIZE, MSG_DONTWAIT);
 		if (ret <= 0)
-			break;
+			return false;
 
 		if (msg.msg_namelen < sizeof(struct sockaddr_in) ||
 		    msg.msg_namelen > sizeof(struct sockaddr_in6))
@@ -280,21 +286,28 @@ static void drain_socket(struct socket *sock, u8 *buf)
 		melnode_handle_datagram(buf, ret, &ep);
 		cond_resched();
 	}
+	return true;
 }
 
 static void melnode_rx_work_fn(struct work_struct *work)
 {
 	struct melnode_device *dev = container_of(work, struct melnode_device, rx_work);
+	bool more;
 	u8 *buf;
 
-	buf = kmalloc(MELNODE_RECV_BUF_SIZE, GFP_KERNEL);
-	if (!buf)
+	buf = kvmalloc(MELNODE_RECV_BUF_SIZE, GFP_KERNEL);
+	if (!buf) {
+		/* Nothing else would wake us for datagrams already queued. */
+		queue_work(melnode_wq, &dev->rx_work);
 		return;
+	}
 
-	drain_socket(READ_ONCE(dev->sock4), buf);
-	drain_socket(READ_ONCE(dev->sock6), buf);
+	more = drain_socket(READ_ONCE(dev->sock4), buf);
+	more |= drain_socket(READ_ONCE(dev->sock6), buf);
 
-	kfree(buf);
+	kvfree(buf);
+	if (more)
+		queue_work(melnode_wq, &dev->rx_work);
 }
 
 void melnode_socket_init_work(struct melnode_device *dev)

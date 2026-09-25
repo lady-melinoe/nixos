@@ -45,6 +45,13 @@ struct melnode_device melnode_dev = {
 	.pending_teardown = LIST_HEAD_INIT(melnode_dev.pending_teardown),
 };
 
+struct workqueue_struct *melnode_wq;
+
+/* Serializes TUN_CREATE, so two concurrent creates for one peer can't race
+ * (the loser would fail with EEXIST instead of getting the existing tun).
+ */
+static DEFINE_MUTEX(melnode_tun_create_lock);
+
 struct melnode_pending_teardown {
 	struct list_head list;
 	struct net_device *dev;
@@ -53,7 +60,8 @@ struct melnode_pending_teardown {
 static struct genl_family melnode_genl_family;
 
 static struct genl_multicast_group melnode_mcgrps[] = {
-	[0] = { .name = "events" },
+	/* Events carry peer endpoints: CAP_NET_ADMIN to subscribe. */
+	[0] = { .name = "events", .flags = GENL_MCAST_CAP_NET_ADMIN },
 };
 
 static const struct nla_policy melnode_policy[MELNODE_A_MAX + 1] = {
@@ -117,7 +125,7 @@ static void melnode_queue_tun_teardown(struct net_device *dev)
 	spin_lock_bh(&melnode_dev.pending_teardown_lock);
 	list_add_tail(&p->list, &melnode_dev.pending_teardown);
 	spin_unlock_bh(&melnode_dev.pending_teardown_lock);
-	schedule_work(&melnode_dev.tun_teardown_work);
+	queue_work(melnode_wq, &melnode_dev.tun_teardown_work);
 }
 
 void melnode_stat_inc(enum melnode_stat id)
@@ -383,6 +391,10 @@ static void melnode_teardown_device(void)
 
 	WRITE_ONCE(melnode_dev.configured, false);
 
+	/* unregister_netdevice_queue() needs RTNL. Lock order is rtnl, then
+	 * tables_mutex: no path takes rtnl while holding tables_mutex.
+	 */
+	rtnl_lock();
 	mutex_lock(&melnode_dev.tables_mutex);
 	for (i = 0; i < MELNODE_MAX_PEER; i++) {
 		struct melnode_route *route = rcu_dereference_protected(
@@ -409,6 +421,8 @@ static void melnode_teardown_device(void)
 		}
 	}
 	mutex_unlock(&melnode_dev.tables_mutex);
+	unregister_netdevice_many(&dead_tuns);
+	rtnl_unlock();
 
 	list_for_each_entry_safe(link, link_tmp, &dead_links, teardown_node) {
 		melnode_link_shutdown(link);
@@ -416,10 +430,6 @@ static void melnode_teardown_device(void)
 		list_del(&link->teardown_node);
 		melnode_link_put(link);
 	}
-
-	rtnl_lock();
-	unregister_netdevice_many(&dead_tuns);
-	rtnl_unlock();
 
 	flush_work(&melnode_dev.tun_teardown_work);
 
@@ -577,6 +587,7 @@ static int melnode_nl_link_del(struct sk_buff *skb, struct genl_info *info)
 		return -ENOENT;
 
 	melnode_link_shutdown(link);
+	flush_work(&link->outq_work);
 	melnode_link_put(link);
 	return 0;
 }
@@ -655,6 +666,14 @@ static int melnode_nl_route_set(struct sk_buff *skb, struct genl_info *info)
 	route->nexthop = nexthop;
 
 	mutex_lock(&melnode_dev.tables_mutex);
+	if (!melnode_configured()) {
+		/* A DEVICE_DEL won the race: don't leave a route behind for
+		 * the next DEVICE_SET.
+		 */
+		mutex_unlock(&melnode_dev.tables_mutex);
+		kfree(route);
+		return -ENODEV;
+	}
 	old = rcu_dereference_protected(melnode_dev.routes[dst],
 					lockdep_is_held(&melnode_dev.tables_mutex));
 	rcu_assign_pointer(melnode_dev.routes[dst], route);
@@ -852,7 +871,7 @@ static int melnode_reply_tun(struct genl_info *info, const char *name, bool star
 	return genlmsg_reply(reply, info);
 }
 
-static int melnode_nl_tun_create(struct sk_buff *skb, struct genl_info *info)
+static int __melnode_nl_tun_create(struct genl_info *info)
 {
 	struct melnode_tun_priv *priv;
 	struct net_device *dev;
@@ -934,6 +953,20 @@ err_unregister:
 	rtnl_lock();
 	unregister_netdevice(dev);
 	rtnl_unlock();
+	return err;
+}
+
+static int melnode_nl_tun_create(struct sk_buff *skb, struct genl_info *info)
+{
+	int err;
+
+	mutex_lock(&melnode_tun_create_lock);
+	/* A TUN_DESTROY unregisters asynchronously: let it finish, or
+	 * recreating the same name right after fails with EEXIST.
+	 */
+	flush_work(&melnode_dev.tun_teardown_work);
+	err = __melnode_nl_tun_create(info);
+	mutex_unlock(&melnode_tun_create_lock);
 	return err;
 }
 
@@ -1118,7 +1151,7 @@ static void melnode_hs_enqueue(const u8 *data, size_t len, const struct melnode_
 	list_add_tail(&item->list, &melnode_dev.hs_queue);
 	melnode_dev.hs_count++;
 	spin_unlock_bh(&melnode_dev.hs_lock);
-	schedule_work(&melnode_dev.hs_work);
+	queue_work(melnode_wq, &melnode_dev.hs_work);
 }
 
 static struct melnode_hs_item *melnode_hs_dequeue(void)
@@ -1542,13 +1575,16 @@ static int __init melnode_init(void)
 	int err;
 
 	melnode_noise_init();
+	melnode_wq = alloc_workqueue("melnode", WQ_UNBOUND, 0);
+	if (!melnode_wq)
+		return -ENOMEM;
 	melnode_socket_init_work(&melnode_dev);
 	INIT_WORK(&melnode_dev.tun_teardown_work, melnode_tun_teardown_work_fn);
 	INIT_WORK(&melnode_dev.hs_work, melnode_hs_work_fn);
 
 	err = melnode_ratelimiter_init();
 	if (err)
-		return err;
+		goto err_wq;
 
 	err = genl_register_family(&melnode_genl_family);
 	if (err)
@@ -1565,14 +1601,24 @@ err_family:
 	genl_unregister_family(&melnode_genl_family);
 err_ratelimiter:
 	melnode_ratelimiter_uninit();
+err_wq:
+	destroy_workqueue(melnode_wq);
 	return err;
 }
 
 static void __exit melnode_exit(void)
 {
+	/* Stop the data path first, so nothing sends punts or events on the
+	 * family once it is gone; then unregister it (which waits for running
+	 * ops) and tear down again, in case a DEVICE_SET slipped in between.
+	 * destroy_workqueue() drains anything still queued, e.g. the send
+	 * queue of a link deleted just before unload.
+	 */
+	melnode_teardown_device();
 	netlink_unregister_notifier(&melnode_netlink_notifier);
 	genl_unregister_family(&melnode_genl_family);
 	melnode_teardown_device();
+	destroy_workqueue(melnode_wq);
 	melnode_ratelimiter_uninit();
 	pr_info("melnode: unloaded\n");
 }

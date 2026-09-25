@@ -126,3 +126,46 @@ func TestSessionHandlesKeySwap(t *testing.T) {
 		t.Fatalf("links not converged: %+v", dp.links)
 	}
 }
+
+// An entry sendTo refuses (here: more prefixes than the wire allows) must
+// not be recorded as advertised by a full sync.
+func TestFullSyncDoesNotMarkUnsendable(t *testing.T) {
+	n := newTestNode(t)
+	pv := n.pathVector
+	pv.sendHook = func(*Link, []pvAnnouncement, []uint32) {}
+	many := make([]pvPrefix, 300)
+	for i := range many {
+		many[i] = pvPrefix{addr: uint32(i) << 8, len: 24}
+	}
+	pv.best[5] = pvRoute{path: []uint32{5, 3}, prefixes: many}
+	pv.best[6] = pvRoute{path: []uint32{6, 3}}
+	pv.fullSyncTo(&Link{id: 4})
+	if pv.advertised[4][5] {
+		t.Fatal("unsendable dest 5 recorded as advertised")
+	}
+	if !pv.advertised[4][6] || !pv.advertised[4][1] {
+		t.Fatalf("sendable dests missing from advertised: %v", pv.advertised[4])
+	}
+}
+
+// Only one introspection query reaches the data plane at a time.
+func TestIntrospectDPAdmitsOne(t *testing.T) {
+	n := newTestNode(t)
+	n.dpc.Store(&dpHandle{stubDP{}})
+	cl, release := n.introspectDP()
+	if cl == nil {
+		t.Fatal("first query refused")
+	}
+	if cl2, _ := n.introspectDP(); cl2 != nil {
+		t.Fatal("second concurrent query admitted")
+	}
+	release()
+	if cl3, release3 := n.introspectDP(); cl3 == nil {
+		t.Fatal("query refused after release")
+	} else {
+		release3()
+	}
+}
+
+// stubDP satisfies dpproto.Datapath for tests that never call it.
+type stubDP struct{ dpproto.Datapath }

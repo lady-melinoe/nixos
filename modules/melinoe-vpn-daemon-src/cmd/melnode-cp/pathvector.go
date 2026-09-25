@@ -801,11 +801,16 @@ func (pv *PathVector) clearAdvertised(nid, dest uint32) bool {
 // the periodic resync also heals a lost withdraw (proto=2 isn't
 // acked/retransmitted). sendTo chunks it to the MTU.
 func (pv *PathVector) fullSyncTo(peer *Link) {
+	max := pv.pvMaxPayload()
 	pv.mu.Lock()
 	entries := make([]pvAnnouncement, 0, len(pv.best)+1)
 	sent := make(map[uint32]bool, len(pv.best)+1)
-	entries = append(entries, pvAnnouncement{dest: pv.localID, path: []uint32{pv.localID}, prefixes: pv.localPrefixesListLocked()})
-	sent[pv.localID] = true
+	// An entry sendTo will refuse (it logs why) is not advertised: leaving
+	// it out of sent withdraws any older route we had advertised for it,
+	// instead of recording it as current.
+	self := pvAnnouncement{dest: pv.localID, path: []uint32{pv.localID}, prefixes: pv.localPrefixesListLocked()}
+	entries = append(entries, self)
+	sent[pv.localID] = pvEntrySendable(self, max)
 	for dest, route := range pv.best {
 		if route.contains(peer.id) {
 			continue // split horizon (withdrawn below if previously advertised)
@@ -814,13 +819,19 @@ func (pv *PathVector) fullSyncTo(peer *Link) {
 		if len(fwd) > pvMaxPathLen {
 			continue
 		}
-		entries = append(entries, pvAnnouncement{dest: dest, path: fwd, prefixes: route.prefixes})
-		sent[dest] = true
+		a := pvAnnouncement{dest: dest, path: fwd, prefixes: route.prefixes}
+		entries = append(entries, a)
+		sent[dest] = pvEntrySendable(a, max)
 	}
 	var withdraws []uint32
 	for dest := range pv.advertised[peer.id] {
 		if !sent[dest] {
 			withdraws = append(withdraws, dest)
+		}
+	}
+	for dest, ok := range sent {
+		if !ok {
+			delete(sent, dest)
 		}
 	}
 	pv.advertised[peer.id] = sent
@@ -842,6 +853,12 @@ func (pv *PathVector) pvMaxPayload() int {
 }
 
 func pvEntrySize(a pvAnnouncement) int { return 2 + len(a.path) + 1 + len(a.prefixes)*5 }
+
+// pvEntrySendable reports whether sendTo can put a on the wire at all (see
+// its checks, which log why when it can't).
+func pvEntrySendable(a pvAnnouncement, max int) bool {
+	return len(a.path) <= pvMaxPathLen && len(a.prefixes) <= 255 && pvHeaderSize+pvEntrySize(a) <= max
+}
 
 // sendTo validates the entries and splits them across as many packets as
 // needed to stay within pvMaxPayload, like BGP splitting a large table
