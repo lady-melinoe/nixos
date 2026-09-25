@@ -9,37 +9,13 @@ import (
 	"sync"
 )
 
-// WaitPool is a free list, tuned for two independent concerns:
-//
-//   - A hard cap on outstanding (Get'd but not yet Put back) objects,
-//     via max -- 0 disables this entirely (Get never blocks). This is
-//     the only thing the original (sync.Pool-backed) version of this
-//     type did.
-//   - A genuinely pre-filled reuse pool, immune to GC -- added because
-//     a bare sync.Pool doesn't actually solve cold-start cost the way
-//     it looks like it should: sync.Pool aggressively evicts its
-//     contents across GC cycles (that's how it keeps memory use low
-//     when idle), so after any idle period long enough for even one GC
-//     to run, the *next* burst of traffic pays full fresh-allocation
-//     cost for every object until enough have cycled through Put to
-//     refill it again. For device.pool.messageBuffers specifically,
-//     each object is a 64KB array (MaxMessageSize) -- repeatedly
-//     allocating and zeroing those at the start of a burst is real,
-//     measurable cost, and was reproduced directly as a multi-second
-//     throughput ramp-up on a fresh high-rate UDP flow (see
-//     PROJECT_STATE.md). A `chan any` free list doesn't have this
-//     problem: an object sitting in a channel's buffer is an ordinary
-//     live reference as far as the garbage collector is concerned, not
-//     a victim-cache entry, so PoolPrefillSize objects seeded at
-//     startup (NewWaitPool) stay ready indefinitely, no matter how long
-//     the gap before the first real burst.
 type WaitPool struct {
 	free  chan any
 	new   func() any
 	max   uint32
 	mu    sync.Mutex
 	cond  sync.Cond
-	count uint32 // outstanding (Get'd, not yet Put) -- only tracked/used when max != 0
+	count uint32
 }
 
 func NewWaitPool(max uint32, new func() any) *WaitPool {
@@ -47,7 +23,7 @@ func NewWaitPool(max uint32, new func() any) *WaitPool {
 	p.cond = sync.Cond{L: &p.mu}
 	cap := PoolPrefillSize
 	if cap == 0 {
-		cap = 1 // a zero-capacity channel can never hold anything, degrading to alloc-every-time; always keep at least a minimal free list
+		cap = 1
 	}
 	p.free = make(chan any, cap)
 	for i := 0; i < PoolPrefillSize; i++ {
@@ -77,11 +53,6 @@ func (p *WaitPool) Put(x any) {
 	select {
 	case p.free <- x:
 	default:
-		// Free list already at capacity -- drop x and let the GC
-		// reclaim it rather than growing the list further. Only
-		// reachable when more objects are ever outstanding at once
-		// than PoolPrefillSize, i.e. this is a load spike bigger than
-		// what was pre-provisioned for, not a bug.
 	}
 	if p.max == 0 {
 		return

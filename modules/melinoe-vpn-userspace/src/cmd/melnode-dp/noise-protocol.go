@@ -61,13 +61,13 @@ const (
 )
 
 const (
-	MessageInitiationSize      = 148                                           // size of handshake initiation message
-	MessageResponseSize        = 92                                            // size of response message
-	MessageCookieReplySize     = 64                                            // size of cookie reply message
-	MessageTransportHeaderSize = 16                                            // size of data preceding content in transport message
-	MessageTransportSize       = MessageTransportHeaderSize + poly1305.TagSize // size of empty transport
-	MessageKeepaliveSize       = MessageTransportSize                          // size of keepalive
-	MessageHandshakeSize       = MessageInitiationSize                         // size of largest handshake related message
+	MessageInitiationSize      = 148
+	MessageResponseSize        = 92
+	MessageCookieReplySize     = 64
+	MessageTransportHeaderSize = 16
+	MessageTransportSize       = MessageTransportHeaderSize + poly1305.TagSize
+	MessageKeepaliveSize       = MessageTransportSize
+	MessageHandshakeSize       = MessageInitiationSize
 )
 
 const (
@@ -75,12 +75,6 @@ const (
 	MessageTransportOffsetCounter  = 8
 	MessageTransportOffsetContent  = 16
 )
-
-/* Type is an 8-bit field, followed by 3 nul bytes,
- * by marshalling the messages in little-endian byteorder
- * we can treat these as a 32-bit unsigned int (for now)
- *
- */
 
 type MessageInitiation struct {
 	Type      uint32
@@ -211,15 +205,15 @@ func (msg *MessageCookieReply) marshal(b []byte) error {
 type Handshake struct {
 	state                     handshakeState
 	mutex                     sync.RWMutex
-	hash                      [blake2s.Size]byte       // hash value
-	chainKey                  [blake2s.Size]byte       // chain key
-	presharedKey              NoisePresharedKey        // psk
-	localEphemeral            NoisePrivateKey          // ephemeral secret key
-	localIndex                uint32                   // used to clear hash-table
-	remoteIndex               uint32                   // index for sending
-	remoteStatic              NoisePublicKey           // long term key
-	remoteEphemeral           NoisePublicKey           // ephemeral public key
-	precomputedStaticStatic   [NoisePublicKeySize]byte // precomputed shared secret
+	hash                      [blake2s.Size]byte
+	chainKey                  [blake2s.Size]byte
+	presharedKey              NoisePresharedKey
+	localEphemeral            NoisePrivateKey
+	localIndex                uint32
+	remoteIndex               uint32
+	remoteStatic              NoisePublicKey
+	remoteEphemeral           NoisePublicKey
+	precomputedStaticStatic   [NoisePublicKeySize]byte
 	lastTimestamp             tai64n.Timestamp
 	lastInitiationConsumption time.Time
 	lastSentHandshake         time.Time
@@ -260,8 +254,6 @@ func (h *Handshake) mixKey(data []byte) {
 	mixKey(&h.chainKey, &h.chainKey, data)
 }
 
-/* Do basic precomputations
- */
 func init() {
 	InitialChainKey = blake2s.Sum256([]byte(NoiseConstruction))
 	mixHash(&InitialHash, &InitialChainKey, []byte(WGIdentifier))
@@ -275,7 +267,6 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 	handshake.mutex.Lock()
 	defer handshake.mutex.Unlock()
 
-	// create ephemeral key
 	var err error
 	handshake.hash = InitialHash
 	handshake.chainKey = InitialChainKey
@@ -294,7 +285,6 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 	handshake.mixKey(msg.Ephemeral[:])
 	handshake.mixHash(msg.Ephemeral[:])
 
-	// encrypt static key
 	ss, err := handshake.localEphemeral.sharedSecret(handshake.remoteStatic)
 	if err != nil {
 		return nil, err
@@ -310,7 +300,6 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 	aead.Seal(msg.Static[:0], ZeroNonce[:], device.staticIdentity.publicKey[:], handshake.hash[:])
 	handshake.mixHash(msg.Static[:])
 
-	// encrypt timestamp
 	if isZero(handshake.precomputedStaticStatic[:]) {
 		return nil, errInvalidPublicKey
 	}
@@ -324,7 +313,6 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 	aead, _ = chacha20poly1305.New(key[:])
 	aead.Seal(msg.Timestamp[:0], ZeroNonce[:], timestamp[:], handshake.hash[:])
 
-	// assign index
 	device.indexTable.Delete(handshake.localIndex)
 	msg.Sender, err = device.indexTable.NewIndexForHandshake(peer, handshake)
 	if err != nil {
@@ -354,7 +342,6 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	mixHash(&hash, &hash, msg.Ephemeral[:])
 	mixKey(&chainKey, &InitialChainKey, msg.Ephemeral[:])
 
-	// decrypt static key
 	var peerPK NoisePublicKey
 	var key [chacha20poly1305.KeySize]byte
 	ss, err := device.staticIdentity.privateKey.sharedSecret(msg.Ephemeral)
@@ -369,16 +356,12 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	}
 	mixHash(&hash, &hash, msg.Static[:])
 
-	// lookup peer
-
 	peer := device.LookupPeer(peerPK)
 	if peer == nil || !peer.isRunning.Load() {
 		return nil
 	}
 
 	handshake := &peer.handshake
-
-	// verify identity
 
 	var timestamp tai64n.Timestamp
 
@@ -402,8 +385,6 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	}
 	mixHash(&hash, &hash, msg.Timestamp[:])
 
-	// protect against replay & flood
-
 	replay := !timestamp.After(handshake.lastTimestamp)
 	flood := time.Since(handshake.lastInitiationConsumption) <= HandshakeInitationRate
 	handshake.mutex.RUnlock()
@@ -413,8 +394,6 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	if flood {
 		return nil
 	}
-
-	// update handshake state
 
 	handshake.mutex.Lock()
 
@@ -448,8 +427,6 @@ func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error
 		return nil, errors.New("handshake initiation must be consumed first")
 	}
 
-	// assign index
-
 	var err error
 	device.indexTable.Delete(handshake.localIndex)
 	handshake.localIndex, err = device.indexTable.NewIndexForHandshake(peer, handshake)
@@ -461,8 +438,6 @@ func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error
 	msg.Type = MessageResponseType
 	msg.Sender = handshake.localIndex
 	msg.Receiver = handshake.remoteIndex
-
-	// create ephemeral key
 
 	handshake.localEphemeral, err = newPrivateKey()
 	if err != nil {
@@ -482,8 +457,6 @@ func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error
 		return nil, err
 	}
 	handshake.mixKey(ss[:])
-
-	// add preshared key
 
 	var tau [blake2s.Size]byte
 	var key [chacha20poly1305.KeySize]byte
@@ -512,8 +485,6 @@ func (device *Device) ConsumeMessageResponse(msg *MessageResponse) *Peer {
 		return nil
 	}
 
-	// lookup handshake by receiver
-
 	lookup := device.indexTable.Lookup(msg.Receiver)
 	handshake := lookup.handshake
 	if handshake == nil {
@@ -526,8 +497,6 @@ func (device *Device) ConsumeMessageResponse(msg *MessageResponse) *Peer {
 	)
 
 	ok := func() bool {
-		// lock handshake state
-
 		handshake.mutex.RLock()
 		defer handshake.mutex.RUnlock()
 
@@ -535,12 +504,8 @@ func (device *Device) ConsumeMessageResponse(msg *MessageResponse) *Peer {
 			return false
 		}
 
-		// lock private key for reading
-
 		device.staticIdentity.RLock()
 		defer device.staticIdentity.RUnlock()
-
-		// finish 3-way DH
 
 		mixHash(&hash, &handshake.hash, msg.Ephemeral[:])
 		mixKey(&chainKey, &handshake.chainKey, msg.Ephemeral[:])
@@ -559,8 +524,6 @@ func (device *Device) ConsumeMessageResponse(msg *MessageResponse) *Peer {
 		mixKey(&chainKey, &chainKey, ss[:])
 		setZero(ss[:])
 
-		// add preshared key (psk)
-
 		var tau [blake2s.Size]byte
 		var key [chacha20poly1305.KeySize]byte
 		KDF3(
@@ -571,8 +534,6 @@ func (device *Device) ConsumeMessageResponse(msg *MessageResponse) *Peer {
 			handshake.presharedKey[:],
 		)
 		mixHash(&hash, &hash, tau[:])
-
-		// authenticate transcript
 
 		aead, _ := chacha20poly1305.New(key[:])
 		_, err = aead.Open(nil, ZeroNonce[:], msg.Empty[:], hash[:])
@@ -586,8 +547,6 @@ func (device *Device) ConsumeMessageResponse(msg *MessageResponse) *Peer {
 	if !ok {
 		return nil
 	}
-
-	// update handshake state
 
 	handshake.mutex.Lock()
 
@@ -604,16 +563,11 @@ func (device *Device) ConsumeMessageResponse(msg *MessageResponse) *Peer {
 	return lookup.peer
 }
 
-/* Derives a new keypair from the current handshake state
- *
- */
 func (peer *Peer) BeginSymmetricSession() error {
 	device := peer.device
 	handshake := &peer.handshake
 	handshake.mutex.Lock()
 	defer handshake.mutex.Unlock()
-
-	// derive keys
 
 	var isInitiator bool
 	var sendKey [chacha20poly1305.KeySize]byte
@@ -639,14 +593,10 @@ func (peer *Peer) BeginSymmetricSession() error {
 		return fmt.Errorf("invalid state for keypair derivation: %v", handshake.state)
 	}
 
-	// zero handshake
-
 	setZero(handshake.chainKey[:])
-	setZero(handshake.hash[:]) // Doesn't necessarily need to be zeroed. Could be used for something interesting down the line.
+	setZero(handshake.hash[:])
 	setZero(handshake.localEphemeral[:])
 	peer.handshake.state = handshakeZeroed
-
-	// create AEAD instances
 
 	keypair := new(Keypair)
 	keypair.send, _ = chacha20poly1305.New(sendKey[:])
@@ -661,12 +611,8 @@ func (peer *Peer) BeginSymmetricSession() error {
 	keypair.localIndex = peer.handshake.localIndex
 	keypair.remoteIndex = peer.handshake.remoteIndex
 
-	// remap index
-
 	device.indexTable.SwapIndexForKeypair(handshake.localIndex, keypair)
 	handshake.localIndex = 0
-
-	// rotate key pairs
 
 	keypairs := &peer.keypairs
 	keypairs.Lock()

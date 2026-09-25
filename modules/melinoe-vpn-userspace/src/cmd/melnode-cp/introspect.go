@@ -10,42 +10,17 @@ import (
 	"melnode/dpproto"
 )
 
-// introspect.go is melnode's read-only "show ..." surface -- the
-// equivalent of `vtysh -c 'show ip bgp'` / `show bfd peers` -- served as
-// JSON over the same local Unix control socket as the advertise/withdraw
-// API (controlapi.go), live on every request, and over TCP from a snapshot
-// refreshed on a timer (introspectapi.go). Both build every view from one
-// read of the data plane (readDP) plus point-in-time copies taken under
-// the owning component's own lock, never holding one lock while taking
-// another, so a slow client can't stall the data path.
-//
-//	GET /            list of endpoints
-//	GET /summary     this node at a glance
-//	GET /links       one entry per [[link]]: BFD-like liveness + wire stats
-//	GET /routes      path-vector table: every candidate path per destination
-//	GET /prefixes    advertised prefixes: claimants and the winning owner
-//	GET /tuns        the per-destination tun interfaces
-//	GET /dataplane   the data plane's own counters (drops by cause, punts, injects)
-//
-// (Try: curl --unix-socket /run/melnode/control.sock http://x/links)
-
 var processStart = time.Now()
 
-// dpView is one read of the data plane's state, shared by every view built
-// from it (buildViews) so they agree with each other. A nil field means
-// unknown: no data plane attached, introspection busy, or that call failed.
 type dpView struct {
 	attached bool
 	links    map[uint32]dpproto.LinkInfo
 	tuns     []dpproto.TunInfo
-	routes   map[uint32]uint32 // dst -> next hop
+	routes   map[uint32]uint32
 	stats    []dpproto.Stat
-	err      error // the first call that failed, if any
+	err      error
 }
 
-// readDP reads the data plane through the introspection gate
-// (introspectDP). With wait, it queues for the gate instead of giving up
-// when another query holds it.
 func (n *Node) readDP(wait bool) dpView {
 	v := dpView{attached: n.dp() != nil}
 	var cl dpproto.Datapath
@@ -86,31 +61,25 @@ func (n *Node) readDP(wait bool) dpView {
 	return v
 }
 
-// ---- links ----------------------------------------------------------------
-
 type linkInfo struct {
 	PeerID                uint32   `json:"peer_id"`
-	Endpoint              string   `json:"endpoint,omitempty"` // current remote address; empty for a listen-only link nobody has spoken on yet
+	Endpoint              string   `json:"endpoint,omitempty"`
 	PublicKey             string   `json:"public_key"`
-	State                 string   `json:"state"` // Down / Init / Up / AdminDown
+	State                 string   `json:"state"`
 	StateForSeconds       float64  `json:"state_for_seconds"`
 	Diag                  string   `json:"diag"`
 	LocalDiscriminator    uint32   `json:"local_discriminator"`
-	RemoteDiscriminator   uint32   `json:"remote_discriminator"` // 0 until learned
+	RemoteDiscriminator   uint32   `json:"remote_discriminator"`
 	RemoteDesiredMinTXMs  float64  `json:"remote_desired_min_tx_ms"`
 	RemoteRequiredMinRXMs float64  `json:"remote_required_min_rx_ms"`
 	PrependCount          uint32   `json:"prepend_count"`
-	LastHandshakeSecAgo   *float64 `json:"last_handshake_seconds_ago"` // null: never
+	LastHandshakeSecAgo   *float64 `json:"last_handshake_seconds_ago"`
 	TxBytes               uint64   `json:"tx_bytes"`
 	RxBytes               uint64   `json:"rx_bytes"`
 }
 
 func ms(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
 
-// linkInfo combines what the control plane knows (liveness session, config)
-// with what the data plane knows (current endpoint, handshake time, byte
-// counters -- dp is that link's entry from LinkList, nil if the data plane
-// is detached or doesn't have it).
 func (l *Link) linkInfo(dp *dpproto.LinkInfo) linkInfo {
 	m := l.monitor
 	m.mu.Lock()
@@ -128,7 +97,7 @@ func (l *Link) linkInfo(dp *dpproto.LinkInfo) linkInfo {
 	info.PeerID = l.id
 	info.PrependCount = l.prependCount
 	info.PublicKey = keyToBase64(l.pubkey[:])
-	info.Endpoint = l.endpoint // the configured one, until the data plane says otherwise
+	info.Endpoint = l.endpoint
 	if dp != nil {
 		info.TxBytes = dp.TxBytes
 		info.RxBytes = dp.RxBytes
@@ -158,18 +127,14 @@ func (n *Node) linksFrom(v dpView) []linkInfo {
 
 func keyToBase64(k []byte) string { return base64.StdEncoding.EncodeToString(k) }
 
-// ---- tuns -----------------------------------------------------------------
-
 type tunInfo struct {
-	PeerID  uint32  `json:"peer_id"` // the destination this tun leads to
+	PeerID  uint32  `json:"peer_id"`
 	Name    string  `json:"name"`
 	MTU     int     `json:"mtu"`
-	NextHop *uint32 `json:"next_hop"` // link peerid the data plane currently forwards this over; null if none
-	Started bool    `json:"started"`  // false only in the moment between the tun being created and configured
+	NextHop *uint32 `json:"next_hop"`
+	Started bool    `json:"started"`
 }
 
-// tunsFrom lists the data plane's tuns with the next hop it currently
-// forwards each over. Empty while no data plane is attached.
 func tunsFrom(v dpView) []tunInfo {
 	out := make([]tunInfo, 0, len(v.tuns))
 	for _, t := range v.tuns {
@@ -183,14 +148,12 @@ func tunsFrom(v dpView) []tunInfo {
 	return out
 }
 
-// ---- routes ---------------------------------------------------------------
-
 type pathInfo struct {
 	Best     bool     `json:"best"`
-	Via      uint32   `json:"via"`      // the neighbor that told us this path
-	Path     []uint32 `json:"path"`     // nearest neighbor first, origin last (like an AS_PATH)
-	Length   int      `json:"length"`   // == len(path)
-	Prefixes []string `json:"prefixes"` // what the origin claims to own
+	Via      uint32   `json:"via"`
+	Path     []uint32 `json:"path"`
+	Length   int      `json:"length"`
+	Prefixes []string `json:"prefixes"`
 }
 
 type routeInfo struct {
@@ -259,13 +222,11 @@ func (pv *PathVector) routesFrom(tuns []tunInfo) []routeInfo {
 	return out
 }
 
-// ---- prefixes -------------------------------------------------------------
-
 type prefixInfo struct {
 	Prefix     string   `json:"prefix"`
-	Owner      *uint32  `json:"owner"` // winning claimant; null if unowned
+	Owner      *uint32  `json:"owner"`
 	OwnerLocal bool     `json:"owner_is_local"`
-	PathLength int      `json:"path_length"` // hops to the owner; 0 if local
+	PathLength int      `json:"path_length"`
 	Claimants  []uint32 `json:"claimants"`
 	Local      bool     `json:"locally_advertised"`
 }
@@ -315,19 +276,17 @@ func (pv *PathVector) prefixesSnapshot() []prefixInfo {
 	return out
 }
 
-// ---- summary --------------------------------------------------------------
-
 type summaryInfo struct {
 	LocalID           uint32    `json:"local_id"`
-	GeneratedAt       time.Time `json:"generated_at"` // when this was read (the TCP API serves snapshots, see introspectapi.go)
-	PublicKey         string    `json:"public_key"`   // empty until the data plane has been attached at least once
+	GeneratedAt       time.Time `json:"generated_at"`
+	PublicKey         string    `json:"public_key"`
 	DataplaneAttached bool      `json:"dataplane_attached"`
 	UptimeSeconds     float64   `json:"uptime_seconds"`
 	MTU               int       `json:"mtu"`
 	IdentityPrefix    string    `json:"identity_prefix,omitempty"`
 	LinksTotal        int       `json:"links_total"`
 	LinksUp           int       `json:"links_up"`
-	Destinations      int       `json:"destinations"` // peerids currently reachable
+	Destinations      int       `json:"destinations"`
 	Tuns              int       `json:"tuns"`
 	Prefixes          int       `json:"prefixes"`
 }
@@ -361,15 +320,11 @@ func (pv *PathVector) summaryFrom(v dpView, links []linkInfo, tuns []tunInfo, at
 	return s
 }
 
-// ---- data plane -------------------------------------------------------------
-
 type dataplaneInfo struct {
 	Attached bool              `json:"attached"`
-	Stats    map[string]uint64 `json:"stats,omitempty"` // the data plane's own counters, by name
+	Stats    map[string]uint64 `json:"stats,omitempty"`
 }
 
-// dataplaneFrom dumps the data plane's counters (drops by cause, control
-// packets punted/injected). Empty while no data plane is attached.
 func dataplaneFrom(v dpView) dataplaneInfo {
 	info := dataplaneInfo{Attached: v.attached}
 	if v.stats == nil {
@@ -379,22 +334,18 @@ func dataplaneFrom(v dpView) dataplaneInfo {
 	for _, s := range v.stats {
 		name, ok := dpproto.StatName[s.ID]
 		if !ok {
-			name = "stat_" + itoa(uint32(s.ID)) // a counter newer than this control plane
+			name = "stat_" + itoa(uint32(s.ID))
 		}
 		info.Stats[name] = s.Value
 	}
 	return info
 }
 
-// ---- all views ----------------------------------------------------------------
-
-// readPaths are the read-only endpoints, on both the control socket and TCP.
 var readPaths = []string{"/summary", "/links", "/routes", "/prefixes", "/tuns", "/dataplane"}
 
-// introspectViews is every read-only view, built together from one dpView.
 type introspectViews struct {
 	generatedAt time.Time
-	byPath      map[string]any // readPaths -> that endpoint's JSON value
+	byPath      map[string]any
 }
 
 func (pv *PathVector) buildViews(v dpView) introspectViews {
@@ -414,8 +365,6 @@ func (pv *PathVector) buildViews(v dpView) introspectViews {
 	}
 }
 
-// ---- HTTP -----------------------------------------------------------------
-
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
@@ -433,9 +382,6 @@ func getOnly(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// registerIntrospection mounts the read-only endpoints on the control API's
-// mux: live, read from the data plane on every request. (The TCP listener
-// serves snapshots instead, see introspectapi.go.)
 func (c *controlAPI) registerIntrospection(mux *http.ServeMux) {
 	for _, path := range readPaths {
 		mux.HandleFunc(path, getOnly(func(w http.ResponseWriter, _ *http.Request) {

@@ -16,7 +16,6 @@ func testDevice(t *testing.T) *Device {
 	return d
 }
 
-// idleDevice has no crypto workers: whatever is submitted stays queued.
 func idleDevice() *Device {
 	var priv NoisePrivateKey
 	priv[0] = 1
@@ -33,8 +32,6 @@ func testPeer(d *Device, id uint32) *Peer {
 	return p
 }
 
-// LinkDel used to leave a nil stop sentinel in one of the peer's outbound
-// queues, and the queue's finalizer crashed the process on it at the next GC.
 func TestStoppedPeerIsCollectedWithoutCrash(t *testing.T) {
 	d := testDevice(t)
 	func() {
@@ -46,7 +43,7 @@ func TestStoppedPeerIsCollectedWithoutCrash(t *testing.T) {
 			t.Errorf("%d stop sentinel(s) left in outbound queues", n)
 		}
 	}()
-	for i := 0; i < 10; i++ { // a panic in a finalizer kills the test binary
+	for i := 0; i < 10; i++ {
 		runtime.GC()
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -56,7 +53,7 @@ func TestFlushSkipsNilSentinel(t *testing.T) {
 	d := testDevice(t)
 	q := newAutodrainingOutboundQueue(d)
 	q.c <- nil
-	d.flushOutboundQueue(q) // must not panic
+	d.flushOutboundQueue(q)
 	iq := newAutodrainingInboundQueue(d)
 	iq.c <- nil
 	d.flushInboundQueue(iq)
@@ -71,12 +68,9 @@ func container(d *Device, n int, control bool) *QueueOutboundElementsContainer {
 	return c
 }
 
-// Data queued for one peer is capped below the replay window, so control
-// packets (sent first, numbered later) can't push it out of the window.
-// Control is never subject to the cap.
 func TestDataInFlightCap(t *testing.T) {
 	d := idleDevice()
-	p := testPeer(d, 2) // not started: nothing drains, so submits accumulate
+	p := testPeer(d, 2)
 	for i := 0; i < maxDataInFlight/64; i++ {
 		p.submit(container(d, 64, false), false)
 	}
@@ -94,7 +88,6 @@ func TestDataInFlightCap(t *testing.T) {
 	}
 }
 
-// DeviceDel (closeAllTuns) must stop started tuns' writer goroutines.
 func TestCloseAllTunsStopsWriters(t *testing.T) {
 	d := testDevice(t)
 	w := newTunWriter(3)

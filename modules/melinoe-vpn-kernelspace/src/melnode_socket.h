@@ -14,4 +14,4 @@ void melnode_socket_close(struct melnode_device *dev);
 int melnode_socket_send(struct melnode_device *dev, const void *buf, size_t len,
 			const struct melnode_endpoint *ep, u8 tos);
 
-#endif /* _MELNODE_SOCKET_H */
+#endif

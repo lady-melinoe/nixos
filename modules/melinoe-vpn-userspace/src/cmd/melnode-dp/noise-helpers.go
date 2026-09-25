@@ -16,11 +16,6 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
-/* KDF related functions.
- * HMAC-based Key Derivation Function (HKDF)
- * https://tools.ietf.org/html/rfc5869
- */
-
 func HMAC1(sum *[blake2s.Size]byte, key, in0 []byte) {
 	mac := hmac.New(func() hash.Hash {
 		h, _ := blake2s.New256(nil)
@@ -70,7 +65,6 @@ func isZero(val []byte) bool {
 	return acc == 1
 }
 
-/* This function is not used as pervasively as it should because this is mostly impossible in Go at the moment */
 func setZero(arr []byte) {
 	for i := range arr {
 		arr[i] = 0

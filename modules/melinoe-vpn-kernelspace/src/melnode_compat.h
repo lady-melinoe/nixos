@@ -53,4 +53,4 @@ static inline int melnode_compat_setsockopt_int(struct socket *sock, int level, 
 	return sock->ops->setsockopt(sock, level, optname, KERNEL_SOCKPTR(&val), sizeof(val));
 }
 
-#endif /* _MELNODE_COMPAT_H */
+#endif

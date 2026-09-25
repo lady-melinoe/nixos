@@ -13,9 +13,6 @@
 #include "melnode_socket.h"
 
 #define MELNODE_RECV_BUF_SIZE 65535
-/* Datagrams one rx_work pass takes from each socket before requeueing
- * itself, so a busy socket can't starve the other one or hog a worker.
- */
 #define MELNODE_RX_BUDGET 256
 
 union melnode_cmsg_buf {
@@ -121,7 +118,6 @@ int melnode_socket_open(struct melnode_device *dev, u16 local_port, u32 fwmark)
 	u8 *buf;
 	int err;
 
-	/* Before any socket exists to queue rx_work. */
 	buf = kvmalloc(MELNODE_RECV_BUF_SIZE, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
@@ -170,9 +166,6 @@ void melnode_socket_close(struct melnode_device *dev)
 	synchronize_rcu();
 	cancel_work_sync(&dev->rx_work);
 
-	/* rx_work is neither queued nor running (cancel_work_sync also covers
-	 * it requeueing itself), and nothing can queue it any more.
-	 */
 	kvfree(dev->rx_buf);
 	WRITE_ONCE(dev->rx_buf, NULL);
 
@@ -263,7 +256,6 @@ static void parse_pktinfo(const u8 *buf, size_t len, struct melnode_endpoint *ep
 	}
 }
 
-/* Returns true if the budget ran out with datagrams possibly still queued. */
 static bool drain_socket(struct socket *sock, u8 *buf)
 {
 	struct sockaddr_storage from;
@@ -312,7 +304,7 @@ static void melnode_rx_work_fn(struct work_struct *work)
 	u8 *buf = READ_ONCE(dev->rx_buf);
 	bool more;
 
-	if (!buf) /* no sockets, so nothing to read */
+	if (!buf)
 		return;
 
 	more = drain_socket(READ_ONCE(dev->sock4), buf);

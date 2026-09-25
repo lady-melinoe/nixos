@@ -10,28 +10,19 @@ import (
 	"melnode/dpproto"
 )
 
-// ctl.go is the data plane's side of the dpproto socket: it implements
-// dpproto.Handler by driving the Device (links) and Router (tuns, routes).
-// Nothing in here decides anything -- every mutation is something the
-// control plane asked for, starting with the device itself: the data plane
-// boots knowing only its socket path and stays inert until DeviceSet.
-
 type ctlHandler struct {
-	srv  *dpproto.Server // set by main right after NewServer
-	quit func()          // asks main to exit (Quit)
+	srv  *dpproto.Server
+	quit func()
 
 	mu     sync.Mutex
-	dev    *Device // nil until DeviceSet
+	dev    *Device
 	params dpproto.DeviceSet
 
-	// linkMu serializes LinkAdd/LinkDel: each is a lookup-then-mutate, and
-	// requests from different control sessions run concurrently.
 	linkMu sync.Mutex
 }
 
 var _ dpproto.Handler = (*ctlHandler)(nil)
 
-// device returns the configured Device, or CodeNotReady.
 func (h *ctlHandler) device() (*Device, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -41,7 +32,6 @@ func (h *ctlHandler) device() (*Device, error) {
 	return h.dev, nil
 }
 
-// current returns the Device if configured (nil otherwise), for shutdown.
 func (h *ctlHandler) current() *Device {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -54,9 +44,6 @@ func (h *ctlHandler) Hello(dpproto.Hello) (dpproto.HelloReply, error) {
 	return dpproto.HelloReply{Version: dpproto.Version, PID: uint32(os.Getpid()), Configured: h.dev != nil}, nil
 }
 
-// DeviceSet configures the data plane, once: it opens the UDP socket, starts
-// the crypto workers and the receive loops. The same settings again are a
-// no-op; different ones are refused (a restart is the control plane's call).
 func (h *ctlHandler) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -81,9 +68,6 @@ func (h *ctlHandler) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, err
 		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeInvalid, "private key is all zeroes")
 	}
 
-	// Bind first: it is the step most likely to fail (port in use), and
-	// failing here leaves the data plane cleanly unconfigured, free to be
-	// told again.
 	bind := conn.NewStdNetBind()
 	receiveFuncs, _, err := bind.Open(m.ListenPort)
 	if err != nil {
@@ -104,13 +88,6 @@ func (h *ctlHandler) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, err
 	dev.ctl = h.srv
 	dev.startCryptoWorkers()
 
-	// One reader goroutine per ReceiveFunc bind.Open() gave us -- on
-	// Linux/most platforms that's two (IPv4 and IPv6), each its own socket
-	// under the hood (ported from wireguard-go's device/receive.go
-	// RoutineReceiveIncoming). Every link shares this one bind (one UDP port
-	// for every peer); datagrams are demuxed by message type and (for
-	// handshake responses / transport data) the embedded receiver index, not
-	// by source address, since a peer can roam.
 	dev.net.stopping.Add(len(receiveFuncs))
 	dev.queue.decryption.wg.Add(len(receiveFuncs))
 	dev.queue.handshake.wg.Add(len(receiveFuncs))
@@ -122,8 +99,6 @@ func (h *ctlHandler) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, err
 	return dpproto.DeviceSetReply{PubKey: dev.staticIdentity.publicKey}, nil
 }
 
-// Stats dumps the datapath counters. Available before configuration too (the
-// control-socket counters simply have nothing to report yet).
 func (h *ctlHandler) Stats() ([]dpproto.Stat, error) {
 	out := []dpproto.Stat{
 		{ID: dpproto.StatPuntSent, Value: h.srv.PuntsSent()},
@@ -148,26 +123,20 @@ func (h *ctlHandler) Stats() ([]dpproto.Stat, error) {
 	return out, nil
 }
 
-// DeviceDel tears the device down (peers, tuns, keys, the UDP socket) and
-// goes back to waiting for a DeviceSet, without exiting: the same thing
-// deleting a kernel device would do.
 func (h *ctlHandler) DeviceDel() error {
 	h.mu.Lock()
 	dev := h.dev
 	h.dev, h.params = nil, dpproto.DeviceSet{}
 	h.mu.Unlock()
 	if dev != nil {
-		dev.keepCtl = true // the control socket outlives the device
+		dev.keepCtl = true
 		dev.Close()
 	}
 	return nil
 }
 
-// Quit (a userspace-only command) is called once its reply has been sent.
 func (h *ctlHandler) Quit() { h.quit() }
 
-// LinkAdd creates the Noise tunnel to one neighbor and starts it, or (if the
-// link already exists with the same key) re-applies its configured endpoint.
 func (h *ctlHandler) LinkAdd(m dpproto.LinkAdd) error {
 	d, err := h.device()
 	if err != nil {
@@ -220,8 +189,6 @@ func (h *ctlHandler) LinkAdd(m dpproto.LinkAdd) error {
 	return nil
 }
 
-// LinkDel stops and forgets a link. Routes using it as next hop are the
-// control plane's to remove (until it does, they just drop).
 func (h *ctlHandler) LinkDel(id uint32) error {
 	d, err := h.device()
 	if err != nil {
@@ -269,7 +236,6 @@ func (h *ctlHandler) LinkList() ([]dpproto.LinkInfo, error) {
 	return out, nil
 }
 
-// validIfName is what the kernel will accept for an interface name.
 func validIfName(n string) bool {
 	return n != "" && len(n) <= 15 && !strings.ContainsAny(n, "/ \t\n")
 }
@@ -349,9 +315,6 @@ func (h *ctlHandler) RouteList() ([]dpproto.Route, error) {
 	return d.router.Routes(), nil
 }
 
-// Inject transmits a control-plane packet on one link. Called from the
-// session reader, so it never blocks: staging tail-drops when queues are full
-// and the packet is simply lost, which control protocols tolerate by design.
 func (h *ctlHandler) Inject(m dpproto.Inject) {
 	d := h.current()
 	if d == nil {
@@ -367,8 +330,6 @@ func (h *ctlHandler) Inject(m dpproto.Inject) {
 		d.log.Errorf("inject on link %d: %d-byte payload exceeds mtu %d, dropping", m.Link, len(m.Payload), d.mtu)
 		return
 	}
-	// No session: drop and start a handshake, never hold it back for one.
-	// Same as the kernel's inject (send_now -ENOENT -> send_initiation).
 	if peer.sendKeypair() == nil {
 		peer.SendHandshakeInitiation(false)
 		d.stats.injectDropped.Add(1)
@@ -386,7 +347,7 @@ func (h *ctlHandler) Inject(m dpproto.Inject) {
 	elem.packet = buf[offset-headerSize : offset+len(m.Payload)]
 
 	container := d.GetOutboundElementsContainer()
-	container.isControl = true // priority class: never queued behind data, see send.go's StagePackets
+	container.isControl = true
 	container.elems = append(container.elems, elem)
 
 	d.stats.injectSent.Add(1)
