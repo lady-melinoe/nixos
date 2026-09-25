@@ -40,7 +40,8 @@ static void melnode_data_ready6(struct sock *sk)
 	schedule_work(&dev->rx_work);
 }
 
-static int open_one(struct melnode_device *dev, int family, u16 local_port, struct socket **sockp)
+static int open_one(struct melnode_device *dev, int family, u16 local_port, u32 fwmark,
+		     struct socket **sockp)
 {
 	struct sockaddr_storage addr = { 0 };
 	int addr_len;
@@ -83,6 +84,14 @@ static int open_one(struct melnode_device *dev, int family, u16 local_port, stru
 	 * both plain process context. So sk_allocation stays at its default
 	 * (GFP_KERNEL, sleepable) rather than being forced to GFP_ATOMIC.
 	 */
+	/* Matches melnode-dp's bind.SetMark(m.Fwmark) (cmd/melnode-dp/ctl.go):
+	 * without this, host policy routing has no way to tell this socket's
+	 * own encrypted traffic apart from plaintext overlay traffic, and an
+	 * advertised overlay prefix that happens to cover a peer's real
+	 * endpoint can route this socket's sends back into a tun instead of
+	 * out the real interface - see this file's header comment.
+	 */
+	(*sockp)->sk->sk_mark = fwmark;
 	(*sockp)->sk->sk_user_data = dev;
 	if (family == AF_INET) {
 		dev->orig_sk_data_ready4 = (*sockp)->sk->sk_data_ready;
@@ -96,15 +105,15 @@ static int open_one(struct melnode_device *dev, int family, u16 local_port, stru
 	return 0;
 }
 
-int melnode_socket_open(struct melnode_device *dev, u16 local_port)
+int melnode_socket_open(struct melnode_device *dev, u16 local_port, u32 fwmark)
 {
 	int err;
 
-	err = open_one(dev, AF_INET, local_port, &dev->sock4);
+	err = open_one(dev, AF_INET, local_port, fwmark, &dev->sock4);
 	if (err)
 		return err;
 
-	err = open_one(dev, AF_INET6, local_port, &dev->sock6);
+	err = open_one(dev, AF_INET6, local_port, fwmark, &dev->sock6);
 	if (err) {
 		/* IPv6 may simply be unavailable (CONFIG_IPV6=n, or
 		 * EAFNOSUPPORT) - melnode still works over v4 only.

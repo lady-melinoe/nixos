@@ -420,7 +420,7 @@ static int melnode_nl_device_set(struct sk_buff *skb, struct genl_info *info)
 	/* Bind the socket before committing any state, so a bind failure
 	 * (port in use, etc.) leaves the device cleanly unconfigured.
 	 */
-	err = melnode_socket_open(&melnode_dev, listen_port);
+	err = melnode_socket_open(&melnode_dev, listen_port, fwmark);
 	if (err) {
 		mutex_unlock(&melnode_dev.config_lock);
 		memzero_explicit(private_key, sizeof(private_key));
