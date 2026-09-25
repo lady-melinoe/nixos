@@ -130,6 +130,7 @@ func (device *Device) GetOutboundElementsContainer() *QueueOutboundElementsConta
 	c := device.pool.outboundElementsContainer.Get().(*QueueOutboundElementsContainer)
 	c.Mutex = sync.Mutex{}
 	c.isControl = false
+	c.forwarded = false
 	return c
 }
 

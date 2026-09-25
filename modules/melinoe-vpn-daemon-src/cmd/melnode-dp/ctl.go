@@ -359,6 +359,13 @@ func (h *ctlHandler) Inject(m dpproto.Inject) {
 		d.log.Errorf("inject on link %d: %d-byte payload exceeds mtu %d, dropping", m.Link, len(m.Payload), d.mtu)
 		return
 	}
+	// No session: drop and start a handshake, never hold it back for one.
+	// Same as the kernel's inject (send_now -ENOENT -> send_initiation).
+	if peer.sendKeypair() == nil {
+		peer.SendHandshakeInitiation(false)
+		d.stats.injectDropped.Add(1)
+		return
+	}
 
 	elem := d.NewOutboundElement()
 	buf := elem.buffer[:]

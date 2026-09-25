@@ -53,6 +53,7 @@ type QueueOutboundElementsContainer struct {
 	sync.Mutex
 	elems     []*QueueOutboundElement
 	isControl bool // liveness (proto=1) / path-vector (proto=2) vs routed data (proto=0) -- see StagePackets/drainStaged and PROJECT_STATE.md's backpressure section
+	forwarded bool // multi-hop forward (receive.go) rather than tun-originated: a full queue counts as rx_queue_full, like the kernel's deliver_or_forward
 }
 
 func (device *Device) NewOutboundElement() *QueueOutboundElement {
@@ -95,6 +96,14 @@ func (peer *Peer) SendKeepalive() {
 func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	if !isRetry {
 		peer.timers.handshakeAttempts.Store(0)
+	}
+
+	// Nowhere to send it (listen-only link we haven't heard from): do
+	// nothing, like the kernel's send_initiation -- no rate-limit stamp, no
+	// retry timer, no error logged. The first packet from the peer sets the
+	// endpoint and the next send attempt initiates.
+	if !peer.hasEndpoint() {
+		return nil
 	}
 
 	peer.handshake.mutex.RLock()
@@ -273,23 +282,11 @@ func (device *Device) RoutineReadFromTUN(peerID uint32, devTun tun.Device) {
 
 			if len(elemsForPeer.elems) == 0 {
 				device.PutOutboundElementsContainer(elemsForPeer)
-			} else if peer := device.router.resolveNextHop(peerID); peer != nil && peer.isRunning.Load() {
-				// Re-resolved every round (not cached once at startup,
-				// the way this used to work with a static route table)
-				// so a path-vector reroute of this dst to a different
-				// nhid takes effect on this tun's very next read round,
-				// without needing to tear the tun down -- see
-				// router.go's LookupRoute/AddOrUpdateRoute comments.
-				peer.StagePackets(elemsForPeer)
-				peer.SendStagedPackets()
-			} else {
+			} else if !device.routeAndSend(peerID, elemsForPeer) {
 				device.stats.txNoRoute.Add(uint64(len(elemsForPeer.elems)))
-				for _, elem := range elemsForPeer.elems {
-					device.PutMessageBuffer(elem.buffer)
-					device.PutOutboundElement(elem)
-				}
-				device.PutOutboundElementsContainer(elemsForPeer)
+				device.freeOutbound(elemsForPeer)
 			}
+
 		}
 
 		if readErr != nil {
@@ -335,13 +332,30 @@ func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {
 	default:
 	}
 
-	n := len(elems.elems)
-	peer.device.stats.txQueueFull.Add(uint64(n))
-	for _, elem := range elems.elems {
-		peer.device.PutMessageBuffer(elem.buffer)
-		peer.device.PutOutboundElement(elem)
+	peer.device.dropQueueFull(elems)
+}
+
+// dropQueueFull tail-drops a whole container because a queue was at
+// capacity, counting it the way the kernel does: a forward that can't be
+// queued is rx_queue_full (deliver_or_forward), anything else tx_queue_full
+// (tun xmit).
+func (device *Device) dropQueueFull(elems *QueueOutboundElementsContainer) {
+	n := uint64(len(elems.elems))
+	if elems.forwarded {
+		device.stats.rxQueueFull.Add(n)
+	} else {
+		device.stats.txQueueFull.Add(n)
 	}
-	peer.device.PutOutboundElementsContainer(elems)
+	device.freeOutbound(elems)
+}
+
+// freeOutbound returns a container and its elements' buffers to the pools.
+func (device *Device) freeOutbound(elems *QueueOutboundElementsContainer) {
+	for _, elem := range elems.elems {
+		device.PutMessageBuffer(elem.buffer)
+		device.PutOutboundElement(elem)
+	}
+	device.PutOutboundElementsContainer(elems)
 }
 
 // submit hands a container off to this peer's ordered UDP-send queue
@@ -422,13 +436,7 @@ func (peer *Peer) submit(elemsContainer *QueueOutboundElementsContainer, isContr
 	mu.Lock()
 	if len(outboundQ.c) >= cap(outboundQ.c) || len(encQ.c) >= cap(encQ.c) {
 		mu.Unlock()
-		n := len(elemsContainer.elems)
-		peer.device.stats.txQueueFull.Add(uint64(n))
-		for _, elem := range elemsContainer.elems {
-			peer.device.PutMessageBuffer(elem.buffer)
-			peer.device.PutOutboundElement(elem)
-		}
-		peer.device.PutOutboundElementsContainer(elemsContainer)
+		peer.device.dropQueueFull(elemsContainer)
 		return
 	}
 	// Neither send below can actually block in steady-state operation:
@@ -470,9 +478,9 @@ top:
 		return
 	}
 
-	keypair := peer.keypairs.Current()
-	if keypair == nil || keypair.sendNonce.Load() >= RejectAfterMessages || time.Since(keypair.created) >= RejectAfterTime {
-		peer.SendHandshakeInitiation(false)
+	keypair := peer.sendKeypair()
+	if keypair == nil {
+		peer.dropNoSession(ch, isControl)
 		return
 	}
 
@@ -526,6 +534,60 @@ top:
 				goto top
 			}
 		default:
+			return
+		}
+	}
+}
+
+// hasEndpoint reports whether we know where to send to (kernel:
+// link->has_endpoint).
+func (peer *Peer) hasEndpoint() bool {
+	peer.endpoint.Lock()
+	defer peer.endpoint.Unlock()
+	return peer.endpoint.val != nil
+}
+
+// sendKeypair returns the keypair to send with, or nil if there is no usable
+// session: no endpoint, no current keypair, or one that ran out of messages
+// or time. This is the kernel's send_now -ENOENT condition.
+func (peer *Peer) sendKeypair() *Keypair {
+	keypair := peer.keypairs.Current()
+	if keypair == nil || !peer.hasEndpoint() ||
+		keypair.sendNonce.Load() >= RejectAfterMessages ||
+		time.Since(keypair.created) >= RejectAfterTime {
+		return nil
+	}
+	return keypair
+}
+
+// dropNoSession is what happens to staged packets when there is no session
+// to send them with. The kernel never holds packets back for a handshake:
+// outq_work_fn drops the item, counts it tx_queue_full and calls
+// send_initiation, so this does the same instead of wireguard-go's "stage
+// until the handshake completes". Keepalives (empty elements) are dropped
+// silently, like the kernel's timer-driven send_now, whose error is ignored.
+// Control-class packets are injects: those count as inject_dropped.
+func (peer *Peer) dropNoSession(ch chan *QueueOutboundElementsContainer, isControl bool) {
+	initiate := false
+	for {
+		select {
+		case elemsContainer := <-ch:
+			for _, elem := range elemsContainer.elems {
+				if len(elem.packet) == 0 {
+					continue
+				}
+				initiate = true
+				if isControl {
+					peer.device.stats.injectDropped.Add(1)
+				} else {
+					peer.device.stats.txQueueFull.Add(1)
+				}
+			}
+			peer.device.freeOutbound(elemsContainer)
+		default:
+			if initiate {
+				peer.SendHandshakeInitiation(false)
+			}
 			return
 		}
 	}
