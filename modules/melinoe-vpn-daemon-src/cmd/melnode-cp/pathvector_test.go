@@ -473,3 +473,91 @@ func TestReconcileDropsRouteWhenPrefixBecomesLocal(t *testing.T) {
 		t.Fatalf("stale route kept after prefix became local: %v", h.routes)
 	}
 }
+
+// A node's own route is announced as path [self] however the announcement
+// was triggered; forwardPath (which appends us again) is only for relaying
+// other nodes' routes. It used to go out as [self self] when a prefix was
+// advertised, and back to [self] at the next full sync.
+func TestSelfOriginPathLength(t *testing.T) {
+	n := newPVNet(t, 1, 2)
+	n.linkUp(1, 2)
+	n.nodes[2].AdvertisePrefix(mustPrefix(t, "10.9.0.5/32"))
+	n.drain()
+	if got := n.nodes[1].best[2].path; len(got) != 1 {
+		t.Fatalf("node 1's path to 2 after 2 advertised a prefix = %v, want [2]", got)
+	}
+}
+
+// Whatever order concurrent changes land in, the last update a neighbor
+// gets for each dest must match our current state, without waiting for a
+// full sync (proto=2 isn't acked, so a stale last update would stick).
+func TestLastUpdateIsCurrent(t *testing.T) {
+	n := newPVNet(t, 1)
+	pv := n.nodes[1]
+	to2, to3 := n.peer(1, 2), n.peer(1, 3)
+
+	type belief struct {
+		reachable bool
+		prefixes  []pvPrefix
+	}
+	var mu sync.Mutex
+	heard := map[uint32]belief{} // what neighbor 2 currently believes, per dest
+	pv.sendHook = func(peer *Link, a []pvAnnouncement, w []uint32) {
+		if peer.id != 2 {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, x := range a {
+			heard[x.dest] = belief{true, x.prefixes}
+		}
+		for _, d := range w {
+			heard[d] = belief{}
+		}
+	}
+	pv.OnLinkUp(to2)
+	pv.OnLinkUp(to3)
+
+	prefixes := []pvPrefix{mustPrefix(t, "10.9.0.1/32"), mustPrefix(t, "10.9.0.2/32"), mustPrefix(t, "10.9.0.3/32")}
+	announce9 := encodePVPacket([]pvAnnouncement{{dest: 9, path: []uint32{9, 3}}}, nil)
+	withdraw9 := encodePVPacket(nil, []uint32{9})
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				if p := prefixes[(g+i)%len(prefixes)]; i%2 == 0 {
+					pv.AdvertisePrefix(p)
+				} else {
+					pv.WithdrawPrefix(p)
+				}
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				if (g+i)%2 == 0 {
+					pv.handlePacket(to3, announce9)
+				} else {
+					pv.handlePacket(to3, withdraw9)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	pv.mu.Lock()
+	wantPrefixes := pv.localPrefixesListLocked()
+	_, want9 := pv.best[9]
+	pv.mu.Unlock()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got := heard[1]; !got.reachable || !prefixesEqual(got.prefixes, wantPrefixes) {
+		t.Errorf("neighbor 2 last heard node 1's prefixes as %v, currently %v", got.prefixes, wantPrefixes)
+	}
+	if got := heard[9].reachable; got != want9 {
+		t.Errorf("neighbor 2 last heard dest 9 reachable=%v, currently %v", got, want9)
+	}
+}

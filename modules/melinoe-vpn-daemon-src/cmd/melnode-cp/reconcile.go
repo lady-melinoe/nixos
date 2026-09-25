@@ -443,7 +443,7 @@ func (h *realHost) ListRoutes() (map[pvPrefix]string, error) {
 	}
 	out := make(map[pvPrefix]string, len(routes))
 	for _, rt := range routes {
-		if rt.Dst == nil {
+		if rt.Dst == nil || rt.Priority != routePriorityMelnode {
 			continue
 		}
 		p, ok := parsePrefix(rt.Dst.String())
@@ -464,9 +464,10 @@ func (h *realHost) ReplaceRoute(p pvPrefix, ifname string) error {
 		LinkIndex: link.Attrs().Index,
 		Dst:       p.ipNet(),
 		Protocol:  routeProtocolMelnode,
+		Priority:  routePriorityMelnode,
 	})
 }
 
 func (h *realHost) DelRoute(p pvPrefix) error {
-	return netlink.RouteDel(&netlink.Route{Dst: p.ipNet(), Protocol: routeProtocolMelnode})
+	return netlink.RouteDel(&netlink.Route{Dst: p.ipNet(), Protocol: routeProtocolMelnode, Priority: routePriorityMelnode})
 }

@@ -46,7 +46,7 @@ const (
 // never wait behind anything else, or a slow neighbor blows its own
 // detection timer for no reason but queueing. Path-vector (proto=2) is
 // data-flow: handling one packet can itself call back into the data plane
-// (propagateAnnounce -> Inject, syncKernel -> RouteSet/TunCreate), which is
+// (flushTo -> Inject, syncKernel -> RouteSet/TunCreate), which is
 // exactly the kind of unbounded-latency work liveness must never sit
 // behind. A single shared queue+worker used to carry both, so a burst of
 // path-vector traffic (routine on every reconnect - "sending full table"
