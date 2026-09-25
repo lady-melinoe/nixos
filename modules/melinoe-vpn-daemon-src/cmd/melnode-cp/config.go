@@ -168,7 +168,7 @@ func (c *Config) validate() error {
 	}
 	if c.IdentityPrefix != "" {
 		if _, ok := parsePrefix(c.IdentityPrefix); !ok {
-			return fmt.Errorf("identityPrefix %q is not a valid IPv4 prefix (e.g. \"10.99.0.1/32\")", c.IdentityPrefix)
+			return fmt.Errorf("identityPrefix %q is not a valid IPv4 prefix without host bits (e.g. \"10.99.0.1/32\")", c.IdentityPrefix)
 		}
 	}
 	seenLinks := map[int]bool{}

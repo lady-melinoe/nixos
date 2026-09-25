@@ -198,6 +198,11 @@ func (f *fakeDP) LinkAdd(m dpproto.LinkAdd) error {
 	if old, ok := f.links[m.PeerID]; ok && old.PubKey != m.PubKey {
 		return dpproto.Errorf(dpproto.CodeExists, "link %d exists with another key", m.PeerID)
 	}
+	for id, l := range f.links { // like both real data planes: one peerid per key
+		if id != m.PeerID && l.PubKey == m.PubKey {
+			return dpproto.Errorf(dpproto.CodeExists, "public key already used by link %d", id)
+		}
+	}
 	f.links[m.PeerID] = m
 	f.adds = append(f.adds, m)
 	return nil

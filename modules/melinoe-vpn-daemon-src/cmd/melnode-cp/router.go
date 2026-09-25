@@ -38,6 +38,7 @@ type Router struct {
 	hostMu   sync.Mutex
 	tunNames map[uint32]string // peerid -> ifname, as of the last time the data plane told us
 	hooked   map[uint32]bool   // peerids whose create hook has run since we attached
+	started  map[uint32]bool   // peerids whose tun the data plane last reported as started
 
 	reconcilerState // see reconcile.go
 }
@@ -52,6 +53,7 @@ func newRouter(node *Node, localID uint32, identityPrefix *pvPrefix, tunCreateHo
 		routeTable:        make(map[uint32]uint32),
 		tunNames:          make(map[uint32]string),
 		hooked:            make(map[uint32]bool),
+		started:           make(map[uint32]bool),
 	}
 	r.reconcilerState.init(r)
 	return r
@@ -102,6 +104,7 @@ func (r *Router) attach() {
 	r.hostMu.Lock()
 	r.tunNames = make(map[uint32]string)
 	r.hooked = make(map[uint32]bool)
+	r.started = make(map[uint32]bool)
 	r.hostMu.Unlock()
 	r.startHold()
 	r.Kick()
@@ -120,6 +123,7 @@ func (r *Router) detach() {
 	}
 	r.tunNames = make(map[uint32]string)
 	r.hooked = make(map[uint32]bool)
+	r.started = make(map[uint32]bool)
 	r.hostMu.Unlock()
 	for id, name := range done {
 		if name != "" {
