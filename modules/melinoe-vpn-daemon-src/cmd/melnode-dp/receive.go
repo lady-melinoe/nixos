@@ -315,7 +315,9 @@ func (device *Device) RoutineDecryption(id int) {
  */
 func (device *Device) RoutineHandshake(id int) {
 	defer func() {
+		// Both: startCryptoWorkers adds one per handshake worker to each.
 		device.queue.encryption.wg.Done()
+		device.queue.controlEncryption.wg.Done()
 	}()
 
 	for elem := range device.queue.handshake.c {

@@ -283,6 +283,9 @@ func (r *Router) closeAllTuns() {
 	r.tuns = make(map[uint32]*tunEntry)
 	r.mu.Unlock()
 	for peerID, t := range tuns {
+		if t.writer != nil {
+			close(t.writer.stop) // else runTunWriter blocks forever (DeviceDel)
+		}
 		if err := t.dev.Close(); err != nil {
 			r.dev.log.Errorf("closing tun for peerid %d: %v", peerID, err)
 		}

@@ -29,6 +29,7 @@ type Peer struct {
 	device            *Device
 	stopping          sync.WaitGroup // routines pending stop
 	txBytes           atomic.Uint64
+	dataInFlight      atomic.Int64 // data packets submitted but not yet sent, see maxDataInFlight
 	rxBytes           atomic.Uint64
 	lastHandshakeNano atomic.Int64
 
@@ -224,8 +225,13 @@ func (peer *Peer) Stop() {
 
 	peer.timersStop()
 	peer.queue.inbound.c <- nil
+	// One sentinel only, on the data queue: RoutineSequentialSender exits on
+	// the first nil it reads, so a second one (on controlOutbound) would be
+	// left behind forever -- and the queue's finalizer (flushOutboundQueue)
+	// would crash the process on it once the peer is garbage collected. The
+	// sender drains control first, so anything queued there still goes out
+	// or is flushed below with the peer.
 	peer.queue.outbound.c <- nil
-	peer.queue.controlOutbound.c <- nil
 	peer.stopping.Wait()
 	peer.device.queue.encryption.wg.Done()
 	peer.device.queue.controlEncryption.wg.Done()

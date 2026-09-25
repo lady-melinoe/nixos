@@ -97,6 +97,9 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	if !isRetry {
 		peer.timers.handshakeAttempts.Store(0)
 	}
+	if !peer.isRunning.Load() {
+		return nil // LinkDel'd: a straggler must not start a new handshake
+	}
 
 	// Nowhere to send it (listen-only link we haven't heard from): do
 	// nothing, like the kernel's send_initiation -- no rate-limit stamp, no
@@ -433,11 +436,16 @@ func (peer *Peer) submit(elemsContainer *QueueOutboundElementsContainer, isContr
 		mu = &peer.device.queue.controlSubmitMu
 	}
 
+	n := int64(len(elemsContainer.elems))
 	mu.Lock()
-	if len(outboundQ.c) >= cap(outboundQ.c) || len(encQ.c) >= cap(encQ.c) {
+	if len(outboundQ.c) >= cap(outboundQ.c) || len(encQ.c) >= cap(encQ.c) ||
+		(!isControl && peer.dataInFlight.Load()+n > maxDataInFlight) {
 		mu.Unlock()
 		peer.device.dropQueueFull(elemsContainer)
 		return
+	}
+	if !isControl {
+		peer.dataInFlight.Add(n) // released by RoutineSequentialSender
 	}
 	// Neither send below can actually block in steady-state operation:
 	// capacity on both channels was just confirmed under this same
@@ -578,6 +586,9 @@ func (peer *Peer) dropNoSession(ch chan *QueueOutboundElementsContainer, isContr
 				}
 				initiate = true
 				if isControl {
+					// Inject counted it as sent when it found a session;
+					// that session went away before it could be used.
+					peer.device.stats.injectSent.Add(^uint64(0))
 					peer.device.stats.injectDropped.Add(1)
 				} else {
 					peer.device.stats.txQueueFull.Add(1)
@@ -719,6 +730,11 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 		bufs = bufs[:0]
 		if elemsContainer == nil {
 			return true
+		}
+		if !elemsContainer.isControl {
+			// Read before the container goes back to the pool (which
+			// empties it); isControl is fixed from staging onwards.
+			defer peer.dataInFlight.Add(-int64(len(elemsContainer.elems)))
 		}
 		if !peer.isRunning.Load() {
 			// peer has been stopped; return re-usable elems to the shared pool.

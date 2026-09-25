@@ -17,6 +17,14 @@ const (
 	MaxSegmentSize             = (1 << 16) - 1 // largest possible UDP datagram
 	PreallocatedBuffersPerPool = 0             // Disable and allow for infinite memory growth
 
+	// maxDataInFlight caps one peer's data packets between nonce assignment
+	// and the wire. Control packets are sent ahead of queued data but take
+	// their nonces later, so they can overtake up to this many data packets;
+	// the receiver's replay window (8192 - 64 counters, RFC-style sliding
+	// window in both wireguard-go and the kernel module) rejects anything
+	// further behind. Half the window leaves plenty of room for control.
+	maxDataInFlight = 4096
+
 	// PoolPrefillSize is melnode's own addition (not upstream
 	// wireguard-go): how many objects each WaitPool actually allocates
 	// upfront, at startup, rather than lazily on first use. Separate
