@@ -55,6 +55,8 @@
   melinoe.node.serialConsoleMode = true;
   melinoe.node.id = 7;
   networking.hostName = "atropos";
+  melinoe.services.melnode.kernelDataplane.enable = true;
+  melinoe.services.melnode.dataplane = "kernel";
   melinoe.node.networking.uplinks = [
     {
       ip = "198.19.1.5/32";
