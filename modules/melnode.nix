@@ -286,15 +286,21 @@ in
 
     environment.systemPackages = lib.mkIf mCfg.enabled [ mnctl ];
 
+    # melnode is part of the network, like NetworkManager or a wireguard
+    # interface: it starts after network.target and before network-online.target,
+    # so anything that waits for the network (incus, cluster members, ...) starts
+    # after it and, since units stop in reverse start order, stops before it.
+    # network-online.target is deliberately not in `after`: that would be a cycle.
     systemd.services.melnode-dp = lib.mkIf (mCfg.enabled && mCfg.dataplane == "userspace") {
       description = "melnode data plane (Noise tunnels, tuns, forwarding)";
+      before = [ "network-online.target" ];
       wantedBy = [ "multi-user.target" ];
       after = [
-        "network-online.target"
+        "network.target"
         "melinoe-inet-setup.service"
       ];
       wants = [
-        "network-online.target"
+        "network.target"
         "melinoe-inet-setup.service"
       ];
       stopIfChanged = false;
@@ -310,15 +316,16 @@ in
 
     systemd.services.melnode-cp = lib.mkIf mCfg.enabled {
       description = "melnode control plane (liveness, path-vector routing, host integration)";
+      before = [ "network-online.target" ];
       wantedBy = [ "multi-user.target" ];
       after = [
-        "network-online.target"
+        "network.target"
         "melinoe-inet-setup.service"
         "nftables.service"
       ]
       ++ lib.optional (mCfg.dataplane == "userspace") "melnode-dp.service";
       wants = [
-        "network-online.target"
+        "network.target"
         "melinoe-inet-setup.service"
         "nftables.service"
       ];
@@ -338,6 +345,14 @@ in
       # PATH for the tun hooks, which shell out to ip/nft.
       path = toolPath;
       serviceConfig = {
+        # Kernel mode: make sure the module is loaded (no-op if it already is;
+        # its softdeps pull in libcurve25519/libchacha20poly1305). The "+"
+        # runs this one command with full privileges - the service itself only
+        # has CAP_NET_ADMIN. A failure here fails the start, and Restart=
+        # retries it.
+        ExecStartPre = lib.optional (
+          mCfg.dataplane == "kernel"
+        ) "+/run/current-system/sw/bin/modprobe melnode";
         ExecStart = "${cpBin} -config ${cpConfig}";
         Restart = "always";
         RestartSec = 1;
@@ -352,6 +367,7 @@ in
     # notices melnode restarting (new control socket) and re-advertises.
     systemd.services.melnode-helper = lib.mkIf mCfg.enabled {
       description = "melnode helper (route advertisement, per-tun policy routing)";
+      before = [ "network-online.target" ];
       wantedBy = [ "multi-user.target" ];
       after = [
         "melnode-cp.service"
