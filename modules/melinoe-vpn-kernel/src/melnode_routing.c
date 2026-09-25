@@ -111,7 +111,7 @@ void melnode_link_arm_timer_locked(struct melnode_link *link)
 		return;
 
 	kref_get(&link->kref);
-	if (mod_delayed_work(system_wq, &link->timer,
+	if (mod_delayed_work(MELNODE_TIMER_WQ, &link->timer,
 			     next > now ? nsecs_to_jiffies64(next - now) + 1 : 0))
 		melnode_link_put(link);
 }

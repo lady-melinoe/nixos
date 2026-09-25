@@ -14,6 +14,8 @@
 
 typedef struct blake2s_ctx melnode_blake2s_ctx;
 
+#define MELNODE_TIMER_WQ system_dfl_wq
+
 static inline int melnode_compat_bind(struct socket *sock, struct sockaddr_storage *addr,
 				      int addr_len)
 {
