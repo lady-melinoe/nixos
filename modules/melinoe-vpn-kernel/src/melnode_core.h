@@ -8,6 +8,8 @@
 #define _MELNODE_CORE_H
 
 #include <linux/mutex.h>
+#include <linux/spinlock.h>
+#include <linux/list.h>
 #include <linux/workqueue.h>
 #include <linux/skbuff.h>
 #include <linux/in6.h>
@@ -65,7 +67,20 @@ struct melnode_tun_priv {
 };
 
 struct melnode_device {
-	struct mutex lock;
+	/* spinlock, not mutex: melnode_tun_xmit() (ndo_start_xmit) takes this
+	 * for its route-table lookup, and melnode's own local-delivery
+	 * netif_rx() injection onto one node-* tun can have the host's real
+	 * IP stack immediately re-forward the packet back out a *different*
+	 * node-* tun's ndo_start_xmit from within ip_forward() - which runs
+	 * in NET_RX_SOFTIRQ context, not process context. A mutex sleeping
+	 * there is illegal (confirmed live on arke: "bad: scheduling from
+	 * the idle thread!" and a full hang). None of this lock's critical
+	 * sections do anything that needs to sleep (no GFP_KERNEL
+	 * allocation, no blocking calls - the crypto ops under it are pure
+	 * computation, same as WireGuard's own noise.c/cookie.c running
+	 * under RCU/spinlocks), so spin_lock_bh is a straight swap.
+	 */
+	spinlock_t lock;
 	bool configured;
 
 	u32 local_id;
@@ -88,6 +103,20 @@ struct melnode_device {
 	void (*orig_sk_data_ready4)(struct sock *sk);
 	void (*orig_sk_data_ready6)(struct sock *sk);
 	struct work_struct rx_work;
+
+	/* TUN_DESTROY hands the actual unregister_netdevice() off here instead
+	 * of doing it synchronously in the genl doit call. unregister_netdevice()
+	 * can stall for a long time (the classic "waiting for dev to become
+	 * free" case, e.g. lingering route/neighbour references) while holding
+	 * rtnl_lock - since genl delivery to a kernel family runs the doit
+	 * handler synchronously inside the sender's write(2), a stall there
+	 * blocks melnode-cp's entire control channel (every other command, and
+	 * transitively peer liveness) for as long as it lasts. See
+	 * melnode_tun_teardown_work_fn() in melnode_core.c.
+	 */
+	spinlock_t pending_teardown_lock;
+	struct list_head pending_teardown;
+	struct work_struct tun_teardown_work;
 
 	atomic64_t stats[MELNODE_STAT_RX_QUEUE_FULL + 1];
 };

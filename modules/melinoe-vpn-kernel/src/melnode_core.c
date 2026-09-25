@@ -89,8 +89,66 @@
 #define MELNODE_DEFAULT_TTL 64
 
 struct melnode_device melnode_dev = {
-	.lock = __MUTEX_INITIALIZER(melnode_dev.lock),
+	.lock = __SPIN_LOCK_UNLOCKED(melnode_dev.lock),
+	.pending_teardown_lock = __SPIN_LOCK_UNLOCKED(melnode_dev.pending_teardown_lock),
+	.pending_teardown = LIST_HEAD_INIT(melnode_dev.pending_teardown),
 };
+
+struct melnode_pending_teardown {
+	struct list_head list;
+	struct net_device *dev;
+};
+
+/* See melnode_core.h's pending_teardown comment: this is where the
+ * potentially-stalling half of tun destruction actually happens, off the
+ * genl doit call's (and therefore melnode-cp's control channel's) critical
+ * path.
+ */
+static void melnode_tun_teardown_work_fn(struct work_struct *work)
+{
+	struct melnode_pending_teardown *p, *tmp;
+	LIST_HEAD(local);
+	LIST_HEAD(dead);
+
+	spin_lock_bh(&melnode_dev.pending_teardown_lock);
+	list_splice_init(&melnode_dev.pending_teardown, &local);
+	spin_unlock_bh(&melnode_dev.pending_teardown_lock);
+
+	if (list_empty(&local))
+		return;
+
+	rtnl_lock();
+	list_for_each_entry(p, &local, list)
+		unregister_netdevice_queue(p->dev, &dead);
+	unregister_netdevice_many(&dead);
+	rtnl_unlock();
+
+	list_for_each_entry_safe(p, tmp, &local, list) {
+		list_del(&p->list);
+		kfree(p);
+	}
+}
+
+static void melnode_queue_tun_teardown(struct net_device *dev)
+{
+	struct melnode_pending_teardown *p;
+
+	p = kmalloc(sizeof(*p), GFP_KERNEL);
+	if (!p) {
+		/* Fall back to the old synchronous behaviour - better a stalled
+		 * genl call than a leaked net_device.
+		 */
+		rtnl_lock();
+		unregister_netdevice(dev);
+		rtnl_unlock();
+		return;
+	}
+	p->dev = dev;
+	spin_lock_bh(&melnode_dev.pending_teardown_lock);
+	list_add_tail(&p->list, &melnode_dev.pending_teardown);
+	spin_unlock_bh(&melnode_dev.pending_teardown_lock);
+	schedule_work(&melnode_dev.tun_teardown_work);
+}
 
 void melnode_stat_inc(enum melnode_stat id)
 {
@@ -211,9 +269,9 @@ nla_put_failure:
 
 static int melnode_nl_attach(struct sk_buff *skb, struct genl_info *info)
 {
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	melnode_dev.attached_portid = info->snd_portid;
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 	return 0;
 }
 
@@ -225,10 +283,10 @@ static int melnode_netlink_notifier_call(struct notifier_block *nb, unsigned lon
 	if (state != NETLINK_URELEASE || notify->protocol != NETLINK_GENERIC)
 		return NOTIFY_DONE;
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	if (melnode_dev.attached_portid == notify->portid)
 		melnode_dev.attached_portid = 0;
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 	return NOTIFY_DONE;
 }
 
@@ -342,7 +400,7 @@ static int melnode_nl_device_set(struct sk_buff *skb, struct genl_info *info)
 		return -EINVAL;
 	}
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 
 	if (melnode_dev.configured) {
 		bool identical = melnode_dev.local_id == local_id &&
@@ -350,13 +408,13 @@ static int melnode_nl_device_set(struct sk_buff *skb, struct genl_info *info)
 				  melnode_dev.mtu == mtu && melnode_dev.fwmark == fwmark &&
 				  !memcmp(melnode_dev.private_key, private_key, 32);
 
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		memzero_explicit(private_key, sizeof(private_key));
 		if (identical)
 			goto reply_pubkey;
 		return -EEXIST;
 	}
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 
 	/* Bind the socket before committing any state, so a bind failure
 	 * (port in use, etc.) leaves the device cleanly unconfigured.
@@ -367,7 +425,7 @@ static int melnode_nl_device_set(struct sk_buff *skb, struct genl_info *info)
 		return err;
 	}
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	melnode_dev.local_id = local_id;
 	memcpy(melnode_dev.private_key, private_key, 32);
 	memcpy(melnode_dev.public_key, public_key, 32);
@@ -377,7 +435,7 @@ static int melnode_nl_device_set(struct sk_buff *skb, struct genl_info *info)
 	melnode_cookie_checker_init(&melnode_dev.cookie_checker);
 	melnode_cookie_checker_precompute_device_keys(&melnode_dev.cookie_checker, public_key);
 	WRITE_ONCE(melnode_dev.configured, true);
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 	memzero_explicit(private_key, sizeof(private_key));
 
 reply_pubkey:
@@ -418,7 +476,7 @@ static void melnode_teardown_device(void)
 	 * be called under rtnl_lock.
 	 */
 	rtnl_lock();
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	for (i = 0; i < MELNODE_MAX_PEER; i++) {
 		if (melnode_dev.tuns[i].valid)
 			unregister_netdevice_queue(melnode_dev.tuns[i].dev, &dead_tuns);
@@ -429,9 +487,17 @@ static void melnode_teardown_device(void)
 	memzero_explicit(melnode_dev.private_key, sizeof(melnode_dev.private_key));
 	memset(melnode_dev.public_key, 0, sizeof(melnode_dev.public_key));
 	WRITE_ONCE(melnode_dev.configured, false);
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 	unregister_netdevice_many(&dead_tuns);
 	rtnl_unlock();
+
+	/* Wait for any TUN_DESTROY-triggered async teardown (see
+	 * melnode_queue_tun_teardown()) still in flight - its net_devices are
+	 * already out of melnode_dev.tuns[] so the loop above never touched
+	 * them, but melnode_tun_teardown_work_fn() is this module's own code
+	 * and must not still be running (or queued) once this module unloads.
+	 */
+	flush_work(&melnode_dev.tun_teardown_work);
 
 	melnode_socket_close(&melnode_dev);
 }
@@ -491,11 +557,11 @@ static int melnode_nl_link_add(struct sk_buff *skb, struct genl_info *info)
 		return -EINVAL;
 	pubkey = nla_data(info->attrs[MELNODE_A_PUBLIC_KEY]);
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	link = &melnode_dev.links[peer_id];
 
 	if (link->valid && memcmp(link->public_key, pubkey, 32)) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return -EEXIST;
 	}
 
@@ -520,7 +586,7 @@ static int melnode_nl_link_add(struct sk_buff *skb, struct genl_info *info)
 	 * listen-only link learns its peer's address from traffic).
 	 */
 
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 	return 0;
 }
 
@@ -533,13 +599,13 @@ static int melnode_nl_link_del(struct sk_buff *skb, struct genl_info *info)
 	if (err)
 		return err;
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	if (!melnode_dev.links[peer_id].valid) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return -ENOENT;
 	}
 	memset(&melnode_dev.links[peer_id], 0, sizeof(melnode_dev.links[peer_id]));
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 	/* Routes pointing at this peer are left alone; the control plane
 	 * removes them, per API.md.
 	 */
@@ -598,10 +664,10 @@ static int melnode_nl_route_set(struct sk_buff *skb, struct genl_info *info)
 	if (err)
 		return err;
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	melnode_dev.routes[dst].valid = true;
 	melnode_dev.routes[dst].nexthop = nexthop;
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 	return 0;
 }
 
@@ -614,9 +680,9 @@ static int melnode_nl_route_del(struct sk_buff *skb, struct genl_info *info)
 	if (err)
 		return err;
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	melnode_dev.routes[dst].valid = false;
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 	return 0;
 }
 
@@ -666,15 +732,15 @@ static void melnode_send_initiation(u8 peer_id)
 	int endpoint_len;
 	bool have_endpoint;
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	link = &melnode_dev.links[peer_id];
 	if (!link->valid || !melnode_configured()) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return;
 	}
 	if ((s64)(link->handshake.last_sent_initiation + MELNODE_REKEY_TIMEOUT * NSEC_PER_SEC) >
 	    (s64)now) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return;
 	}
 	link->handshake.last_sent_initiation = now;
@@ -688,12 +754,12 @@ static void melnode_send_initiation(u8 peer_id)
 
 	if (!melnode_noise_handshake_create_initiation(&msg, &link->handshake, local_pub, local_priv,
 							melnode_gen_index(peer_id))) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		memzero_explicit(local_priv, sizeof(local_priv));
 		return;
 	}
 	melnode_cookie_add_mac_to_packet(&msg, sizeof(msg), &link->cookie);
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 	memzero_explicit(local_priv, sizeof(local_priv));
 
 	if (!have_endpoint)
@@ -730,17 +796,17 @@ static int melnode_send_data(u8 link_peer_id, const u8 *plain, size_t plain_len)
 	u64 counter;
 	int ret = 0;
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	link = &melnode_dev.links[link_peer_id];
 	if (!link->valid || !link->has_endpoint || !link->keypairs.current_kp.valid ||
 	    !link->keypairs.current_kp.sending.is_valid) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return -ENOENT;
 	}
 	kp_copy = link->keypairs.current_kp; /* snapshot key+index; counter is atomic */
 	endpoint_len = link->endpoint_len;
 	memcpy(endpoint, link->endpoint, endpoint_len);
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 
 	out = kmalloc(out_len, GFP_ATOMIC);
 	if (!out)
@@ -780,10 +846,10 @@ static netdev_tx_t melnode_tun_xmit(struct sk_buff *skb, struct net_device *dev)
 		return NETDEV_TX_OK;
 	}
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	have_route = melnode_dev.routes[dst_peer_id].valid;
 	nexthop = melnode_dev.routes[dst_peer_id].nexthop;
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 
 	if (!have_route) {
 		melnode_stat_inc(MELNODE_STAT_TX_NO_ROUTE);
@@ -829,12 +895,32 @@ static const struct net_device_ops melnode_tun_netdev_ops = {
 	.ndo_start_xmit = melnode_tun_xmit,
 };
 
+/* TUN_READQ_SIZE from drivers/net/tun.c - matched deliberately, not just for
+ * cosmetic parity with `ip link` output. melnode-dp's tuns are real
+ * /dev/net/tun devices, which get a genuine qdisc (fq_codel by default) with
+ * this tx_queue_len; queued transmission there is deferred through
+ * NET_TX_SOFTIRQ, which breaks up any synchronous call chain between chained
+ * virtual devices. Our local-delivery path (netif_rx() onto node-<src>,
+ * which the host's own IP stack may then forward straight back out a
+ * *different* node-* tun for a downstream prefix - completely normal for
+ * melnode's per-peer-tun design, see mnctl routes on any real node) is
+ * exactly this kind of virtual-device chaining. IFF_NO_QUEUE (as used here
+ * originally, matching WireGuard's own single-interface device.c) transmits
+ * synchronously in the caller's context with no softirq boundary - safe for
+ * WireGuard, whose xmit never re-enters another virtual device's RX path,
+ * but for melnode this let a brief routing hairpin during convergence trip
+ * __dev_queue_xmit()'s recursion guard immediately and repeatedly ("Dead
+ * loop on virtual device", confirmed live on arke). A real qdisc absorbs
+ * the same hairpin as ordinary queueing instead.
+ */
+#define MELNODE_TUN_TX_QUEUE_LEN 500
+
 static void melnode_tun_setup(struct net_device *dev)
 {
 	dev->netdev_ops = &melnode_tun_netdev_ops;
 	dev->type = ARPHRD_NONE;
-	dev->flags = IFF_POINTOPOINT | IFF_NOARP;
-	dev->priv_flags |= IFF_NO_QUEUE;
+	dev->flags = IFF_POINTOPOINT | IFF_NOARP | IFF_MULTICAST;
+	dev->tx_queue_len = MELNODE_TUN_TX_QUEUE_LEN;
 	dev->hard_header_len = 0;
 	dev->addr_len = 0;
 	dev->mtu = ETH_DATA_LEN;
@@ -861,19 +947,28 @@ static int melnode_nl_tun_create(struct sk_buff *skb, struct genl_info *info)
 		return -EINVAL;
 	nla_strscpy(name, info->attrs[MELNODE_A_TUN_NAME], sizeof(name));
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	tun = &melnode_dev.tuns[peer_id];
 
 	if (tun->valid) {
 		bool same_name = !strcmp(tun->dev->name, name);
 
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		if (!same_name)
 			return -EEXIST;
 		goto reply_tun;
 	}
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 
+	/* Note: since TUN_DESTROY's actual unregister_netdevice() now happens
+	 * asynchronously (melnode_queue_tun_teardown()), a DESTROY immediately
+	 * followed by a CREATE reusing the same name can transiently race the
+	 * old net_device's name still being held - register_netdevice() below
+	 * returns -EEXIST in that case, same as any other genuine name clash.
+	 * melnode-cp's reconcile loop (reconcile.go's EnsureTun) treats a
+	 * TunCreate failure as transient and retries on its next pass, so this
+	 * surfaces as a brief retry rather than a hard failure.
+	 */
 	rtnl_lock();
 	dev = alloc_netdev(sizeof(*priv), name, NET_NAME_USER, melnode_tun_setup);
 	if (!dev) {
@@ -893,14 +988,14 @@ static int melnode_nl_tun_create(struct sk_buff *skb, struct genl_info *info)
 	}
 	rtnl_unlock();
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	tun = &melnode_dev.tuns[peer_id];
 	if (tun->valid) {
 		/* Lost a race with another TUN_CREATE for the same peer id;
 		 * genl serializes doit calls for a given family by default,
 		 * so this is defensive rather than expected.
 		 */
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		rtnl_lock();
 		unregister_netdevice(dev);
 		rtnl_unlock();
@@ -909,7 +1004,7 @@ static int melnode_nl_tun_create(struct sk_buff *skb, struct genl_info *info)
 	tun->valid = true;
 	tun->started = false;
 	tun->dev = dev;
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 
 reply_tun:
 	reply = genlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
@@ -940,15 +1035,15 @@ static int melnode_nl_tun_start(struct sk_buff *skb, struct genl_info *info)
 	if (err)
 		return err;
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	tun = &melnode_dev.tuns[peer_id];
 	if (!tun->valid) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return -ENOENT;
 	}
 	if (!tun->started)
 		dev = tun->dev;
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 
 	if (dev) {
 		rtnl_lock();
@@ -957,9 +1052,9 @@ static int melnode_nl_tun_start(struct sk_buff *skb, struct genl_info *info)
 		if (err)
 			return err;
 
-		mutex_lock(&melnode_dev.lock);
+		spin_lock_bh(&melnode_dev.lock);
 		melnode_dev.tuns[peer_id].started = true;
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 	}
 	return 0;
 }
@@ -974,18 +1069,15 @@ static int melnode_nl_tun_destroy(struct sk_buff *skb, struct genl_info *info)
 	if (err)
 		return err;
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	if (melnode_dev.tuns[peer_id].valid) {
 		dev = melnode_dev.tuns[peer_id].dev;
 		memset(&melnode_dev.tuns[peer_id], 0, sizeof(melnode_dev.tuns[peer_id]));
 	}
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 
-	if (dev) {
-		rtnl_lock();
-		unregister_netdevice(dev);
-		rtnl_unlock();
-	}
+	if (dev)
+		melnode_queue_tun_teardown(dev);
 	return 0;
 }
 
@@ -1099,10 +1191,10 @@ static void melnode_handle_handshake_initiation(u8 *data, size_t len, const void
 	if (len != sizeof(*msg))
 		return;
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	mac_state = melnode_cookie_validate_packet(&melnode_dev.cookie_checker, data, len, from,
 						    from_len, true);
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 
 	if (mac_state == MELNODE_COOKIE_INVALID_MAC)
 		return;
@@ -1116,19 +1208,19 @@ static void melnode_handle_handshake_initiation(u8 *data, size_t len, const void
 		 */
 		struct melnode_wire_handshake_cookie reply;
 
-		mutex_lock(&melnode_dev.lock);
+		spin_lock_bh(&melnode_dev.lock);
 		melnode_cookie_message_create(&reply, data, len, from, from_len, msg->sender_index,
 					       &melnode_dev.cookie_checker);
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		melnode_socket_send(&melnode_dev, &reply, sizeof(reply), from, from_len);
 		return;
 	}
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	if (!melnode_noise_handshake_consume_initiation1(msg, melnode_dev.public_key,
 							  melnode_dev.private_key, remote_static,
 							  &pre)) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return;
 	}
 
@@ -1141,12 +1233,12 @@ static void melnode_handle_handshake_initiation(u8 *data, size_t len, const void
 		}
 	}
 	if (!link) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return;
 	}
 
 	if (!melnode_noise_handshake_consume_initiation2(msg, &pre, &link->handshake)) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return;
 	}
 
@@ -1163,14 +1255,14 @@ static void melnode_handle_handshake_initiation(u8 *data, size_t len, const void
 
 	if (!melnode_noise_handshake_create_response(&resp, &link->handshake,
 						      melnode_gen_index(peer_id))) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		memzero_explicit(local_priv, sizeof(local_priv));
 		return;
 	}
 	melnode_cookie_add_mac_to_packet(&resp, sizeof(resp), &link->cookie);
 	melnode_noise_handshake_begin_session(&link->handshake, &link->keypairs);
 	link->last_handshake_unix_ns = ktime_get_real_ns();
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 	memzero_explicit(local_priv, sizeof(local_priv));
 
 	melnode_socket_send(&melnode_dev, &resp, sizeof(resp), from, from_len);
@@ -1190,10 +1282,10 @@ static void melnode_handle_handshake_response(u8 *data, size_t len, const void *
 
 	peer_id = melnode_index_peer_id(msg->receiver_index);
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	link = &melnode_dev.links[peer_id];
 	if (!link->valid) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return;
 	}
 
@@ -1207,7 +1299,7 @@ static void melnode_handle_handshake_response(u8 *data, size_t len, const void *
 	 */
 	if (melnode_cookie_validate_packet(&melnode_dev.cookie_checker, data, len, from, from_len,
 					    false) == MELNODE_COOKIE_INVALID_MAC) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return;
 	}
 
@@ -1215,7 +1307,7 @@ static void melnode_handle_handshake_response(u8 *data, size_t len, const void *
 	ok = melnode_noise_handshake_consume_response(msg, local_priv, &link->handshake);
 	memzero_explicit(local_priv, sizeof(local_priv));
 	if (!ok) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return;
 	}
 
@@ -1225,7 +1317,7 @@ static void melnode_handle_handshake_response(u8 *data, size_t len, const void *
 
 	melnode_noise_handshake_begin_session(&link->handshake, &link->keypairs);
 	link->last_handshake_unix_ns = ktime_get_real_ns();
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 
 	melnode_send_event_handshake(peer_id, from, from_len);
 }
@@ -1240,10 +1332,10 @@ static void melnode_handle_cookie_reply(u8 *data, size_t len)
 
 	peer_id = melnode_index_peer_id(msg->receiver_index);
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	if (melnode_dev.links[peer_id].valid)
 		melnode_cookie_message_consume(msg, &melnode_dev.links[peer_id].cookie);
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 }
 
 /* Delivers a decrypted, melnode-header-prefixed plaintext that arrived over
@@ -1275,14 +1367,14 @@ static void melnode_route_plaintext(u8 ingress_peer_id, u8 *plain, size_t plain_
 
 	if ((u32)dst == melnode_dev.local_id) {
 		tun_peer_id = src; /* tun is keyed by the logical peer, not the physical link */
-		mutex_lock(&melnode_dev.lock);
+		spin_lock_bh(&melnode_dev.lock);
 		tun = &melnode_dev.tuns[tun_peer_id];
 		if (!tun->valid || !tun->started) {
-			mutex_unlock(&melnode_dev.lock);
+			spin_unlock_bh(&melnode_dev.lock);
 			melnode_stat_inc(MELNODE_STAT_RX_NO_TUN);
 			return;
 		}
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		{
 			struct sk_buff *skb = netdev_alloc_skb(tun->dev, plain_len - MELNODE_HDR_LEN);
 
@@ -1305,10 +1397,10 @@ static void melnode_route_plaintext(u8 ingress_peer_id, u8 *plain, size_t plain_
 		melnode_stat_inc(MELNODE_STAT_RX_TTL_EXPIRED);
 		return;
 	}
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	have_route = melnode_dev.routes[dst].valid;
 	nexthop = melnode_dev.routes[dst].nexthop;
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 	if (!have_route) {
 		melnode_stat_inc(MELNODE_STAT_RX_NO_ROUTE);
 		return;
@@ -1336,10 +1428,10 @@ static void melnode_handle_data(u8 *data, size_t len)
 	counter = le64_to_cpu(msg->counter);
 	peer_id = melnode_index_peer_id(msg->receiver_index);
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	link = &melnode_dev.links[peer_id];
 	if (!link->valid) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		return;
 	}
 	/* msg->receiver_index is what the *sender* put in message_data.key_idx,
@@ -1361,7 +1453,7 @@ static void melnode_handle_data(u8 *data, size_t len)
 		is_next = true;
 	}
 	if (!kp || !kp->receiving.is_valid) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		melnode_stat_inc(MELNODE_STAT_RX_BAD_PACKET);
 		return;
 	}
@@ -1373,7 +1465,7 @@ static void melnode_handle_data(u8 *data, size_t len)
 		u8 recv_key[MELNODE_NOISE_SYMMETRIC_KEY_LEN];
 
 		memcpy(recv_key, kp->receiving.key, sizeof(recv_key));
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 
 		plain_len = cipher_len - MELNODE_NOISE_AUTHTAG_LEN;
 		plain = kmalloc(cipher_len, GFP_KERNEL);
@@ -1387,9 +1479,9 @@ static void melnode_handle_data(u8 *data, size_t len)
 		}
 	}
 
-	mutex_lock(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.lock);
 	if (!melnode_replay_check(&kp->receiving_counter, counter)) {
-		mutex_unlock(&melnode_dev.lock);
+		spin_unlock_bh(&melnode_dev.lock);
 		kfree(plain);
 		melnode_stat_inc(MELNODE_STAT_RX_BAD_PACKET);
 		return;
@@ -1397,7 +1489,7 @@ static void melnode_handle_data(u8 *data, size_t len)
 	if (is_next)
 		melnode_noise_received_with_keypair(&link->keypairs, true);
 	atomic64_add(plain_len, &link->rx_bytes);
-	mutex_unlock(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.lock);
 
 	if (plain_len > 0)
 		melnode_route_plaintext(peer_id, plain, plain_len);
@@ -1556,6 +1648,7 @@ static int __init melnode_init(void)
 
 	melnode_noise_init();
 	melnode_socket_init_work(&melnode_dev);
+	INIT_WORK(&melnode_dev.tun_teardown_work, melnode_tun_teardown_work_fn);
 	err = melnode_ratelimiter_init();
 	if (err)
 		return err;
