@@ -394,6 +394,14 @@ static int melnode_nl_device_set(struct sk_buff *skb, struct genl_info *info)
 		return -EINVAL;
 	}
 
+	/* Held for the whole operation, including the blocking
+	 * melnode_socket_open() below - genl no longer serializes doit calls
+	 * for us (parallel_ops, see melnode_genl_family), so this is what
+	 * now keeps a concurrent DEVICE_SET/DEVICE_DEL from racing this one:
+	 * checking `configured`, binding the socket, and committing the new
+	 * state all need to happen as one atomic unit, not three separately
+	 * lockable steps.
+	 */
 	mutex_lock(&melnode_dev.config_lock);
 
 	if (melnode_dev.configured) {
@@ -408,18 +416,17 @@ static int melnode_nl_device_set(struct sk_buff *skb, struct genl_info *info)
 			goto reply_pubkey;
 		return -EEXIST;
 	}
-	mutex_unlock(&melnode_dev.config_lock);
 
 	/* Bind the socket before committing any state, so a bind failure
 	 * (port in use, etc.) leaves the device cleanly unconfigured.
 	 */
 	err = melnode_socket_open(&melnode_dev, listen_port);
 	if (err) {
+		mutex_unlock(&melnode_dev.config_lock);
 		memzero_explicit(private_key, sizeof(private_key));
 		return err;
 	}
 
-	mutex_lock(&melnode_dev.config_lock);
 	melnode_dev.local_id = local_id;
 	memcpy(melnode_dev.private_key, private_key, 32);
 	memcpy(melnode_dev.public_key, public_key, 32);
@@ -464,12 +471,22 @@ reply_pubkey:
  * close the socket. Getting this backwards - tearing down net_devices/the
  * socket while a link's queue worker could still be running - reintroduces
  * a use-after-free.
+ *
+ * Held under config_lock for its entire duration (including the blocking
+ * flush_work()/rtnl_lock() calls below - both fine under a mutex): genl no
+ * longer serializes doit calls for us (parallel_ops), so this is what now
+ * makes DEVICE_DEL/module-exit teardown atomic with respect to a
+ * concurrent DEVICE_SET - without it, DEVICE_SET could see `configured ==
+ * false` partway through teardown and start reconfiguring the device out
+ * from under it.
  */
 static void melnode_teardown_device(void)
 {
 	LIST_HEAD(dead_tuns);
 	struct melnode_link **link_snapshot;
 	int i;
+
+	mutex_lock(&melnode_dev.config_lock);
 
 	/* 1. Stop intake. */
 	WRITE_ONCE(melnode_dev.configured, false);
@@ -540,12 +557,12 @@ static void melnode_teardown_device(void)
 	 */
 	flush_work(&melnode_dev.tun_teardown_work);
 
-	mutex_lock(&melnode_dev.config_lock);
 	memzero_explicit(melnode_dev.private_key, sizeof(melnode_dev.private_key));
 	memset(melnode_dev.public_key, 0, sizeof(melnode_dev.public_key));
-	mutex_unlock(&melnode_dev.config_lock);
 
 	melnode_socket_close(&melnode_dev);
+
+	mutex_unlock(&melnode_dev.config_lock);
 }
 
 static int melnode_nl_device_del(struct sk_buff *skb, struct genl_info *info)
@@ -1762,6 +1779,24 @@ static struct genl_family melnode_genl_family __ro_after_init = {
 	.n_ops = ARRAY_SIZE(melnode_ops),
 	.mcgrps = melnode_mcgrps,
 	.n_mcgrps = ARRAY_SIZE(melnode_mcgrps),
+	/* By default genl serializes every doit/dumpit call for a family
+	 * behind one lock, regardless of this module's own locking. That's
+	 * fine for a device that's mostly idle, but melnode-cp's liveness
+	 * protocol sends its keepalive as an INJECT on the same control
+	 * connection as bursty TUN_CREATE/TUN_DESTROY/ROUTE_SET traffic
+	 * (every tun churn cycle reprograms routes for every peer) - queued
+	 * behind a burst of those, INJECT can miss a tight liveness deadline,
+	 * which triggers more churn, which delays the next round further:
+	 * a self-sustaining flapping cascade (confirmed live on arke).
+	 * parallel_ops lets genl process doit calls for this family
+	 * concurrently instead of one at a time - safe here specifically
+	 * because every handler above already protects its own state itself
+	 * (per-link spinlocks, RCU tables, config_lock held for the *entire*
+	 * duration of DEVICE_SET/DEVICE_DEL - see melnode_teardown_device()'s
+	 * comment) rather than leaning on genl's serialization the way the
+	 * original single-global-lock design implicitly did.
+	 */
+	.parallel_ops = true,
 };
 
 static int __init melnode_init(void)
