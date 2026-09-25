@@ -41,8 +41,12 @@ addressed to a family id the data plane didn't hand out gets `ENOENT`.
   attribute, `ENOENT`, `EEXIST`, `EIO`, `EOPNOTSUPP` unknown command or API
   version mismatch, `ENODEV` no device configured yet.
 * **Attributes** are one flat namespace (`MELNODE_A_*`). Unknown attributes are
-  ignored, so adding one is not an API break; `MELNODE_GENL_VERSION` changes
-  only on an incompatible change. Absent optional attributes mean zero/none.
+  ignored by the userspace data plane, so adding one is not an API break
+  there. The kernel module validates strictly (as genetlink does by
+  default): an attribute it has no policy for, or a type above its
+  `MELNODE_A_MAX`, fails the request with `EINVAL`. A new request attribute
+  therefore needs a module that knows it before a control plane may send it.
+  `MELNODE_GENL_VERSION` changes only on an incompatible change. Absent optional attributes mean zero/none.
   Peer, node and destination ids are 0..255 (they live in one byte on the
   wire).
 * **Notifications** (`PUNT`, `EVENT`) have `seq == 0`, no reply. Both are lossy:

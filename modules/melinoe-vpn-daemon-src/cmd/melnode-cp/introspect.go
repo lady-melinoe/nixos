@@ -88,7 +88,9 @@ func (l *Link) linkInfo(dp *dpproto.LinkInfo) linkInfo {
 
 func (n *Node) linksSnapshot() []linkInfo {
 	byID := map[uint32]dpproto.LinkInfo{}
-	if cl := n.dp(); cl != nil {
+	cl, release := n.introspectDP()
+	defer release()
+	if cl != nil {
 		if list, err := cl.LinkList(); err == nil {
 			for _, li := range list {
 				byID[li.PeerID] = li
@@ -123,7 +125,8 @@ type tunInfo struct {
 // each. Empty while no data plane is attached.
 func (r *Router) tunsSnapshot() []tunInfo {
 	out := []tunInfo{}
-	cl := r.node.dp()
+	cl, release := r.node.introspectDP()
+	defer release()
 	if cl == nil {
 		return out
 	}
@@ -335,12 +338,12 @@ type dataplaneInfo struct {
 // dataplaneSnapshot dumps the data plane's counters (drops by cause, control
 // packets punted/injected). Empty while no data plane is attached.
 func (n *Node) dataplaneSnapshot() dataplaneInfo {
-	info := dataplaneInfo{}
-	cl := n.dp()
+	info := dataplaneInfo{Attached: n.dp() != nil}
+	cl, release := n.introspectDP()
+	defer release()
 	if cl == nil {
 		return info
 	}
-	info.Attached = true
 	stats, err := cl.Stats()
 	if err != nil {
 		return info

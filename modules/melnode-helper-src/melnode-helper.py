@@ -433,9 +433,11 @@ def daemon(cfg: Config) -> int:
         tick += 1
         stop.wait(cfg.poll_interval)
 
-    # Clean shutdown: withdraw what we advertised (best effort).
-    for prefix in sorted(state.advertised):
-        control_post(cfg.control_socket, "/withdraw", prefix)
+    # Deliberately no withdrawal on shutdown: the helper restarts on every
+    # deploy that touches its config, and withdrawing first would pull this
+    # node's prefixes from the whole mesh for a tick. The next helper
+    # re-advertises idempotently; if melnode-cp restarts instead, it starts
+    # with an empty local set anyway.
     log.info("daemon stopped")
     return 0
 

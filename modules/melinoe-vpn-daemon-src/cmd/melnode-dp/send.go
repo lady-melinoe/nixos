@@ -570,7 +570,7 @@ func (peer *Peer) sendKeypair() *Keypair {
 
 // dropNoSession is what happens to staged packets when there is no session
 // to send them with. The kernel never holds packets back for a handshake:
-// outq_work_fn drops the item, counts it tx_queue_full and calls
+// outq_work_fn drops the item, counts it tx_no_route and calls
 // send_initiation, so this does the same instead of wireguard-go's "stage
 // until the handshake completes". Keepalives (empty elements) are dropped
 // silently, like the kernel's timer-driven send_now, whose error is ignored.
@@ -591,7 +591,7 @@ func (peer *Peer) dropNoSession(ch chan *QueueOutboundElementsContainer, isContr
 					peer.device.stats.injectSent.Add(^uint64(0))
 					peer.device.stats.injectDropped.Add(1)
 				} else {
-					peer.device.stats.txQueueFull.Add(1)
+					peer.device.stats.txNoRoute.Add(1)
 				}
 			}
 			peer.device.freeOutbound(elemsContainer)
