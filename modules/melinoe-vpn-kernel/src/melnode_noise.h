@@ -11,22 +11,27 @@
  *
  * What's deliberately different from WireGuard's kernel implementation:
  *
- *  - No RCU/kref keypair objects and no global index hashtable. WireGuard
- *    needs those because it supports ~2^20 peers with fully random 32-bit
- *    session indices that have to be looked up device-wide. melnode's peer
- *    ids are a fixed 0..255 byte and already double as the array index into
- *    melnode_dev.links, so a session index here is generated as
- *    (random_bits << 8) | peer_id: the low byte IS the lookup. Handshake
- *    and keypair state live directly inside struct melnode_link, guarded by
- *    melnode_dev.lock, not separately allocated/refcounted objects.
+ *  - No *separate* RCU/kref keypair objects and no global index hashtable.
+ *    WireGuard needs those because it supports ~2^20 peers with fully
+ *    random 32-bit session indices that have to be looked up
+ *    device-wide. melnode's peer ids are a fixed 0..255 byte and already
+ *    double as the array index into melnode_dev.links, so a session index
+ *    here is generated as (random_bits << 8) | peer_id: the low byte IS
+ *    the lookup. Handshake and keypair state live directly inside struct
+ *    melnode_link as plain fields, not separately allocated/refcounted
+ *    sub-objects the way WireGuard's own keypairs are - the *link* itself
+ *    is RCU-published and kref'd (see melnode_core.h),
+ *    but nothing inside it needs its own, separate lifetime.
  *  - mac1/mac2 cookie-reply DoS mitigation lives in melnode_cookie.[ch] /
  *    melnode_ratelimiter.[ch] (ported from WireGuard's cookie.c/
  *    ratelimiter.c), not here - this file is purely the Noise state
  *    machine, exactly as in WireGuard's own noise.c/noise.h split.
- *  - Single mutex instead of per-object rwsems/kref/RCU. Encrypt/decrypt
- *    still happens outside the lock (see send/receive paths) - only the
- *    keypair metadata (which slot is current, the raw key bytes, the
- *    counter) is touched under it.
+ *  - A per-link spinlock (struct melnode_link's own `lock`, not a single
+ *    device-wide one - see melnode_core.h) guards this
+ *    handshake/keypair state. Encrypt/decrypt still happens outside the
+ *    lock (see send/receive paths) - only the keypair metadata (which
+ *    slot is current, the raw key bytes, the counter) is touched under
+ *    it.
  */
 #ifndef _MELNODE_NOISE_H
 #define _MELNODE_NOISE_H
@@ -159,8 +164,8 @@ bool melnode_noise_handshake_begin_session(struct melnode_handshake *handshake,
  * promotes next -> current (dropping the old current into previous),
  * confirming to a responder that the initiator has the new keypair too.
  * Simplified from wg_noise_received_with_keypair(): everything here is
- * already under melnode_dev.lock when this is called, so there's no
- * lock-free compare-and-swap dance to replicate.
+ * already under the relevant link's own lock when this is called, so
+ * there's no lock-free compare-and-swap dance to replicate.
  */
 bool melnode_noise_received_with_keypair(struct melnode_keypairs *keypairs, bool decrypted_with_next);
 

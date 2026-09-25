@@ -6,16 +6,15 @@
  * melnode_genl.h) as an in-kernel alternative to melnode-dp. melnode-cp is
  * unaware which implementation it's talking to.
  *
- * Full scope now: device/link/route/tun lifecycle, the Noise_IKpsk2
- * handshake and mac1/mac2 cookie-reply DoS mitigation (melnode_noise.c/
+ * Full scope: device/link/route/tun lifecycle, the Noise_IKpsk2 handshake
+ * and mac1/mac2 cookie-reply DoS mitigation (melnode_noise.c/
  * melnode_cookie.c/melnode_ratelimiter.c), the UDP socket
- * (melnode_socket.c), and the actual forwarding path: tun -> encrypt ->
- * link, link -> decrypt -> local tun or re-encrypt onto the next hop
- * (decrementing TTL), proto != 0 -> PUNT. This is melnode's own routing
- * semantics (a 4-byte [proto,src,dst,ttl] header inside the decrypted
- * payload, one point-to-point tun per peer id, multi-hop store-and-
- * forward via the route table) - see melnode-dp's router.go/ctl.go for the
- * exact byte layout this must match.
+ * (melnode_socket.c), and genl RX dispatch here, handing proto == 0
+ * traffic off to melnode_routing.c for the actual forwarding decision
+ * (local delivery vs. multi-hop re-forward) - see melnode_core.h's header
+ * comment for the full locking/lifetime design (RCU-published route/link/
+ * tun tables, per-link spinlocks, kref'd links, dev_hold-protected tuns)
+ * and melnode_routing.h for the forwarding datapath this file feeds.
  *
  * Session indices: rather than WireGuard's device-wide index hashtable
  * (needed for its ~2^20-peer, fully-random-index design), a melnode index
@@ -27,8 +26,8 @@
  * ever decoded by whoever created it, indexing their own table.
  *
  * Deliberate simplifications, all documented where they matter:
- *  - No staged-packet queue: a tun xmit while no valid session exists
- *    triggers a handshake and drops that one packet, rather than WireGuard's
+ *  - No staged-packet queue: a link with no valid session yet triggers a
+ *    handshake and drops that one packet, rather than WireGuard's
  *    queue-and-flush-on-handshake-complete.
  *  - Cookie/mac2 proof is *always* required for handshake initiations (see
  *    melnode_handle_datagram), not adaptively under WireGuard's queue-depth
@@ -36,18 +35,20 @@
  *    because melnode-dp (unmodified wireguard-go) already retries with a
  *    cookie on receiving a cookie-reply.
  *  - Linear-buffer crypto (melnode_transport.c) instead of scatterlists.
- *  - Single melnode_dev.lock instead of WireGuard's per-object rwsem/kref/
- *    RCU (see melnode_noise.h).
  *
  * The genl scaffolding (family/ops layout, the ATTACH portid + netlink
  * release-notifier pattern, the dump-with-cb->args idiom, the
  * nla_put_u64_64bit usage) follows drivers/net/wireguard/{device,netlink}.c
  * (Jason A. Donenfeld et al., GPL-2.0); the handshake/cookie/transport
  * modules this file drives are ported more directly from WireGuard's
- * noise.c/cookie.c/ratelimiter.c/receive.c/send.c - see those files'
- * headers for exactly what's verbatim versus adapted. The attribute/
- * command set and the routing-header wire format are melnode's own,
- * defined by melnode_genl.h and melnode-dp respectively.
+ * noise.c/cookie.c/ratelimiter.c/receive.c/send.c, and this file's own
+ * locking model (per-link locks + RCU tables + kref, see melnode_core.h/
+ * melnode_routing.h) is likewise modeled directly on
+ * drivers/net/wireguard/{peer,device}.c rather than re-derived - see
+ * those files' headers for exactly what's verbatim versus adapted. The
+ * attribute/command set and the routing-header wire
+ * format are melnode's own, defined by melnode_genl.h and melnode-dp
+ * respectively.
  */
 
 #include <linux/module.h>
@@ -65,31 +66,24 @@
 #include <linux/list.h>
 #include <linux/netdevice.h>
 #include <linux/rtnetlink.h>
+#include <linux/rcupdate.h>
 #include <net/genetlink.h>
+#include <net/gro_cells.h>
 #include <crypto/curve25519.h>
+#include <crypto/chacha20poly1305.h>
 
 #include "melnode_core.h"
+#include "melnode_routing.h"
 #include "melnode_socket.h"
 #include "melnode_transport.h"
 #include "melnode_ratelimiter.h"
 
 #define MELNODE_A_MAX MELNODE_A_EVT_TIME
 
-/* melnode's own routing header, living inside the decrypted Noise
- * transport payload - NOT part of melnode_messages.h, since that file is
- * the Noise/wire-framing layer ported from WireGuard, while this is
- * melnode-dp's own addition on top of it. See router.go/ctl.go: byte 0
- * proto, byte 1 src peer id, byte 2 dst peer id, byte 3 ttl.
- */
-#define MELNODE_HDR_LEN 4
-#define MELNODE_HDR_OFF_PROTO 0
-#define MELNODE_HDR_OFF_SRC 1
-#define MELNODE_HDR_OFF_DST 2
-#define MELNODE_HDR_OFF_TTL 3
-#define MELNODE_DEFAULT_TTL 64
-
 struct melnode_device melnode_dev = {
-	.lock = __SPIN_LOCK_UNLOCKED(melnode_dev.lock),
+	.config_lock = __MUTEX_INITIALIZER(melnode_dev.config_lock),
+	.tables_mutex = __MUTEX_INITIALIZER(melnode_dev.tables_mutex),
+	.attach_lock = __SPIN_LOCK_UNLOCKED(melnode_dev.attach_lock),
 	.pending_teardown_lock = __SPIN_LOCK_UNLOCKED(melnode_dev.pending_teardown_lock),
 	.pending_teardown = LIST_HEAD_INIT(melnode_dev.pending_teardown),
 };
@@ -269,9 +263,9 @@ nla_put_failure:
 
 static int melnode_nl_attach(struct sk_buff *skb, struct genl_info *info)
 {
-	spin_lock_bh(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.attach_lock);
 	melnode_dev.attached_portid = info->snd_portid;
-	spin_unlock_bh(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.attach_lock);
 	return 0;
 }
 
@@ -283,10 +277,10 @@ static int melnode_netlink_notifier_call(struct notifier_block *nb, unsigned lon
 	if (state != NETLINK_URELEASE || notify->protocol != NETLINK_GENERIC)
 		return NOTIFY_DONE;
 
-	spin_lock_bh(&melnode_dev.lock);
+	spin_lock_bh(&melnode_dev.attach_lock);
 	if (melnode_dev.attached_portid == notify->portid)
 		melnode_dev.attached_portid = 0;
-	spin_unlock_bh(&melnode_dev.lock);
+	spin_unlock_bh(&melnode_dev.attach_lock);
 	return NOTIFY_DONE;
 }
 
@@ -392,15 +386,15 @@ static int melnode_nl_device_set(struct sk_buff *skb, struct genl_info *info)
 		fwmark = nla_get_u32(info->attrs[MELNODE_A_FWMARK]);
 	memcpy(private_key, nla_data(info->attrs[MELNODE_A_PRIVATE_KEY]), 32);
 
-	/* As in wg_set_device(): compute the public key before taking the
-	 * device lock, and reject a degenerate (all-zero) key outright.
+	/* As in wg_set_device(): compute the public key before taking any
+	 * lock, and reject a degenerate (all-zero) key outright.
 	 */
 	if (!curve25519_generate_public(public_key, private_key)) {
 		memzero_explicit(private_key, sizeof(private_key));
 		return -EINVAL;
 	}
 
-	spin_lock_bh(&melnode_dev.lock);
+	mutex_lock(&melnode_dev.config_lock);
 
 	if (melnode_dev.configured) {
 		bool identical = melnode_dev.local_id == local_id &&
@@ -408,13 +402,13 @@ static int melnode_nl_device_set(struct sk_buff *skb, struct genl_info *info)
 				  melnode_dev.mtu == mtu && melnode_dev.fwmark == fwmark &&
 				  !memcmp(melnode_dev.private_key, private_key, 32);
 
-		spin_unlock_bh(&melnode_dev.lock);
+		mutex_unlock(&melnode_dev.config_lock);
 		memzero_explicit(private_key, sizeof(private_key));
 		if (identical)
 			goto reply_pubkey;
 		return -EEXIST;
 	}
-	spin_unlock_bh(&melnode_dev.lock);
+	mutex_unlock(&melnode_dev.config_lock);
 
 	/* Bind the socket before committing any state, so a bind failure
 	 * (port in use, etc.) leaves the device cleanly unconfigured.
@@ -425,7 +419,7 @@ static int melnode_nl_device_set(struct sk_buff *skb, struct genl_info *info)
 		return err;
 	}
 
-	spin_lock_bh(&melnode_dev.lock);
+	mutex_lock(&melnode_dev.config_lock);
 	melnode_dev.local_id = local_id;
 	memcpy(melnode_dev.private_key, private_key, 32);
 	memcpy(melnode_dev.public_key, public_key, 32);
@@ -435,7 +429,7 @@ static int melnode_nl_device_set(struct sk_buff *skb, struct genl_info *info)
 	melnode_cookie_checker_init(&melnode_dev.cookie_checker);
 	melnode_cookie_checker_precompute_device_keys(&melnode_dev.cookie_checker, public_key);
 	WRITE_ONCE(melnode_dev.configured, true);
-	spin_unlock_bh(&melnode_dev.lock);
+	mutex_unlock(&melnode_dev.config_lock);
 	memzero_explicit(private_key, sizeof(private_key));
 
 reply_pubkey:
@@ -456,48 +450,100 @@ reply_pubkey:
 	return genlmsg_reply(reply, info);
 }
 
-/* Tears down everything DEVICE_SET built: tuns, socket, keys. Shared
- * between DEVICE_DEL and melnode_exit() - the kernel does NOT pin a module
- * just because it has live net_devices registered (unlike, say, struct
- * file_operations.owner for a char device), so unloading this module
- * without first unregistering its tuns leaves live net_devices whose
- * net_device_ops function pointers point into now-freed module memory:
- * the next packet, or even just interface enumeration, touching one of
- * them jumps to unmapped memory and panics. Confirmed live: this is
- * exactly what happened testing on arke.
+/* Tears down everything DEVICE_SET built: tuns, links, routes, socket,
+ * keys. Shared between DEVICE_DEL and melnode_exit() - the kernel does
+ * NOT pin a module just because it has live net_devices registered, so
+ * unloading this module without first unregistering its tuns leaves live
+ * net_devices whose net_device_ops function pointers point into now-freed
+ * module memory: the next packet, or even just interface enumeration,
+ * touching one of them jumps to unmapped memory and panics. Confirmed
+ * live: this is exactly what happened testing on arke.
+ *
+ * Ordering: stop intake, unpublish + drain every table entry (including
+ * each link's outbound queue), *then* actually unregister net_devices and
+ * close the socket. Getting this backwards - tearing down net_devices/the
+ * socket while a link's queue worker could still be running - reintroduces
+ * a use-after-free.
  */
 static void melnode_teardown_device(void)
 {
 	LIST_HEAD(dead_tuns);
+	struct melnode_link **link_snapshot;
 	int i;
 
-	/* Lock order: rtnl outer, melnode_dev.lock inner - both
-	 * unregister_netdevice_queue() and unregister_netdevice_many() must
-	 * be called under rtnl_lock.
+	/* 1. Stop intake. */
+	WRITE_ONCE(melnode_dev.configured, false);
+
+	link_snapshot = kcalloc(MELNODE_MAX_PEER, sizeof(*link_snapshot), GFP_KERNEL);
+	if (!link_snapshot)
+		pr_warn("melnode: teardown: couldn't allocate link snapshot, queues may not drain cleanly\n");
+
+	/* 2. Unpublish every route/link/tun entry under tables_mutex. Routes
+	 * have no lifetime concerns beyond kfree_rcu. Tuns are queued for the
+	 * existing async unregister below; only their entry structs (not the
+	 * net_devices) are freed here. Links drop the table's own kref here;
+	 * any in-flight queued items keep them alive a little longer, which
+	 * step 3 waits out.
+	 */
+	mutex_lock(&melnode_dev.tables_mutex);
+	for (i = 0; i < MELNODE_MAX_PEER; i++) {
+		struct melnode_route *route = rcu_dereference_protected(
+			melnode_dev.routes[i], lockdep_is_held(&melnode_dev.tables_mutex));
+		struct melnode_link *link = rcu_dereference_protected(
+			melnode_dev.links[i], lockdep_is_held(&melnode_dev.tables_mutex));
+		struct melnode_tun *tun = rcu_dereference_protected(
+			melnode_dev.tuns[i], lockdep_is_held(&melnode_dev.tables_mutex));
+
+		if (route) {
+			RCU_INIT_POINTER(melnode_dev.routes[i], NULL);
+			kfree_rcu(route, rcu);
+		}
+		if (link) {
+			RCU_INIT_POINTER(melnode_dev.links[i], NULL);
+			if (link_snapshot)
+				link_snapshot[i] = link;
+			melnode_link_put(link);
+		}
+		if (tun) {
+			RCU_INIT_POINTER(melnode_dev.tuns[i], NULL);
+			WRITE_ONCE(tun->state, MELNODE_TUN_DESTROYING);
+			unregister_netdevice_queue(tun->dev, &dead_tuns);
+			kfree_rcu(tun, rcu);
+		}
+	}
+	mutex_unlock(&melnode_dev.tables_mutex);
+
+	/* 3. Drain every link's outbound queue before letting the socket go
+	 * away below. Nothing can enqueue anything new by now (every link was
+	 * already unpublished above, so melnode_link_get() on any of them
+	 * fails). Not done under tables_mutex: flush_work() can block.
+	 */
+	if (link_snapshot) {
+		for (i = 0; i < MELNODE_MAX_PEER; i++) {
+			if (link_snapshot[i])
+				flush_work(&link_snapshot[i]->outq_work);
+		}
+		kfree(link_snapshot);
+	}
+
+	/* 4. Now safe to actually unregister the tuns (gro_cells_destroy()
+	 * runs synchronously inside this, via .ndo_uninit) and close the
+	 * socket.
 	 */
 	rtnl_lock();
-	spin_lock_bh(&melnode_dev.lock);
-	for (i = 0; i < MELNODE_MAX_PEER; i++) {
-		if (melnode_dev.tuns[i].valid)
-			unregister_netdevice_queue(melnode_dev.tuns[i].dev, &dead_tuns);
-	}
-	memset(melnode_dev.tuns, 0, sizeof(melnode_dev.tuns));
-	memset(melnode_dev.links, 0, sizeof(melnode_dev.links));
-	memset(melnode_dev.routes, 0, sizeof(melnode_dev.routes));
-	memzero_explicit(melnode_dev.private_key, sizeof(melnode_dev.private_key));
-	memset(melnode_dev.public_key, 0, sizeof(melnode_dev.public_key));
-	WRITE_ONCE(melnode_dev.configured, false);
-	spin_unlock_bh(&melnode_dev.lock);
 	unregister_netdevice_many(&dead_tuns);
 	rtnl_unlock();
 
 	/* Wait for any TUN_DESTROY-triggered async teardown (see
-	 * melnode_queue_tun_teardown()) still in flight - its net_devices are
-	 * already out of melnode_dev.tuns[] so the loop above never touched
-	 * them, but melnode_tun_teardown_work_fn() is this module's own code
-	 * and must not still be running (or queued) once this module unloads.
+	 * melnode_queue_tun_teardown()) still in flight from before this
+	 * whole-device teardown began.
 	 */
 	flush_work(&melnode_dev.tun_teardown_work);
+
+	mutex_lock(&melnode_dev.config_lock);
+	memzero_explicit(melnode_dev.private_key, sizeof(melnode_dev.private_key));
+	memset(melnode_dev.public_key, 0, sizeof(melnode_dev.public_key));
+	mutex_unlock(&melnode_dev.config_lock);
 
 	melnode_socket_close(&melnode_dev);
 }
@@ -546,8 +592,8 @@ static int melnode_nl_stats_get(struct sk_buff *skb, struct netlink_callback *cb
 static int melnode_nl_link_add(struct sk_buff *skb, struct genl_info *info)
 {
 	u8 peer_id;
-	struct melnode_link *link;
 	const u8 *pubkey;
+	struct melnode_link *link;
 	int err;
 
 	err = melnode_get_u8_id(info->attrs[MELNODE_A_PEER_ID], &peer_id);
@@ -557,23 +603,55 @@ static int melnode_nl_link_add(struct sk_buff *skb, struct genl_info *info)
 		return -EINVAL;
 	pubkey = nla_data(info->attrs[MELNODE_A_PUBLIC_KEY]);
 
-	spin_lock_bh(&melnode_dev.lock);
-	link = &melnode_dev.links[peer_id];
+	/* Existing link at this peer id: only the endpoint (mutable state,
+	 * protected by this link's own spinlock) can change here - no need to
+	 * touch tables_mutex at all.
+	 */
+	link = melnode_link_get(peer_id);
+	if (link) {
+		if (memcmp(link->public_key, pubkey, 32)) {
+			melnode_link_put(link);
+			return -EEXIST;
+		}
+		if (info->attrs[MELNODE_A_ENDPOINT]) {
+			int len = nla_len(info->attrs[MELNODE_A_ENDPOINT]);
 
-	if (link->valid && memcmp(link->public_key, pubkey, 32)) {
-		spin_unlock_bh(&melnode_dev.lock);
-		return -EEXIST;
+			spin_lock_bh(&link->lock);
+			memcpy(link->endpoint, nla_data(info->attrs[MELNODE_A_ENDPOINT]), len);
+			link->endpoint_len = len;
+			link->has_endpoint = true;
+			spin_unlock_bh(&link->lock);
+		}
+		/* else: leave whatever endpoint we already had, per API.md (a
+		 * listen-only link learns its peer's address from traffic).
+		 */
+		melnode_link_put(link);
+		return 0;
 	}
 
-	if (!link->valid) {
-		memcpy(link->public_key, pubkey, 32);
-		melnode_noise_handshake_init(&link->handshake, pubkey);
-		melnode_noise_precompute_static_static(&link->handshake, melnode_dev.private_key,
-							pubkey);
-		melnode_cookie_init(&link->cookie);
-		melnode_cookie_precompute_peer_keys(&link->cookie, pubkey);
-		link->valid = true;
+	/* New link: build it fully before publishing. */
+	link = kzalloc(sizeof(*link), GFP_KERNEL);
+	if (!link)
+		return -ENOMEM;
+	err = melnode_routing_link_init(link);
+	if (err) {
+		kfree(link);
+		return err;
 	}
+	link->peer_id = peer_id;
+	memcpy(link->public_key, pubkey, 32);
+	melnode_noise_handshake_init(&link->handshake, pubkey);
+	{
+		u8 local_priv[32];
+
+		mutex_lock(&melnode_dev.config_lock);
+		memcpy(local_priv, melnode_dev.private_key, 32);
+		mutex_unlock(&melnode_dev.config_lock);
+		melnode_noise_precompute_static_static(&link->handshake, local_priv, pubkey);
+		memzero_explicit(local_priv, sizeof(local_priv));
+	}
+	melnode_cookie_init(&link->cookie);
+	melnode_cookie_precompute_peer_keys(&link->cookie, pubkey);
 
 	if (info->attrs[MELNODE_A_ENDPOINT]) {
 		int len = nla_len(info->attrs[MELNODE_A_ENDPOINT]);
@@ -582,33 +660,49 @@ static int melnode_nl_link_add(struct sk_buff *skb, struct genl_info *info)
 		link->endpoint_len = len;
 		link->has_endpoint = true;
 	}
-	/* else: leave whatever endpoint we already had, per API.md (a
-	 * listen-only link learns its peer's address from traffic).
-	 */
 
-	spin_unlock_bh(&melnode_dev.lock);
+	mutex_lock(&melnode_dev.tables_mutex);
+	if (rcu_dereference_protected(melnode_dev.links[peer_id],
+				       lockdep_is_held(&melnode_dev.tables_mutex))) {
+		/* Lost a race with another LINK_ADD for the same peer id;
+		 * genl serializes doit calls for a given family by default,
+		 * so this is defensive rather than expected.
+		 */
+		mutex_unlock(&melnode_dev.tables_mutex);
+		melnode_link_put(link); /* drops the only ref - frees it */
+		return -EEXIST;
+	}
+	rcu_assign_pointer(melnode_dev.links[peer_id], link);
+	mutex_unlock(&melnode_dev.tables_mutex);
 	return 0;
 }
 
 static int melnode_nl_link_del(struct sk_buff *skb, struct genl_info *info)
 {
 	u8 peer_id;
+	struct melnode_link *link;
 	int err;
 
 	err = melnode_get_u8_id(info->attrs[MELNODE_A_PEER_ID], &peer_id);
 	if (err)
 		return err;
 
-	spin_lock_bh(&melnode_dev.lock);
-	if (!melnode_dev.links[peer_id].valid) {
-		spin_unlock_bh(&melnode_dev.lock);
+	mutex_lock(&melnode_dev.tables_mutex);
+	link = rcu_dereference_protected(melnode_dev.links[peer_id],
+					  lockdep_is_held(&melnode_dev.tables_mutex));
+	if (!link) {
+		mutex_unlock(&melnode_dev.tables_mutex);
 		return -ENOENT;
 	}
-	memset(&melnode_dev.links[peer_id], 0, sizeof(melnode_dev.links[peer_id]));
-	spin_unlock_bh(&melnode_dev.lock);
+	RCU_INIT_POINTER(melnode_dev.links[peer_id], NULL);
+	mutex_unlock(&melnode_dev.tables_mutex);
+
 	/* Routes pointing at this peer are left alone; the control plane
-	 * removes them, per API.md.
+	 * removes them, per API.md. Drop the table's own reference - any
+	 * in-flight queued items keep the link alive via their own held
+	 * refs until they drain naturally and the last one frees it.
 	 */
+	melnode_link_put(link);
 	return 0;
 }
 
@@ -617,31 +711,57 @@ static int melnode_nl_link_get(struct sk_buff *skb, struct netlink_callback *cb)
 	int peer_id = cb->args[0];
 
 	for (; peer_id < MELNODE_MAX_PEER; peer_id++) {
-		struct melnode_link *link = &melnode_dev.links[peer_id];
+		struct melnode_link *link;
 		void *hdr;
+		bool has_endpoint;
+		u8 endpoint[sizeof(struct sockaddr_in6)];
+		u8 endpoint_len = 0;
+		u64 last_handshake;
+		s64 tx, rx;
 
-		if (!link->valid)
+		/* Fresh rcu_read_lock() per dumpit invocation (genl dumps are
+		 * multi-call via cb->args, so the lock must never be held
+		 * across calls) - no kref needed for a read that stays
+		 * entirely within this section; RCU alone keeps the link
+		 * struct alive for that long.
+		 */
+		rcu_read_lock();
+		link = rcu_dereference(melnode_dev.links[peer_id]);
+		if (!link) {
+			rcu_read_unlock();
 			continue;
+		}
+		spin_lock_bh(&link->lock);
+		has_endpoint = link->has_endpoint;
+		if (has_endpoint) {
+			endpoint_len = link->endpoint_len;
+			memcpy(endpoint, link->endpoint, endpoint_len);
+		}
+		last_handshake = melnode_link_last_handshake_ns(link);
+		tx = atomic64_read(&link->tx_bytes);
+		rx = atomic64_read(&link->rx_bytes);
+		spin_unlock_bh(&link->lock);
 
 		hdr = genlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
 				   &melnode_genl_family, NLM_F_MULTI, MELNODE_CMD_LINK_GET);
-		if (!hdr)
+		if (!hdr) {
+			rcu_read_unlock();
 			break;
+		}
 
 		if (nla_put_u32(skb, MELNODE_A_PEER_ID, peer_id) ||
 		    nla_put(skb, MELNODE_A_PUBLIC_KEY, 32, link->public_key) ||
-		    (link->has_endpoint &&
-		     nla_put(skb, MELNODE_A_ENDPOINT, link->endpoint_len, link->endpoint)) ||
-		    nla_put_u64_64bit(skb, MELNODE_A_LAST_HANDSHAKE,
-				       melnode_link_last_handshake_ns(link), MELNODE_A_PAD) ||
-		    nla_put_u64_64bit(skb, MELNODE_A_TX_BYTES, atomic64_read(&link->tx_bytes),
+		    (has_endpoint && nla_put(skb, MELNODE_A_ENDPOINT, endpoint_len, endpoint)) ||
+		    nla_put_u64_64bit(skb, MELNODE_A_LAST_HANDSHAKE, last_handshake,
 				       MELNODE_A_PAD) ||
-		    nla_put_u64_64bit(skb, MELNODE_A_RX_BYTES, atomic64_read(&link->rx_bytes),
-				       MELNODE_A_PAD)) {
+		    nla_put_u64_64bit(skb, MELNODE_A_TX_BYTES, tx, MELNODE_A_PAD) ||
+		    nla_put_u64_64bit(skb, MELNODE_A_RX_BYTES, rx, MELNODE_A_PAD)) {
 			genlmsg_cancel(skb, hdr);
+			rcu_read_unlock();
 			break;
 		}
 		genlmsg_end(skb, hdr);
+		rcu_read_unlock();
 	}
 
 	cb->args[0] = peer_id;
@@ -655,6 +775,7 @@ static int melnode_nl_link_get(struct sk_buff *skb, struct netlink_callback *cb)
 static int melnode_nl_route_set(struct sk_buff *skb, struct genl_info *info)
 {
 	u8 dst, nexthop;
+	struct melnode_route *route, *old;
 	int err;
 
 	err = melnode_get_u8_id(info->attrs[MELNODE_A_ROUTE_DST], &dst);
@@ -664,25 +785,38 @@ static int melnode_nl_route_set(struct sk_buff *skb, struct genl_info *info)
 	if (err)
 		return err;
 
-	spin_lock_bh(&melnode_dev.lock);
-	melnode_dev.routes[dst].valid = true;
-	melnode_dev.routes[dst].nexthop = nexthop;
-	spin_unlock_bh(&melnode_dev.lock);
+	route = kmalloc(sizeof(*route), GFP_KERNEL);
+	if (!route)
+		return -ENOMEM;
+	route->nexthop = nexthop;
+
+	mutex_lock(&melnode_dev.tables_mutex);
+	old = rcu_dereference_protected(melnode_dev.routes[dst],
+					 lockdep_is_held(&melnode_dev.tables_mutex));
+	rcu_assign_pointer(melnode_dev.routes[dst], route);
+	mutex_unlock(&melnode_dev.tables_mutex);
+	if (old)
+		kfree_rcu(old, rcu);
 	return 0;
 }
 
 static int melnode_nl_route_del(struct sk_buff *skb, struct genl_info *info)
 {
 	u8 dst;
+	struct melnode_route *old;
 	int err;
 
 	err = melnode_get_u8_id(info->attrs[MELNODE_A_ROUTE_DST], &dst);
 	if (err)
 		return err;
 
-	spin_lock_bh(&melnode_dev.lock);
-	melnode_dev.routes[dst].valid = false;
-	spin_unlock_bh(&melnode_dev.lock);
+	mutex_lock(&melnode_dev.tables_mutex);
+	old = rcu_dereference_protected(melnode_dev.routes[dst],
+					 lockdep_is_held(&melnode_dev.tables_mutex));
+	RCU_INIT_POINTER(melnode_dev.routes[dst], NULL);
+	mutex_unlock(&melnode_dev.tables_mutex);
+	if (old)
+		kfree_rcu(old, rcu);
 	return 0;
 }
 
@@ -691,18 +825,25 @@ static int melnode_nl_route_get(struct sk_buff *skb, struct netlink_callback *cb
 	int dst = cb->args[0];
 
 	for (; dst < MELNODE_MAX_PEER; dst++) {
-		struct melnode_route *route = &melnode_dev.routes[dst];
+		struct melnode_route *route;
 		void *hdr;
+		u8 nexthop;
 
-		if (!route->valid)
+		rcu_read_lock();
+		route = rcu_dereference(melnode_dev.routes[dst]);
+		if (!route) {
+			rcu_read_unlock();
 			continue;
+		}
+		nexthop = route->nexthop;
+		rcu_read_unlock();
 
 		hdr = genlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
 				   &melnode_genl_family, NLM_F_MULTI, MELNODE_CMD_ROUTE_GET);
 		if (!hdr)
 			break;
 		if (nla_put_u32(skb, MELNODE_A_ROUTE_DST, dst) ||
-		    nla_put_u32(skb, MELNODE_A_ROUTE_NEXTHOP, route->nexthop)) {
+		    nla_put_u32(skb, MELNODE_A_ROUTE_NEXTHOP, nexthop)) {
 			genlmsg_cancel(skb, hdr);
 			break;
 		}
@@ -714,52 +855,51 @@ static int melnode_nl_route_get(struct sk_buff *skb, struct netlink_callback *cb
 }
 
 /* ------------------------------------------------------------------------
- * Handshake initiation - triggered from tun xmit (no valid session) or
- * INJECT-adjacent paths never; melnode has no timer-driven rekey yet (see
- * file header): a session is (re-)established lazily, on demand.
+ * Handshake initiation - triggered when melnode_routing.c's outq_work
+ * finds no valid session for a link. melnode has no timer-driven rekey yet
+ * (see file header): a session is (re-)established lazily, on demand.
  * ------------------------------------------------------------------------ */
 
-/* Caller holds no lock. Rate-limited per-link via
- * handshake->last_sent_initiation, mirroring WireGuard's REKEY_TIMEOUT.
+/* Caller already holds a ref on `link` (melnode_link_get()) and keeps it
+ * for the duration of this call - see melnode_routing.h. Rate-limited via
+ * link->handshake.last_sent_initiation, mirroring WireGuard's
+ * REKEY_TIMEOUT.
  */
-static void melnode_send_initiation(u8 peer_id)
+void melnode_send_initiation(struct melnode_link *link)
 {
-	struct melnode_link *link;
 	struct melnode_wire_handshake_initiation msg;
 	u8 local_pub[32], local_priv[32];
 	u64 now = ktime_get_coarse_boottime_ns();
 	u8 endpoint[sizeof(struct sockaddr_in6)];
-	int endpoint_len;
+	int endpoint_len = 0;
 	bool have_endpoint;
 
-	spin_lock_bh(&melnode_dev.lock);
-	link = &melnode_dev.links[peer_id];
-	if (!link->valid || !melnode_configured()) {
-		spin_unlock_bh(&melnode_dev.lock);
-		return;
-	}
+	spin_lock_bh(&link->lock);
 	if ((s64)(link->handshake.last_sent_initiation + MELNODE_REKEY_TIMEOUT * NSEC_PER_SEC) >
 	    (s64)now) {
-		spin_unlock_bh(&melnode_dev.lock);
+		spin_unlock_bh(&link->lock);
 		return;
 	}
 	link->handshake.last_sent_initiation = now;
-	memcpy(local_pub, melnode_dev.public_key, 32);
-	memcpy(local_priv, melnode_dev.private_key, 32);
 	have_endpoint = link->has_endpoint;
 	if (have_endpoint) {
 		endpoint_len = link->endpoint_len;
 		memcpy(endpoint, link->endpoint, endpoint_len);
 	}
 
+	mutex_lock(&melnode_dev.config_lock);
+	memcpy(local_pub, melnode_dev.public_key, 32);
+	memcpy(local_priv, melnode_dev.private_key, 32);
+	mutex_unlock(&melnode_dev.config_lock);
+
 	if (!melnode_noise_handshake_create_initiation(&msg, &link->handshake, local_pub, local_priv,
-							melnode_gen_index(peer_id))) {
-		spin_unlock_bh(&melnode_dev.lock);
+							melnode_gen_index(link->peer_id))) {
+		spin_unlock_bh(&link->lock);
 		memzero_explicit(local_priv, sizeof(local_priv));
 		return;
 	}
 	melnode_cookie_add_mac_to_packet(&msg, sizeof(msg), &link->cookie);
-	spin_unlock_bh(&melnode_dev.lock);
+	spin_unlock_bh(&link->lock);
 	memzero_explicit(local_priv, sizeof(local_priv));
 
 	if (!have_endpoint)
@@ -769,8 +909,23 @@ static void melnode_send_initiation(u8 peer_id)
 }
 
 /* ------------------------------------------------------------------------
- * TUN netdevs: tun xmit is the "originate traffic to this peer" path.
+ * TUN netdevs: tun xmit is the "originate traffic to this peer" path - see
+ * melnode_routing.c for what happens to a packet after this hands it off.
  * ------------------------------------------------------------------------ */
+
+static int melnode_tun_init(struct net_device *dev)
+{
+	struct melnode_tun_priv *priv = netdev_priv(dev);
+
+	return gro_cells_init(&priv->gcells, dev);
+}
+
+static void melnode_tun_uninit(struct net_device *dev)
+{
+	struct melnode_tun_priv *priv = netdev_priv(dev);
+
+	gro_cells_destroy(&priv->gcells);
+}
 
 static int melnode_tun_open(struct net_device *dev)
 {
@@ -782,60 +937,10 @@ static int melnode_tun_stop(struct net_device *dev)
 	return 0;
 }
 
-/* Encrypts and sends one melnode-header-prefixed plaintext over a link's
- * current sending keypair. Returns 0 on success. Caller holds no lock.
- */
-static int melnode_send_data(u8 link_peer_id, const u8 *plain, size_t plain_len)
-{
-	struct melnode_link *link;
-	struct melnode_keypair kp_copy;
-	u8 endpoint[sizeof(struct sockaddr_in6)];
-	int endpoint_len;
-	struct melnode_wire_data *out;
-	size_t out_len = sizeof(*out) + melnode_noise_encrypted_len(plain_len);
-	u64 counter;
-	int ret = 0;
-
-	spin_lock_bh(&melnode_dev.lock);
-	link = &melnode_dev.links[link_peer_id];
-	if (!link->valid || !link->has_endpoint || !link->keypairs.current_kp.valid ||
-	    !link->keypairs.current_kp.sending.is_valid) {
-		spin_unlock_bh(&melnode_dev.lock);
-		return -ENOENT;
-	}
-	kp_copy = link->keypairs.current_kp; /* snapshot key+index; counter is atomic */
-	endpoint_len = link->endpoint_len;
-	memcpy(endpoint, link->endpoint, endpoint_len);
-	spin_unlock_bh(&melnode_dev.lock);
-
-	out = kmalloc(out_len, GFP_ATOMIC);
-	if (!out)
-		return -ENOMEM;
-	out->header.type = cpu_to_le32(MELNODE_WIRE_MSG_DATA);
-	out->receiver_index = kp_copy.remote_index;
-	/* Encrypt using the *live* counter (kp_copy.sending_counter is the
-	 * same atomic64_t as the real keypair - atomics aren't struct-copy
-	 * safe for this purpose, so re-fetch the live one).
-	 */
-	melnode_transport_encrypt(out->encrypted_data, plain, plain_len,
-				   &melnode_dev.links[link_peer_id].keypairs.current_kp, &counter);
-	out->counter = cpu_to_le64(counter);
-
-	if (melnode_socket_send(&melnode_dev, out, out_len, endpoint, endpoint_len) < 0)
-		ret = -EIO;
-	else
-		atomic64_add(plain_len, &link->tx_bytes);
-
-	kfree(out);
-	return ret;
-}
-
 static netdev_tx_t melnode_tun_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct melnode_tun_priv *priv = netdev_priv(dev);
 	u8 dst_peer_id = priv->peer_id;
-	u8 nexthop;
-	bool have_route;
 	u8 *plain;
 	size_t plain_len;
 	int err;
@@ -846,50 +951,48 @@ static netdev_tx_t melnode_tun_xmit(struct sk_buff *skb, struct net_device *dev)
 		return NETDEV_TX_OK;
 	}
 
-	spin_lock_bh(&melnode_dev.lock);
-	have_route = melnode_dev.routes[dst_peer_id].valid;
-	nexthop = melnode_dev.routes[dst_peer_id].nexthop;
-	spin_unlock_bh(&melnode_dev.lock);
-
-	if (!have_route) {
-		melnode_stat_inc(MELNODE_STAT_TX_NO_ROUTE);
-		goto drop;
-	}
-
 	plain_len = MELNODE_HDR_LEN + skb->len;
 	plain = kmalloc(plain_len, GFP_ATOMIC);
-	if (!plain)
-		goto drop;
+	if (!plain) {
+		dev_kfree_skb(skb);
+		DEV_STATS_INC(dev, tx_dropped);
+		return NETDEV_TX_OK;
+	}
 	plain[MELNODE_HDR_OFF_PROTO] = 0;
-	plain[MELNODE_HDR_OFF_SRC] = (u8)melnode_dev.local_id;
+	plain[MELNODE_HDR_OFF_SRC] = (u8)READ_ONCE(melnode_dev.local_id);
 	plain[MELNODE_HDR_OFF_DST] = dst_peer_id;
 	plain[MELNODE_HDR_OFF_TTL] = MELNODE_DEFAULT_TTL;
 	if (skb_copy_bits(skb, 0, plain + MELNODE_HDR_LEN, skb->len)) {
 		kfree(plain);
-		goto drop;
+		dev_kfree_skb(skb);
+		DEV_STATS_INC(dev, tx_dropped);
+		return NETDEV_TX_OK;
 	}
 
-	err = melnode_send_data(nexthop, plain, plain_len);
-	kfree(plain);
-	if (err == -ENOENT) {
-		melnode_send_initiation(nexthop);
-		melnode_stat_inc(MELNODE_STAT_TX_QUEUE_FULL); /* no staging - see file header */
-		goto drop;
+	/* Resolves the route + enqueues onto the next-hop link's outq (or
+	 * drops with the right stat) - see melnode_routing.h. Always
+	 * resolves `plain`'s fate. tx_packets below means "accepted for
+	 * routing" (enqueued), not "delivered" - the encrypt+send itself
+	 * happens later, from the link's own queue worker, same as how a
+	 * real NIC's TX stats mean "handed to the qdisc/hardware".
+	 */
+	err = melnode_routing_route_and_send(dst_peer_id, plain, plain_len);
+	if (err) {
+		melnode_stat_inc(err == -ENOSPC ? MELNODE_STAT_TX_QUEUE_FULL :
+						   MELNODE_STAT_TX_NO_ROUTE);
+		dev_kfree_skb(skb);
+		DEV_STATS_INC(dev, tx_dropped);
+		return NETDEV_TX_OK;
 	}
-	if (err)
-		goto drop;
 
 	dev_kfree_skb(skb);
 	DEV_STATS_INC(dev, tx_packets);
 	return NETDEV_TX_OK;
-
-drop:
-	dev_kfree_skb(skb);
-	DEV_STATS_INC(dev, tx_dropped);
-	return NETDEV_TX_OK;
 }
 
 static const struct net_device_ops melnode_tun_netdev_ops = {
+	.ndo_init = melnode_tun_init,
+	.ndo_uninit = melnode_tun_uninit,
 	.ndo_open = melnode_tun_open,
 	.ndo_stop = melnode_tun_stop,
 	.ndo_start_xmit = melnode_tun_xmit,
@@ -900,18 +1003,11 @@ static const struct net_device_ops melnode_tun_netdev_ops = {
  * /dev/net/tun devices, which get a genuine qdisc (fq_codel by default) with
  * this tx_queue_len; queued transmission there is deferred through
  * NET_TX_SOFTIRQ, which breaks up any synchronous call chain between chained
- * virtual devices. Our local-delivery path (netif_rx() onto node-<src>,
- * which the host's own IP stack may then forward straight back out a
- * *different* node-* tun for a downstream prefix - completely normal for
- * melnode's per-peer-tun design, see mnctl routes on any real node) is
- * exactly this kind of virtual-device chaining. IFF_NO_QUEUE (as used here
- * originally, matching WireGuard's own single-interface device.c) transmits
- * synchronously in the caller's context with no softirq boundary - safe for
- * WireGuard, whose xmit never re-enters another virtual device's RX path,
- * but for melnode this let a brief routing hairpin during convergence trip
- * __dev_queue_xmit()'s recursion guard immediately and repeatedly ("Dead
- * loop on virtual device", confirmed live on arke). A real qdisc absorbs
- * the same hairpin as ordinary queueing instead.
+ * virtual devices. This is no longer load-bearing for correctness (the
+ * per-link outbound queue in melnode_routing.c is what actually bounds
+ * recursion now, since tun xmit only ever does a cheap RCU lookup and an
+ * enqueue before returning), but it's still reasonable behavior for a
+ * real interface's TX path, so it stays.
  */
 #define MELNODE_TUN_TX_QUEUE_LEN 500
 
@@ -938,6 +1034,7 @@ static int melnode_nl_tun_create(struct sk_buff *skb, struct genl_info *info)
 	struct melnode_tun_priv *priv;
 	struct sk_buff *reply;
 	void *hdr;
+	bool started;
 	int err;
 
 	err = melnode_get_u8_id(info->attrs[MELNODE_A_PEER_ID], &peer_id);
@@ -946,28 +1043,37 @@ static int melnode_nl_tun_create(struct sk_buff *skb, struct genl_info *info)
 	if (!info->attrs[MELNODE_A_TUN_NAME])
 		return -EINVAL;
 	nla_strscpy(name, info->attrs[MELNODE_A_TUN_NAME], sizeof(name));
+	started = false;
 
-	spin_lock_bh(&melnode_dev.lock);
-	tun = &melnode_dev.tuns[peer_id];
+	rcu_read_lock();
+	tun = rcu_dereference(melnode_dev.tuns[peer_id]);
+	if (tun) {
+		struct net_device *existing_dev = tun->dev;
+		bool same_name;
 
-	if (tun->valid) {
-		bool same_name = !strcmp(tun->dev->name, name);
-
-		spin_unlock_bh(&melnode_dev.lock);
+		dev_hold(existing_dev); /* dev->name needs this, RCU alone
+					  * doesn't protect the net_device -
+					  * see melnode_core.h.
+					  */
+		rcu_read_unlock();
+		same_name = !strcmp(existing_dev->name, name);
+		if (same_name)
+			started = READ_ONCE(tun->state) != MELNODE_TUN_CREATED;
+		dev_put(existing_dev);
 		if (!same_name)
 			return -EEXIST;
 		goto reply_tun;
 	}
-	spin_unlock_bh(&melnode_dev.lock);
+	rcu_read_unlock();
 
-	/* Note: since TUN_DESTROY's actual unregister_netdevice() now happens
-	 * asynchronously (melnode_queue_tun_teardown()), a DESTROY immediately
-	 * followed by a CREATE reusing the same name can transiently race the
-	 * old net_device's name still being held - register_netdevice() below
-	 * returns -EEXIST in that case, same as any other genuine name clash.
-	 * melnode-cp's reconcile loop (reconcile.go's EnsureTun) treats a
-	 * TunCreate failure as transient and retries on its next pass, so this
-	 * surfaces as a brief retry rather than a hard failure.
+	/* See melnode_queue_tun_teardown()'s comment: since TUN_DESTROY's
+	 * actual unregister_netdevice() now happens asynchronously, a
+	 * DESTROY immediately followed by a CREATE reusing the same name can
+	 * transiently race the old net_device's name still being held -
+	 * register_netdevice() below returns -EEXIST in that case, same as
+	 * any other genuine name clash. melnode-cp's reconcile loop treats a
+	 * TunCreate failure as transient and retries on its next pass, so
+	 * this surfaces as a brief retry rather than a hard failure.
 	 */
 	rtnl_lock();
 	dev = alloc_netdev(sizeof(*priv), name, NET_NAME_USER, melnode_tun_setup);
@@ -980,7 +1086,7 @@ static int melnode_nl_tun_create(struct sk_buff *skb, struct genl_info *info)
 	priv = netdev_priv(dev);
 	priv->peer_id = peer_id;
 
-	err = register_netdevice(dev);
+	err = register_netdevice(dev); /* calls .ndo_init -> gro_cells_init */
 	if (err) {
 		free_netdev(dev);
 		rtnl_unlock();
@@ -988,23 +1094,33 @@ static int melnode_nl_tun_create(struct sk_buff *skb, struct genl_info *info)
 	}
 	rtnl_unlock();
 
-	spin_lock_bh(&melnode_dev.lock);
-	tun = &melnode_dev.tuns[peer_id];
-	if (tun->valid) {
+	tun = kmalloc(sizeof(*tun), GFP_KERNEL);
+	if (!tun) {
+		rtnl_lock();
+		unregister_netdevice(dev);
+		rtnl_unlock();
+		return -ENOMEM;
+	}
+	tun->peer_id = peer_id;
+	tun->dev = dev;
+	tun->state = MELNODE_TUN_CREATED;
+
+	mutex_lock(&melnode_dev.tables_mutex);
+	if (rcu_dereference_protected(melnode_dev.tuns[peer_id],
+				       lockdep_is_held(&melnode_dev.tables_mutex))) {
 		/* Lost a race with another TUN_CREATE for the same peer id;
 		 * genl serializes doit calls for a given family by default,
 		 * so this is defensive rather than expected.
 		 */
-		spin_unlock_bh(&melnode_dev.lock);
+		mutex_unlock(&melnode_dev.tables_mutex);
+		kfree(tun);
 		rtnl_lock();
 		unregister_netdevice(dev);
 		rtnl_unlock();
 		return -EEXIST;
 	}
-	tun->valid = true;
-	tun->started = false;
-	tun->dev = dev;
-	spin_unlock_bh(&melnode_dev.lock);
+	rcu_assign_pointer(melnode_dev.tuns[peer_id], tun);
+	mutex_unlock(&melnode_dev.tables_mutex);
 
 reply_tun:
 	reply = genlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
@@ -1014,7 +1130,7 @@ reply_tun:
 	if (!hdr)
 		goto nla_put_failure;
 	if (nla_put_string(reply, MELNODE_A_TUN_NAME, name) ||
-	    nla_put_u8(reply, MELNODE_A_TUN_STARTED, tun->started))
+	    nla_put_u8(reply, MELNODE_A_TUN_STARTED, started))
 		goto nla_put_failure;
 	genlmsg_end(reply, hdr);
 	return genlmsg_reply(reply, info);
@@ -1029,55 +1145,74 @@ static int melnode_nl_tun_start(struct sk_buff *skb, struct genl_info *info)
 	u8 peer_id;
 	struct melnode_tun *tun;
 	struct net_device *dev = NULL;
-	int err = 0;
-
-	err = melnode_get_u8_id(info->attrs[MELNODE_A_PEER_ID], &peer_id);
-	if (err)
-		return err;
-
-	spin_lock_bh(&melnode_dev.lock);
-	tun = &melnode_dev.tuns[peer_id];
-	if (!tun->valid) {
-		spin_unlock_bh(&melnode_dev.lock);
-		return -ENOENT;
-	}
-	if (!tun->started)
-		dev = tun->dev;
-	spin_unlock_bh(&melnode_dev.lock);
-
-	if (dev) {
-		rtnl_lock();
-		err = dev_open(dev, NULL);
-		rtnl_unlock();
-		if (err)
-			return err;
-
-		spin_lock_bh(&melnode_dev.lock);
-		melnode_dev.tuns[peer_id].started = true;
-		spin_unlock_bh(&melnode_dev.lock);
-	}
-	return 0;
-}
-
-static int melnode_nl_tun_destroy(struct sk_buff *skb, struct genl_info *info)
-{
-	u8 peer_id;
-	struct net_device *dev = NULL;
 	int err;
 
 	err = melnode_get_u8_id(info->attrs[MELNODE_A_PEER_ID], &peer_id);
 	if (err)
 		return err;
 
-	spin_lock_bh(&melnode_dev.lock);
-	if (melnode_dev.tuns[peer_id].valid) {
-		dev = melnode_dev.tuns[peer_id].dev;
-		memset(&melnode_dev.tuns[peer_id], 0, sizeof(melnode_dev.tuns[peer_id]));
+	rcu_read_lock();
+	tun = rcu_dereference(melnode_dev.tuns[peer_id]);
+	if (!tun) {
+		rcu_read_unlock();
+		return -ENOENT;
 	}
-	spin_unlock_bh(&melnode_dev.lock);
+	if (READ_ONCE(tun->state) == MELNODE_TUN_CREATED) {
+		dev = tun->dev;
+		dev_hold(dev);
+	}
+	rcu_read_unlock();
 
-	if (dev)
-		melnode_queue_tun_teardown(dev);
+	if (!dev)
+		return 0; /* already started, or the entry just vanished - idempotent */
+
+	rtnl_lock();
+	err = dev_open(dev, NULL);
+	rtnl_unlock();
+	dev_put(dev);
+	if (err)
+		return err;
+
+	/* Re-validate under a fresh RCU section before touching `tun` again:
+	 * dev_open() can sleep, so TUN_DESTROY could have unpublished (and
+	 * kfree_rcu'd) this exact entry, or a brand new tun could even have
+	 * been created at the same peer id, while we were in it. `tun` isn't
+	 * refcounted (see melnode_core.h) - comparing the freshly
+	 * re-looked-up pointer against our saved one, still inside RCU, is
+	 * what makes touching tun->state below safe.
+	 */
+	rcu_read_lock();
+	if (rcu_dereference(melnode_dev.tuns[peer_id]) == tun)
+		WRITE_ONCE(tun->state, MELNODE_TUN_STARTED);
+	rcu_read_unlock();
+	return 0;
+}
+
+static int melnode_nl_tun_destroy(struct sk_buff *skb, struct genl_info *info)
+{
+	u8 peer_id;
+	struct melnode_tun *tun;
+	int err;
+
+	err = melnode_get_u8_id(info->attrs[MELNODE_A_PEER_ID], &peer_id);
+	if (err)
+		return err;
+
+	mutex_lock(&melnode_dev.tables_mutex);
+	tun = rcu_dereference_protected(melnode_dev.tuns[peer_id],
+					 lockdep_is_held(&melnode_dev.tables_mutex));
+	if (tun)
+		RCU_INIT_POINTER(melnode_dev.tuns[peer_id], NULL);
+	mutex_unlock(&melnode_dev.tables_mutex);
+
+	if (tun) {
+		WRITE_ONCE(tun->state, MELNODE_TUN_DESTROYING);
+		melnode_queue_tun_teardown(tun->dev);
+		kfree_rcu(tun, rcu); /* the entry struct - the net_device itself
+				      * is now owned by the pending-teardown
+				      * list above until it's unregistered.
+				      */
+	}
 	return 0;
 }
 
@@ -1086,20 +1221,36 @@ static int melnode_nl_tun_get(struct sk_buff *skb, struct netlink_callback *cb)
 	int peer_id = cb->args[0];
 
 	for (; peer_id < MELNODE_MAX_PEER; peer_id++) {
-		struct melnode_tun *tun = &melnode_dev.tuns[peer_id];
+		struct melnode_tun *tun;
+		struct net_device *dev;
+		enum melnode_tun_state state;
+		char name[IFNAMSIZ];
+		u32 mtu;
 		void *hdr;
 
-		if (!tun->valid)
+		rcu_read_lock();
+		tun = rcu_dereference(melnode_dev.tuns[peer_id]);
+		if (!tun) {
+			rcu_read_unlock();
 			continue;
+		}
+		dev = tun->dev;
+		dev_hold(dev); /* dev->name/->mtu need this - see melnode_core.h */
+		state = READ_ONCE(tun->state);
+		rcu_read_unlock();
+
+		strscpy(name, dev->name, sizeof(name));
+		mtu = dev->mtu;
+		dev_put(dev);
 
 		hdr = genlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
 				   &melnode_genl_family, NLM_F_MULTI, MELNODE_CMD_TUN_GET);
 		if (!hdr)
 			break;
 		if (nla_put_u32(skb, MELNODE_A_PEER_ID, peer_id) ||
-		    nla_put_string(skb, MELNODE_A_TUN_NAME, tun->dev->name) ||
-		    nla_put_u32(skb, MELNODE_A_MTU, tun->dev->mtu) ||
-		    nla_put_u8(skb, MELNODE_A_TUN_STARTED, tun->started)) {
+		    nla_put_string(skb, MELNODE_A_TUN_NAME, name) ||
+		    nla_put_u32(skb, MELNODE_A_MTU, mtu) ||
+		    nla_put_u8(skb, MELNODE_A_TUN_STARTED, state == MELNODE_TUN_STARTED)) {
 			genlmsg_cancel(skb, hdr);
 			break;
 		}
@@ -1112,7 +1263,10 @@ static int melnode_nl_tun_get(struct sk_buff *skb, struct netlink_callback *cb)
 
 /* ------------------------------------------------------------------------
  * INJECT - send a control packet directly out one link (no route lookup;
- * "one link" is literal per API.md), best-effort, no ACK.
+ * "one link" is literal per API.md), best-effort, no ACK. Synchronous, not
+ * queued: uses the same melnode_link_get()-guarded RCU lookup every other
+ * path to a link uses, then calls the shared encrypt-and-send body
+ * directly instead of going through a link's outbound queue.
  * ------------------------------------------------------------------------ */
 
 static int melnode_nl_inject(struct sk_buff *skb, struct genl_info *info)
@@ -1122,6 +1276,7 @@ static int melnode_nl_inject(struct sk_buff *skb, struct genl_info *info)
 	size_t payload_len;
 	u8 *plain;
 	size_t plain_len;
+	struct melnode_link *link;
 	int err;
 
 	err = melnode_get_u8_id(info->attrs[MELNODE_A_PKT_LINK], &link_peer_id);
@@ -1143,21 +1298,28 @@ static int melnode_nl_inject(struct sk_buff *skb, struct genl_info *info)
 		goto dropped;
 	}
 
+	link = melnode_link_get(link_peer_id);
+	if (!link)
+		goto dropped_noerr;
+
 	plain_len = MELNODE_HDR_LEN + payload_len;
 	plain = kmalloc(plain_len, GFP_KERNEL);
-	if (!plain)
+	if (!plain) {
+		melnode_link_put(link);
 		goto dropped_noerr;
+	}
 	plain[MELNODE_HDR_OFF_PROTO] = proto;
-	plain[MELNODE_HDR_OFF_SRC] = (u8)melnode_dev.local_id;
+	plain[MELNODE_HDR_OFF_SRC] = (u8)READ_ONCE(melnode_dev.local_id);
 	plain[MELNODE_HDR_OFF_DST] = dst;
 	plain[MELNODE_HDR_OFF_TTL] = ttl;
 	if (payload_len)
 		memcpy(plain + MELNODE_HDR_LEN, payload, payload_len);
 
-	err = melnode_send_data(link_peer_id, plain, plain_len);
+	err = melnode_routing_send_now(link, plain, plain_len);
 	kfree(plain);
 	if (err == -ENOENT)
-		melnode_send_initiation(link_peer_id);
+		melnode_send_initiation(link);
+	melnode_link_put(link);
 	if (err)
 		goto dropped;
 
@@ -1176,7 +1338,7 @@ dropped_noerr:
  * ------------------------------------------------------------------------ */
 
 static void melnode_handle_handshake_initiation(u8 *data, size_t len, const void *from,
-						 int from_len)
+						  int from_len)
 {
 	struct melnode_wire_handshake_initiation *msg = (void *)data;
 	u8 remote_static[32];
@@ -1185,60 +1347,62 @@ static void melnode_handle_handshake_initiation(u8 *data, size_t len, const void
 	struct melnode_wire_handshake_response resp;
 	enum melnode_cookie_mac_state mac_state;
 	struct melnode_link *link = NULL;
-	u8 peer_id;
 	int i;
 
 	if (len != sizeof(*msg))
 		return;
 
-	spin_lock_bh(&melnode_dev.lock);
 	mac_state = melnode_cookie_validate_packet(&melnode_dev.cookie_checker, data, len, from,
 						    from_len, true);
-	spin_unlock_bh(&melnode_dev.lock);
-
 	if (mac_state == MELNODE_COOKIE_INVALID_MAC)
 		return;
 
 	if (mac_state != MELNODE_COOKIE_VALID_MAC_WITH_COOKIE) {
-		/* No valid cookie yet - tell the initiator to get one. This
-		 * doesn't need to know which peer it is: the cookie reply's
-		 * receiver_index just echoes the initiator's own
-		 * sender_index back, and its encryption key comes from our
-		 * device-wide cookie_encryption_key.
-		 */
+		/* No valid cookie yet - tell the initiator to get one. */
 		struct melnode_wire_handshake_cookie reply;
 
-		spin_lock_bh(&melnode_dev.lock);
 		melnode_cookie_message_create(&reply, data, len, from, from_len, msg->sender_index,
 					       &melnode_dev.cookie_checker);
-		spin_unlock_bh(&melnode_dev.lock);
 		melnode_socket_send(&melnode_dev, &reply, sizeof(reply), from, from_len);
 		return;
 	}
 
-	spin_lock_bh(&melnode_dev.lock);
-	if (!melnode_noise_handshake_consume_initiation1(msg, melnode_dev.public_key,
-							  melnode_dev.private_key, remote_static,
+	mutex_lock(&melnode_dev.config_lock);
+	memcpy(local_pub, melnode_dev.public_key, 32);
+	memcpy(local_priv, melnode_dev.private_key, 32);
+	mutex_unlock(&melnode_dev.config_lock);
+
+	if (!melnode_noise_handshake_consume_initiation1(msg, local_pub, local_priv, remote_static,
 							  &pre)) {
-		spin_unlock_bh(&melnode_dev.lock);
+		memzero_explicit(local_priv, sizeof(local_priv));
 		return;
 	}
 
+	/* Lock-free RCU scan for the peer whose static key this is. Only the
+	 * eventual match gets pinned (kref_get_unless_zero); no lock is
+	 * touched for any of the other candidates.
+	 */
+	rcu_read_lock();
 	for (i = 0; i < MELNODE_MAX_PEER; i++) {
-		if (melnode_dev.links[i].valid &&
-		    !memcmp(melnode_dev.links[i].public_key, remote_static, 32)) {
-			link = &melnode_dev.links[i];
-			peer_id = i;
+		struct melnode_link *cand = rcu_dereference(melnode_dev.links[i]);
+
+		if (cand && !memcmp(cand->public_key, remote_static, 32)) {
+			if (kref_get_unless_zero(&cand->kref))
+				link = cand;
 			break;
 		}
 	}
+	rcu_read_unlock();
 	if (!link) {
-		spin_unlock_bh(&melnode_dev.lock);
+		memzero_explicit(local_priv, sizeof(local_priv));
 		return;
 	}
 
+	spin_lock_bh(&link->lock);
 	if (!melnode_noise_handshake_consume_initiation2(msg, &pre, &link->handshake)) {
-		spin_unlock_bh(&melnode_dev.lock);
+		spin_unlock_bh(&link->lock);
+		melnode_link_put(link);
+		memzero_explicit(local_priv, sizeof(local_priv));
 		return;
 	}
 
@@ -1250,23 +1414,22 @@ static void melnode_handle_handshake_initiation(u8 *data, size_t len, const void
 	memcpy(link->endpoint, from, from_len);
 	link->has_endpoint = true;
 
-	memcpy(local_pub, melnode_dev.public_key, 32);
-	memcpy(local_priv, melnode_dev.private_key, 32);
-
 	if (!melnode_noise_handshake_create_response(&resp, &link->handshake,
-						      melnode_gen_index(peer_id))) {
-		spin_unlock_bh(&melnode_dev.lock);
+						      melnode_gen_index(link->peer_id))) {
+		spin_unlock_bh(&link->lock);
+		melnode_link_put(link);
 		memzero_explicit(local_priv, sizeof(local_priv));
 		return;
 	}
 	melnode_cookie_add_mac_to_packet(&resp, sizeof(resp), &link->cookie);
 	melnode_noise_handshake_begin_session(&link->handshake, &link->keypairs);
 	link->last_handshake_unix_ns = ktime_get_real_ns();
-	spin_unlock_bh(&melnode_dev.lock);
+	spin_unlock_bh(&link->lock);
 	memzero_explicit(local_priv, sizeof(local_priv));
 
 	melnode_socket_send(&melnode_dev, &resp, sizeof(resp), from, from_len);
-	melnode_send_event_handshake(peer_id, from, from_len);
+	melnode_send_event_handshake(link->peer_id, from, from_len);
+	melnode_link_put(link);
 }
 
 static void melnode_handle_handshake_response(u8 *data, size_t len, const void *from, int from_len)
@@ -1281,33 +1444,31 @@ static void melnode_handle_handshake_response(u8 *data, size_t len, const void *
 		return;
 
 	peer_id = melnode_index_peer_id(msg->receiver_index);
-
-	spin_lock_bh(&melnode_dev.lock);
-	link = &melnode_dev.links[peer_id];
-	if (!link->valid) {
-		spin_unlock_bh(&melnode_dev.lock);
+	link = melnode_link_get(peer_id);
+	if (!link)
 		return;
-	}
 
 	/* mac1-only check is enough here: unlike an initiation (which
 	 * arrives unsolicited from anyone), a response only makes sense in
 	 * reply to an initiation *we* sent, so there's no amplification
-	 * concern requiring mac2/cookie proof from the sender. mac1 is keyed
-	 * by the *recipient's* static key - we're the recipient of this
-	 * response, so that's our own device-wide cookie_checker, exactly as
-	 * for an initiation.
+	 * concern requiring mac2/cookie proof from the sender.
 	 */
 	if (melnode_cookie_validate_packet(&melnode_dev.cookie_checker, data, len, from, from_len,
 					    false) == MELNODE_COOKIE_INVALID_MAC) {
-		spin_unlock_bh(&melnode_dev.lock);
+		melnode_link_put(link);
 		return;
 	}
 
+	mutex_lock(&melnode_dev.config_lock);
 	memcpy(local_priv, melnode_dev.private_key, 32);
+	mutex_unlock(&melnode_dev.config_lock);
+
+	spin_lock_bh(&link->lock);
 	ok = melnode_noise_handshake_consume_response(msg, local_priv, &link->handshake);
 	memzero_explicit(local_priv, sizeof(local_priv));
 	if (!ok) {
-		spin_unlock_bh(&melnode_dev.lock);
+		spin_unlock_bh(&link->lock);
+		melnode_link_put(link);
 		return;
 	}
 
@@ -1317,97 +1478,30 @@ static void melnode_handle_handshake_response(u8 *data, size_t len, const void *
 
 	melnode_noise_handshake_begin_session(&link->handshake, &link->keypairs);
 	link->last_handshake_unix_ns = ktime_get_real_ns();
-	spin_unlock_bh(&melnode_dev.lock);
+	spin_unlock_bh(&link->lock);
 
 	melnode_send_event_handshake(peer_id, from, from_len);
+	melnode_link_put(link);
 }
 
 static void melnode_handle_cookie_reply(u8 *data, size_t len)
 {
 	struct melnode_wire_handshake_cookie *msg = (void *)data;
+	struct melnode_link *link;
 	u8 peer_id;
 
 	if (len != sizeof(*msg))
 		return;
 
 	peer_id = melnode_index_peer_id(msg->receiver_index);
-
-	spin_lock_bh(&melnode_dev.lock);
-	if (melnode_dev.links[peer_id].valid)
-		melnode_cookie_message_consume(msg, &melnode_dev.links[peer_id].cookie);
-	spin_unlock_bh(&melnode_dev.lock);
-}
-
-/* Delivers a decrypted, melnode-header-prefixed plaintext that arrived over
- * link ingress_peer_id: PUNT (proto != 0), local tun delivery (dst == us),
- * or multi-hop re-forward (dst != us).
- */
-static void melnode_route_plaintext(u8 ingress_peer_id, u8 *plain, size_t plain_len)
-{
-	u8 proto, src, dst, ttl;
-	struct melnode_tun *tun;
-	u8 tun_peer_id;
-	bool have_route;
-	u8 nexthop;
-
-	if (plain_len < MELNODE_HDR_LEN) {
-		melnode_stat_inc(MELNODE_STAT_RX_BAD_PACKET);
+	link = melnode_link_get(peer_id);
+	if (!link)
 		return;
-	}
-	proto = plain[MELNODE_HDR_OFF_PROTO];
-	src = plain[MELNODE_HDR_OFF_SRC];
-	dst = plain[MELNODE_HDR_OFF_DST];
-	ttl = plain[MELNODE_HDR_OFF_TTL];
 
-	if (proto != 0) {
-		melnode_send_punt(ingress_peer_id, proto, src, dst, ttl, plain + MELNODE_HDR_LEN,
-				   plain_len - MELNODE_HDR_LEN);
-		return;
-	}
-
-	if ((u32)dst == melnode_dev.local_id) {
-		tun_peer_id = src; /* tun is keyed by the logical peer, not the physical link */
-		spin_lock_bh(&melnode_dev.lock);
-		tun = &melnode_dev.tuns[tun_peer_id];
-		if (!tun->valid || !tun->started) {
-			spin_unlock_bh(&melnode_dev.lock);
-			melnode_stat_inc(MELNODE_STAT_RX_NO_TUN);
-			return;
-		}
-		spin_unlock_bh(&melnode_dev.lock);
-		{
-			struct sk_buff *skb = netdev_alloc_skb(tun->dev, plain_len - MELNODE_HDR_LEN);
-
-			if (!skb) {
-				melnode_stat_inc(MELNODE_STAT_RX_QUEUE_FULL);
-				return;
-			}
-			skb_put_data(skb, plain + MELNODE_HDR_LEN, plain_len - MELNODE_HDR_LEN);
-			skb->protocol = (plain[MELNODE_HDR_LEN] >> 4) == 6 ? htons(ETH_P_IPV6) :
-									      htons(ETH_P_IP);
-			skb_reset_network_header(skb);
-			skb->dev = tun->dev;
-			netif_rx(skb);
-		}
-		return;
-	}
-
-	/* Multi-hop re-forward. */
-	if (ttl <= 1) {
-		melnode_stat_inc(MELNODE_STAT_RX_TTL_EXPIRED);
-		return;
-	}
-	spin_lock_bh(&melnode_dev.lock);
-	have_route = melnode_dev.routes[dst].valid;
-	nexthop = melnode_dev.routes[dst].nexthop;
-	spin_unlock_bh(&melnode_dev.lock);
-	if (!have_route) {
-		melnode_stat_inc(MELNODE_STAT_RX_NO_ROUTE);
-		return;
-	}
-	plain[MELNODE_HDR_OFF_TTL] = ttl - 1;
-	if (melnode_send_data(nexthop, plain, plain_len) == -ENOENT)
-		melnode_send_initiation(nexthop);
+	spin_lock_bh(&link->lock);
+	melnode_cookie_message_consume(msg, &link->cookie);
+	spin_unlock_bh(&link->lock);
+	melnode_link_put(link);
 }
 
 static void melnode_handle_data(u8 *data, size_t len)
@@ -1421,6 +1515,7 @@ static void melnode_handle_data(u8 *data, size_t len)
 	u8 *plain;
 	size_t plain_len;
 	u64 counter;
+	u8 recv_key[MELNODE_NOISE_SYMMETRIC_KEY_LEN];
 
 	if (len < sizeof(*msg) + MELNODE_NOISE_AUTHTAG_LEN)
 		return;
@@ -1428,12 +1523,11 @@ static void melnode_handle_data(u8 *data, size_t len)
 	counter = le64_to_cpu(msg->counter);
 	peer_id = melnode_index_peer_id(msg->receiver_index);
 
-	spin_lock_bh(&melnode_dev.lock);
-	link = &melnode_dev.links[peer_id];
-	if (!link->valid) {
-		spin_unlock_bh(&melnode_dev.lock);
+	link = melnode_link_get(peer_id);
+	if (!link)
 		return;
-	}
+
+	spin_lock_bh(&link->lock);
 	/* msg->receiver_index is what the *sender* put in message_data.key_idx,
 	 * which per WireGuard's own send-side convention is keypair->
 	 * remote_index (the index the recipient - us - gave the sender during
@@ -1453,35 +1547,36 @@ static void melnode_handle_data(u8 *data, size_t len)
 		is_next = true;
 	}
 	if (!kp || !kp->receiving.is_valid) {
-		spin_unlock_bh(&melnode_dev.lock);
+		spin_unlock_bh(&link->lock);
+		melnode_link_put(link);
 		melnode_stat_inc(MELNODE_STAT_RX_BAD_PACKET);
 		return;
 	}
 	/* Snapshot the receiving key; decrypt happens outside the lock. The
-	 * replay counter itself is only ever touched under this lock (see
-	 * below), so there's no lock-free race to worry about there.
+	 * replay counter itself is only ever touched under this lock, so
+	 * there's no lock-free race to worry about there.
 	 */
-	{
-		u8 recv_key[MELNODE_NOISE_SYMMETRIC_KEY_LEN];
+	memcpy(recv_key, kp->receiving.key, sizeof(recv_key));
+	spin_unlock_bh(&link->lock);
 
-		memcpy(recv_key, kp->receiving.key, sizeof(recv_key));
-		spin_unlock_bh(&melnode_dev.lock);
-
-		plain_len = cipher_len - MELNODE_NOISE_AUTHTAG_LEN;
-		plain = kmalloc(cipher_len, GFP_KERNEL);
-		if (!plain)
-			return;
-		if (!chacha20poly1305_decrypt(plain, msg->encrypted_data, cipher_len, NULL, 0,
-					       counter, recv_key)) {
-			kfree(plain);
-			melnode_stat_inc(MELNODE_STAT_RX_BAD_PACKET);
-			return;
-		}
+	plain_len = cipher_len - MELNODE_NOISE_AUTHTAG_LEN;
+	plain = kmalloc(cipher_len, GFP_KERNEL);
+	if (!plain) {
+		melnode_link_put(link);
+		return;
+	}
+	if (!chacha20poly1305_decrypt(plain, msg->encrypted_data, cipher_len, NULL, 0, counter,
+				       recv_key)) {
+		kfree(plain);
+		melnode_link_put(link);
+		melnode_stat_inc(MELNODE_STAT_RX_BAD_PACKET);
+		return;
 	}
 
-	spin_lock_bh(&melnode_dev.lock);
+	spin_lock_bh(&link->lock);
 	if (!melnode_replay_check(&kp->receiving_counter, counter)) {
-		spin_unlock_bh(&melnode_dev.lock);
+		spin_unlock_bh(&link->lock);
+		melnode_link_put(link);
 		kfree(plain);
 		melnode_stat_inc(MELNODE_STAT_RX_BAD_PACKET);
 		return;
@@ -1489,11 +1584,38 @@ static void melnode_handle_data(u8 *data, size_t len)
 	if (is_next)
 		melnode_noise_received_with_keypair(&link->keypairs, true);
 	atomic64_add(plain_len, &link->rx_bytes);
-	spin_unlock_bh(&melnode_dev.lock);
+	spin_unlock_bh(&link->lock);
+	melnode_link_put(link);
 
-	if (plain_len > 0)
-		melnode_route_plaintext(peer_id, plain, plain_len);
-	kfree(plain);
+	if (plain_len == 0) {
+		kfree(plain);
+		return;
+	}
+	if (plain_len < MELNODE_HDR_LEN) {
+		kfree(plain);
+		melnode_stat_inc(MELNODE_STAT_RX_BAD_PACKET);
+		return;
+	}
+
+	{
+		u8 proto = plain[MELNODE_HDR_OFF_PROTO];
+		u8 src = plain[MELNODE_HDR_OFF_SRC];
+		u8 dst = plain[MELNODE_HDR_OFF_DST];
+		u8 ttl = plain[MELNODE_HDR_OFF_TTL];
+
+		if (proto != 0) {
+			/* Control traffic: PUNT to the attached control plane,
+			 * never routed - matches router.go's own "any other
+			 * value is a control packet" comment.
+			 */
+			melnode_send_punt(peer_id, proto, src, dst, ttl, plain + MELNODE_HDR_LEN,
+					   plain_len - MELNODE_HDR_LEN);
+			kfree(plain);
+			return;
+		}
+		/* Takes ownership of `plain`. */
+		melnode_routing_deliver_or_forward(src, dst, ttl, plain, plain_len);
+	}
 }
 
 void melnode_handle_datagram(u8 *data, size_t len, const void *from_addr, int from_len)

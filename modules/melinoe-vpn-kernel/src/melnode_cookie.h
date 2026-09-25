@@ -11,9 +11,19 @@
  * validation itself by source IP on top of that.
  *
  * struct melnode_cookie_checker is device-wide (one per melnode_dev);
- * struct melnode_cookie is per-link. Both are protected by melnode_dev.lock
- * like the rest of this module's state - see melnode_noise.h's header
- * comment for why that's an acceptable simplification here.
+ * struct melnode_cookie is per-link, protected by that link's own spinlock
+ * (melnode_core.h) - see melnode_noise.h's header comment for why a
+ * per-link lock instead of WireGuard's per-object rwsems is an acceptable
+ * simplification here.
+ *
+ * struct melnode_cookie_checker's secret/secret_birthdate get their own
+ * secret_lock (a rwlock_t, matching drivers/net/wireguard/cookie.c's own
+ * secret_lock): read-locked by every handshake validation across every
+ * link concurrently, write-locked only for the rare periodic rotation
+ * inside make_cookie() (melnode_cookie.c). This is restored from upstream
+ * rather than left out: melnode's device-wide lock used to cover this too,
+ * but callers now run under per-link locks instead, so cookie_checker
+ * needs protection of its own.
  *
  * Unlike WireGuard's cookie.c, these take the source address directly
  * (a struct sockaddr_in/sockaddr_in6) rather than digging saddr/source-port
@@ -26,10 +36,12 @@
 #define _MELNODE_COOKIE_H
 
 #include <linux/types.h>
+#include <linux/spinlock.h>
 
 #include "melnode_messages.h"
 
 struct melnode_cookie_checker {
+	rwlock_t secret_lock; /* protects secret/secret_birthdate only */
 	u8 secret[MELNODE_NOISE_HASH_LEN];
 	u8 cookie_encryption_key[MELNODE_NOISE_SYMMETRIC_KEY_LEN];
 	u8 message_mac1_key[MELNODE_NOISE_SYMMETRIC_KEY_LEN];

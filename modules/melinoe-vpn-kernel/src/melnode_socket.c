@@ -74,16 +74,15 @@ static int open_one(struct melnode_device *dev, int family, u16 local_port, stru
 	}
 
 	lock_sock((*sockp)->sk);
-	/* Matches WireGuard's own socket.c: melnode_send_data() (and thus
-	 * kernel_sendmsg() on this socket) can now be reached from
-	 * melnode_tun_xmit() while running in NET_RX_SOFTIRQ context (the
-	 * host's IP stack re-forwarding a locally-delivered packet straight
-	 * back out a different node-* tun, from within ip_forward()) - the
-	 * default sk_allocation (GFP_KERNEL) would let the UDP stack's own
-	 * skb allocation sleep there, same class of bug as melnode_dev.lock
-	 * needing to become a spinlock (see melnode_core.h).
+	/* Unlike an earlier version of this module, nothing reaches
+	 * melnode_socket_send() from softirq context any more: the routing
+	 * queue (melnode_routing.c) means melnode_tun_xmit() only ever does
+	 * a cheap RCU lookup and an
+	 * enqueue, never touches the socket - the actual send only ever
+	 * happens from a link's own outq_work or from INJECT's genl doit,
+	 * both plain process context. So sk_allocation stays at its default
+	 * (GFP_KERNEL, sleepable) rather than being forced to GFP_ATOMIC.
 	 */
-	(*sockp)->sk->sk_allocation = GFP_ATOMIC;
 	(*sockp)->sk->sk_user_data = dev;
 	if (family == AF_INET) {
 		dev->orig_sk_data_ready4 = (*sockp)->sk->sk_data_ready;
@@ -151,20 +150,16 @@ int melnode_socket_send(struct melnode_device *dev, const void *buf, size_t len,
 	iov.iov_len = len;
 	msg.msg_name = (void *)addr;
 	msg.msg_namelen = addr_len;
-	/* Without this, udp_sendmsg()'s underlying sock_alloc_send_pskb() can
-	 * call schedule_timeout() waiting for sk_sndbuf space to free up
-	 * whenever the send buffer is full - a real, confirmed-live hang
-	 * ("bad: scheduling from the idle thread!", full stack through
-	 * melnode_tun_xmit -> melnode_send_data -> here -> udp_sendmsg ->
-	 * __ip_append_data -> sock_alloc_send_pskb -> schedule_timeout) since
-	 * this can run from NET_RX_SOFTIRQ context (see melnode_core.h's
-	 * lock comment for why). GFP_ATOMIC (sk_allocation, set in
-	 * open_one() below) only covers the allocation *flags*; it does
-	 * nothing about this separate blocking-for-buffer-space path, which
-	 * is gated purely on MSG_DONTWAIT. A full send buffer now just fails
-	 * fast with -EAGAIN, consistent with melnode's existing "no staged-
-	 * packet queue" design (see melnode_core.c's file header) - callers
-	 * already treat a failed send as a dropped packet.
+	/* Every caller now runs from process context (see open_one()'s
+	 * comment above), so blocking here would no longer risk a
+	 * scheduling-from-atomic-context bug the way it once did. Kept
+	 * anyway, on purpose: without it, a full sk_sndbuf would put a link's
+	 * own outq_work to sleep in sock_alloc_send_pskb() - safe, but ties
+	 * up a shared workqueue worker that could otherwise be draining a
+	 * *different* link's queue. Failing fast with -EAGAIN instead matches
+	 * melnode's existing "no staged-packet queue" design (see
+	 * melnode_core.c's file header) - callers already treat a failed
+	 * send as a dropped packet.
 	 */
 	msg.msg_flags = MSG_DONTWAIT;
 
