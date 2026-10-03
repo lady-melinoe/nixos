@@ -394,13 +394,16 @@ static void deliver_local(struct melnode_instance *inst, u8 src, u8 *plain, size
 		goto out_free;
 	}
 
-	skb = alloc_skb(len, GFP_KERNEL);
+	skb = alloc_skb(NET_SKB_PAD + len, GFP_KERNEL);
 	if (!skb) {
 		melnode_stat_inc(inst, MELNODE_STAT_RX_QUEUE_FULL);
 		goto out_free;
 	}
+	skb_reserve(skb, NET_SKB_PAD);
 	skb_put_data(skb, data, len);
 	skb->protocol = proto;
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
+	skb->csum_level = ~0;
 	skb_reset_network_header(skb);
 
 	rcu_read_lock();
