@@ -126,7 +126,18 @@
 
   services.chrony = {
     enable = true;
-    servers = [ "time.uwa.edu.au:123" ];
+
+    servers = [
+      "0.au.pool.ntp.org"
+      "1.au.pool.ntp.org"
+      "2.au.pool.ntp.org"
+      "3.au.pool.ntp.org"
+    ];
+
+    extraConfig = ''
+      makestep 1.0 3
+      rtcsync
+    '';
   };
 
   services.iperf3.enable = true;
