@@ -8,7 +8,6 @@
 package main
 
 import (
-	"melnode/dpproto"
 	"sync"
 	"time"
 	_ "unsafe"
@@ -162,15 +161,6 @@ func (peer *Peer) timersHandshakeComplete() {
 	peer.timers.sentLastMinuteHandshake.Store(false)
 	now := time.Now()
 	peer.lastHandshakeNano.Store(now.UnixNano())
-	if ctl := peer.device.ctl; ctl != nil {
-		ev := dpproto.Event{Kind: dpproto.EventLinkHandshake, PeerID: peer.id, UnixNano: now.UnixNano()}
-		peer.endpoint.Lock()
-		if peer.endpoint.val != nil {
-			ev.Endpoint = peer.endpoint.val.DstToString()
-		}
-		peer.endpoint.Unlock()
-		ctl.Event(ev)
-	}
 }
 
 func (peer *Peer) timersSessionDerived() {

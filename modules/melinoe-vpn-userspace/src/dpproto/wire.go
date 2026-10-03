@@ -5,62 +5,51 @@ import (
 	"fmt"
 )
 
-const Version = 3
+const Version = 4
 
 const (
-	CmdHello      uint8 = 1
-	CmdAttach     uint8 = 2
-	CmdDeviceSet  uint8 = 3
-	CmdDeviceDel  uint8 = 4
-	CmdStatsGet   uint8 = 5
-	CmdLinkAdd    uint8 = 6
-	CmdLinkDel    uint8 = 7
-	CmdLinkGet    uint8 = 8
-	CmdTunCreate  uint8 = 9
-	CmdTunStart   uint8 = 10
-	CmdTunDestroy uint8 = 11
-	CmdTunGet     uint8 = 12
-	CmdRouteSet   uint8 = 13
-	CmdRouteDel   uint8 = 14
-	CmdRouteGet   uint8 = 15
-	CmdPunt       uint8 = 16
-	CmdInject     uint8 = 17
-	CmdEvent      uint8 = 18
-
-	CmdXQuit uint8 = 128
+	CmdDeviceSet uint8 = 1
+	CmdStatsGet  uint8 = 2
+	CmdLinkSet   uint8 = 3
+	CmdLinkDel   uint8 = 4
+	CmdLinkGet   uint8 = 5
+	CmdRouteSet  uint8 = 6
+	CmdRouteGet  uint8 = 7
+	CmdInject    uint8 = 8
+	CmdTunSet    uint8 = 9
+	CmdTunDel    uint8 = 10
+	CmdTunGet    uint8 = 11
+	CmdPunt      uint8 = 12
 )
 
 const (
 	AttrUnspec       uint16 = 0
 	AttrPad          uint16 = 1
-	AttrAPIVersion   uint16 = 2
-	AttrPID          uint16 = 3
-	AttrConfigured   uint16 = 4
-	AttrLocalID      uint16 = 5
-	AttrPrivateKey   uint16 = 6
-	AttrPublicKey    uint16 = 7
-	AttrListenPort   uint16 = 8
-	AttrFwmark       uint16 = 9
-	AttrMTU          uint16 = 10
-	AttrPeerID       uint16 = 11
-	AttrEndpoint     uint16 = 12
-	AttrLastHS       uint16 = 13
-	AttrTxBytes      uint16 = 14
-	AttrRxBytes      uint16 = 15
-	AttrTunName      uint16 = 16
-	AttrTunStarted   uint16 = 17
-	AttrRouteDst     uint16 = 18
-	AttrRouteNextHop uint16 = 19
-	AttrStatID       uint16 = 20
-	AttrStatValue    uint16 = 21
-	AttrPktLink      uint16 = 22
-	AttrPktProto     uint16 = 23
-	AttrPktSrc       uint16 = 24
-	AttrPktDst       uint16 = 25
-	AttrPktTTL       uint16 = 26
-	AttrPktData      uint16 = 27
-	AttrEvtKind      uint16 = 28
-	AttrEvtTime      uint16 = 29
+	AttrLocalID      uint16 = 2
+	AttrPrivateKey   uint16 = 3
+	AttrPublicKey    uint16 = 4
+	AttrListenPort   uint16 = 5
+	AttrFwmark       uint16 = 6
+	AttrMTU          uint16 = 7
+	AttrPeerID       uint16 = 8
+	AttrEndpoint     uint16 = 9
+	AttrLastHS       uint16 = 10
+	AttrTxBytes      uint16 = 11
+	AttrRxBytes      uint16 = 12
+	AttrTunName      uint16 = 13
+	AttrTunIfindex   uint16 = 14
+	AttrRoutes       uint16 = 15
+	AttrRoute        uint16 = 16
+	AttrRouteDst     uint16 = 17
+	AttrRouteNextHop uint16 = 18
+	AttrStatID       uint16 = 19
+	AttrStatValue    uint16 = 20
+	AttrPktLink      uint16 = 21
+	AttrPktProto     uint16 = 22
+	AttrPktSrc       uint16 = 23
+	AttrPktDst       uint16 = 24
+	AttrPktTTL       uint16 = 25
+	AttrPktData      uint16 = 26
 )
 
 const (
@@ -70,6 +59,7 @@ const (
 	CodeInternal    uint16 = 5
 	CodeUnsupported uint16 = 95
 	CodeNotReady    uint16 = 19
+	CodeAddrInUse   uint16 = 98
 )
 
 type Error struct {
@@ -88,16 +78,6 @@ func IsCode(err error, code uint16) bool {
 	return errors.As(err, &e) && e.Code == code
 }
 
-type Hello struct {
-	Version uint16
-}
-
-type HelloReply struct {
-	Version    uint16
-	PID        uint32
-	Configured bool
-}
-
 type DeviceSet struct {
 	LocalID    uint32
 	PrivateKey [32]byte
@@ -110,7 +90,7 @@ type DeviceSetReply struct {
 	PubKey [32]byte
 }
 
-type LinkAdd struct {
+type LinkSet struct {
 	PeerID   uint32
 	PubKey   [32]byte
 	Endpoint string
@@ -125,21 +105,15 @@ type LinkInfo struct {
 	RxBytes               uint64
 }
 
-type TunCreate struct {
+type TunSet struct {
 	PeerID uint32
 	Name   string
-}
-
-type TunCreateReply struct {
-	Name    string
-	Started bool
 }
 
 type TunInfo struct {
 	PeerID  uint32
 	Name    string
-	MTU     uint32
-	Started bool
+	IfIndex uint32
 }
 
 type Route struct {
@@ -159,8 +133,7 @@ const (
 	StatRxBadPacket   uint16 = 9
 	StatTxNoRoute     uint16 = 10
 	StatTxQueueFull   uint16 = 11
-	StatEventsDropped uint16 = 12
-	StatRxQueueFull   uint16 = 13
+	StatRxQueueFull   uint16 = 12
 )
 
 var StatName = map[uint16]string{
@@ -175,24 +148,12 @@ var StatName = map[uint16]string{
 	StatRxBadPacket:   "rx_bad_packet",
 	StatTxNoRoute:     "tx_no_route",
 	StatTxQueueFull:   "tx_queue_full",
-	StatEventsDropped: "events_dropped",
 	StatRxQueueFull:   "rx_queue_full",
 }
 
 type Stat struct {
 	ID    uint16
 	Value uint64
-}
-
-const (
-	EventLinkHandshake uint8 = 1
-)
-
-type Event struct {
-	Kind     uint8
-	PeerID   uint32
-	UnixNano int64
-	Endpoint string
 }
 
 type Punt struct {
@@ -210,35 +171,6 @@ type Inject struct {
 	Dst     uint8
 	TTL     uint8
 	Payload []byte
-}
-
-func b2u8(v bool) uint8 {
-	if v {
-		return 1
-	}
-	return 0
-}
-
-func (m Hello) put(b *nlb) { b.u32(AttrAPIVersion, uint32(m.Version)) }
-func (m *Hello) get(a attrs) error {
-	if err := a.need(AttrAPIVersion); err != nil {
-		return err
-	}
-	m.Version = uint16(a.u32(AttrAPIVersion))
-	return nil
-}
-
-func (m HelloReply) put(b *nlb) {
-	b.u32(AttrAPIVersion, uint32(m.Version)).u32(AttrPID, m.PID).u8(AttrConfigured, b2u8(m.Configured))
-}
-func (m *HelloReply) get(a attrs) error {
-	if err := a.need(AttrAPIVersion); err != nil {
-		return err
-	}
-	m.Version = uint16(a.u32(AttrAPIVersion))
-	m.PID = a.u32(AttrPID)
-	m.Configured = a.u8(AttrConfigured) != 0
-	return nil
 }
 
 func (m DeviceSet) put(b *nlb) {
@@ -286,11 +218,11 @@ func getEndpoint(a attrs) (string, error) {
 	return sockaddrToEndpoint(v)
 }
 
-func (m LinkAdd) put(b *nlb) error {
+func (m LinkSet) put(b *nlb) error {
 	b.u32(AttrPeerID, m.PeerID).attr(AttrPublicKey, m.PubKey[:])
 	return putEndpoint(b, m.Endpoint)
 }
-func (m *LinkAdd) get(a attrs) (err error) {
+func (m *LinkSet) get(a attrs) (err error) {
 	if err := a.need(AttrPeerID, AttrPublicKey); err != nil {
 		return err
 	}
@@ -331,8 +263,8 @@ func getID(a attrs, typ uint16) (uint32, error) {
 	return a.u32(typ), nil
 }
 
-func (m TunCreate) put(b *nlb) { b.u32(AttrPeerID, m.PeerID).str(AttrTunName, m.Name) }
-func (m *TunCreate) get(a attrs) error {
+func (m TunSet) put(b *nlb) { b.u32(AttrPeerID, m.PeerID).str(AttrTunName, m.Name) }
+func (m *TunSet) get(a attrs) error {
 	if err := a.need(AttrPeerID, AttrTunName); err != nil {
 		return err
 	}
@@ -341,18 +273,8 @@ func (m *TunCreate) get(a attrs) error {
 	return nil
 }
 
-func (m TunCreateReply) put(b *nlb) { b.str(AttrTunName, m.Name).u8(AttrTunStarted, b2u8(m.Started)) }
-func (m *TunCreateReply) get(a attrs) error {
-	if err := a.need(AttrTunName); err != nil {
-		return err
-	}
-	m.Name = a.str(AttrTunName)
-	m.Started = a.u8(AttrTunStarted) != 0
-	return nil
-}
-
 func (m TunInfo) put(b *nlb) {
-	b.u32(AttrPeerID, m.PeerID).str(AttrTunName, m.Name).u32(AttrMTU, m.MTU).u8(AttrTunStarted, b2u8(m.Started))
+	b.u32(AttrPeerID, m.PeerID).str(AttrTunName, m.Name).u32(AttrTunIfindex, m.IfIndex)
 }
 func (m *TunInfo) get(a attrs) error {
 	if err := a.need(AttrPeerID, AttrTunName); err != nil {
@@ -360,8 +282,7 @@ func (m *TunInfo) get(a attrs) error {
 	}
 	m.PeerID = a.u32(AttrPeerID)
 	m.Name = a.str(AttrTunName)
-	m.MTU = a.u32(AttrMTU)
-	m.Started = a.u8(AttrTunStarted) != 0
+	m.IfIndex = a.u32(AttrTunIfindex)
 	return nil
 }
 
@@ -383,21 +304,6 @@ func (m *Stat) get(a attrs) error {
 	m.ID = a.u16(AttrStatID)
 	m.Value = a.u64(AttrStatValue)
 	return nil
-}
-
-func (m Event) put(b *nlb) error {
-	b.u8(AttrEvtKind, m.Kind).u32(AttrPeerID, m.PeerID).u64(AttrEvtTime, uint64(m.UnixNano))
-	return putEndpoint(b, m.Endpoint)
-}
-func (m *Event) get(a attrs) (err error) {
-	if err := a.need(AttrEvtKind, AttrPeerID); err != nil {
-		return err
-	}
-	m.Kind = a.u8(AttrEvtKind)
-	m.PeerID = a.u32(AttrPeerID)
-	m.UnixNano = int64(a.u64(AttrEvtTime))
-	m.Endpoint, err = getEndpoint(a)
-	return err
 }
 
 func (m Punt) put(b *nlb) {
@@ -431,4 +337,39 @@ func (m *Inject) get(a attrs) error {
 	m.TTL = a.u8(AttrPktTTL)
 	m.Payload = a.bin(AttrPktData)
 	return nil
+}
+
+func putRoutes(b *nlb, routes []Route) {
+	b.nest(AttrRoutes, func(b *nlb) {
+		for _, r := range routes {
+			b.nest(AttrRoute, r.put)
+		}
+	})
+}
+
+func getRoutes(a attrs) ([]Route, error) {
+	raw, ok := a.get(AttrRoutes)
+	if !ok {
+		return nil, Errorf(CodeInvalid, "missing attribute %d", AttrRoutes)
+	}
+	entries, err := parseAttrs(raw)
+	if err != nil {
+		return nil, Errorf(CodeInvalid, "malformed route table: %v", err)
+	}
+	out := make([]Route, 0, len(entries))
+	for _, e := range entries {
+		if e.typ != AttrRoute {
+			return nil, Errorf(CodeInvalid, "unexpected attribute %d in route table", e.typ)
+		}
+		ea, err := parseAttrs(e.data)
+		if err != nil {
+			return nil, Errorf(CodeInvalid, "malformed route entry: %v", err)
+		}
+		var r Route
+		if err := r.get(ea); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }

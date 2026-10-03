@@ -26,7 +26,7 @@ type hostOps interface {
 	TunName(peerID uint32) (string, bool)
 	EnsureTun(peerID uint32) error
 	DestroyTun(peerID uint32)
-	ProgramRoutes(routes map[uint32]uint32, prune bool) error
+	ProgramRoutes(routes map[uint32]uint32) error
 	ListRoutes() (map[pvPrefix]string, error)
 	ReplaceRoute(p pvPrefix, ifname string) error
 	DelRoute(p pvPrefix) error
@@ -153,13 +153,13 @@ func (r *Router) reconcileOnce() (retry bool) {
 	}
 	r.mu.RUnlock()
 	hold := r.holding()
-	if err := h.ProgramRoutes(routes, !hold); err != nil {
+	if err := h.ProgramRoutes(routes); err != nil {
 		r.node.log.Errorf("router: programming data plane routes (will retry): %v", err)
 		retry = true
 	}
 
 	for id := range haveTun {
-		if !inTable[id] && !hold {
+		if !inTable[id] {
 			h.DestroyTun(id)
 		}
 	}
@@ -237,16 +237,13 @@ func (h *realHost) Tuns() ([]uint32, error) {
 		return nil, err
 	}
 	names := make(map[uint32]string, len(tuns))
-	started := make(map[uint32]bool, len(tuns))
 	ids := make([]uint32, 0, len(tuns))
 	for _, t := range tuns {
 		names[t.PeerID] = t.Name
-		started[t.PeerID] = t.Started
 		ids = append(ids, t.PeerID)
 	}
 	h.r.hostMu.Lock()
 	h.r.tunNames = names
-	h.r.started = started
 	h.r.hostMu.Unlock()
 	return ids, nil
 }
@@ -261,7 +258,7 @@ func (h *realHost) TunName(peerID uint32) (string, bool) {
 func (h *realHost) EnsureTun(peerID uint32) error {
 	h.r.hostMu.Lock()
 	_, exists := h.r.tunNames[peerID]
-	ready := exists && h.r.hooked[peerID] && h.r.started[peerID]
+	ready := exists && h.r.hooked[peerID]
 	h.r.hostMu.Unlock()
 	if ready {
 		return nil
@@ -271,28 +268,17 @@ func (h *realHost) EnsureTun(peerID uint32) error {
 	if err != nil {
 		return err
 	}
-	rep, err := cl.TunCreate(peerID, h.r.node.tunPrefix+itoa(peerID))
+	info, err := cl.TunSet(dpproto.TunSet{PeerID: peerID, Name: h.r.node.tunPrefix + itoa(peerID)})
 	if err != nil {
 		return err
 	}
 	h.r.hostMu.Lock()
-	h.r.tunNames[peerID] = rep.Name
-	done := h.r.hooked[peerID]
+	h.r.tunNames[peerID] = info.Name
 	h.r.hostMu.Unlock()
 
-	if !done {
-		h.r.configureTun(peerID, rep.Name)
-		h.r.hostMu.Lock()
-		h.r.hooked[peerID] = true
-		h.r.hostMu.Unlock()
-	}
-	if !rep.Started {
-		if err := cl.TunStart(peerID); err != nil {
-			return err
-		}
-	}
+	h.r.configureTun(peerID, info.Name)
 	h.r.hostMu.Lock()
-	h.r.started[peerID] = true
+	h.r.hooked[peerID] = true
 	h.r.hostMu.Unlock()
 	return nil
 }
@@ -302,11 +288,10 @@ func (h *realHost) DestroyTun(peerID uint32) {
 	name, hadName := h.r.tunNames[peerID]
 	delete(h.r.tunNames, peerID)
 	delete(h.r.hooked, peerID)
-	delete(h.r.started, peerID)
 	h.r.hostMu.Unlock()
 
 	if cl, err := h.client(); err == nil {
-		if err := cl.TunDestroy(peerID); err != nil {
+		if err := cl.TunDel(peerID); err != nil {
 			h.r.node.log.Errorf("router: destroying tun for peerid %d: %v", peerID, err)
 			return
 		}
@@ -316,7 +301,7 @@ func (h *realHost) DestroyTun(peerID uint32) {
 	}
 }
 
-func (h *realHost) ProgramRoutes(want map[uint32]uint32, prune bool) error {
+func (h *realHost) ProgramRoutes(want map[uint32]uint32) error {
 	cl, err := h.client()
 	if err != nil {
 		return err
@@ -329,25 +314,24 @@ func (h *realHost) ProgramRoutes(want map[uint32]uint32, prune bool) error {
 	for _, rt := range have {
 		cur[rt.Dst] = rt.NextHop
 	}
-	var firstErr error
-	note := func(err error) {
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	for d, nh := range want {
-		if old, ok := cur[d]; !ok || old != nh {
-			note(cl.RouteSet(dpproto.Route{Dst: d, NextHop: nh}))
-		}
-	}
-	if prune {
-		for d := range cur {
-			if _, ok := want[d]; !ok {
-				note(cl.RouteDel(d))
+	if len(cur) == len(want) {
+		same := true
+		for d, nh := range want {
+			if old, ok := cur[d]; !ok || old != nh {
+				same = false
+				break
 			}
 		}
+		if same {
+			return nil
+		}
 	}
-	return firstErr
+	routes := make([]dpproto.Route, 0, len(want))
+	for d, nh := range want {
+		routes = append(routes, dpproto.Route{Dst: d, NextHop: nh})
+	}
+	sort.Slice(routes, func(i, j int) bool { return routes[i].Dst < routes[j].Dst })
+	return cl.RouteSet(routes)
 }
 
 func (h *realHost) ListRoutes() (map[pvPrefix]string, error) {

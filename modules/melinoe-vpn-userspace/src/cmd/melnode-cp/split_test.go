@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -37,20 +36,18 @@ func TestReconcileProgramsDataPlaneRoutes(t *testing.T) {
 	}
 }
 
-func TestAttachHoldDefersRemovals(t *testing.T) {
+func TestAttachHoldDefersKernelRouteRemoval(t *testing.T) {
 	n := newPVNet(t, 1, 2)
 	r := n.nodes[1].node.router
 	h := n.host(1)
 
 	stray := mustPrefix(t, "10.9.9.9/32")
-	h.tuns[7] = true
-	h.dpRoutes = map[uint32]uint32{7: 7}
 	h.routes[stray] = "t-7"
 
 	r.holdUntil.Store(time.Now().Add(time.Hour).UnixNano())
 	r.reconcileOnce()
-	if !h.tuns[7] || h.dpRoutes[7] != 7 || h.routes[stray] != "t-7" {
-		t.Fatalf("inherited state removed during hold: tuns=%v dp=%v routes=%v", h.tuns, h.dpRoutes, h.routes)
+	if h.routes[stray] != "t-7" {
+		t.Fatalf("inherited kernel route removed during hold: %v", h.routes)
 	}
 
 	p := mustPrefix(t, "10.9.0.5/32")
@@ -59,15 +56,12 @@ func TestAttachHoldDefersRemovals(t *testing.T) {
 	if !h.tuns[2] || h.dpRoutes[2] != 2 || h.routes[p] != "t-2" {
 		t.Fatalf("additions were held back: tuns=%v dp=%v routes=%v", h.tuns, h.dpRoutes, h.routes)
 	}
-	if !h.tuns[7] {
-		t.Fatal("inherited tun removed during hold")
+	if h.routes[stray] != "t-7" {
+		t.Fatal("inherited kernel route removed during hold")
 	}
 
 	r.holdUntil.Store(0)
 	r.reconcileOnce()
-	if h.tuns[7] || len(h.dpRoutes) != 1 || h.dpRoutes[2] != 2 {
-		t.Fatalf("stale state kept after hold: tuns=%v dp=%v", h.tuns, h.dpRoutes)
-	}
 	if _, ok := h.routes[stray]; ok {
 		t.Fatal("stale kernel route kept after hold")
 	}
@@ -137,23 +131,17 @@ func TestPuntToStoppedMonitorIsIgnored(t *testing.T) {
 }
 
 type fakeDP struct {
-	mu         sync.Mutex
-	id         uint32
-	links      map[uint32]dpproto.LinkAdd
-	injects    chan dpproto.Inject
-	adds       []dpproto.LinkAdd
-	dels       []uint32
-	dev        *dpproto.DeviceSet
-	deviceDels int
+	mu      sync.Mutex
+	links   map[uint32]dpproto.LinkSet
+	injects chan dpproto.Inject
+	dev     *dpproto.DeviceSet
+	closed  bool
 }
 
-func newFakeDP(id uint32) *fakeDP {
-	return &fakeDP{id: id, links: map[uint32]dpproto.LinkAdd{}, injects: make(chan dpproto.Inject, 256)}
+func newFakeDP() *fakeDP {
+	return &fakeDP{links: map[uint32]dpproto.LinkSet{}, injects: make(chan dpproto.Inject, 256)}
 }
 
-func (f *fakeDP) Hello(dpproto.Hello) (dpproto.HelloReply, error) {
-	return dpproto.HelloReply{Version: dpproto.Version, PID: uint32(os.Getpid()), Configured: f.dev != nil}, nil
-}
 func (f *fakeDP) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -164,27 +152,13 @@ func (f *fakeDP) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) 
 	return dpproto.DeviceSetReply{PubKey: [32]byte{0xaa}}, nil
 }
 func (f *fakeDP) Stats() ([]dpproto.Stat, error) { return nil, nil }
-func (f *fakeDP) DeviceDel() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.deviceDels++
-	f.dev = nil
-	return nil
-}
-func (f *fakeDP) Quit() {}
-func (f *fakeDP) LinkAdd(m dpproto.LinkAdd) error {
+func (f *fakeDP) LinkSet(m dpproto.LinkSet) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if old, ok := f.links[m.PeerID]; ok && old.PubKey != m.PubKey {
 		return dpproto.Errorf(dpproto.CodeExists, "link %d exists with another key", m.PeerID)
 	}
-	for id, l := range f.links {
-		if id != m.PeerID && l.PubKey == m.PubKey {
-			return dpproto.Errorf(dpproto.CodeExists, "public key already used by link %d", id)
-		}
-	}
 	f.links[m.PeerID] = m
-	f.adds = append(f.adds, m)
 	return nil
 }
 func (f *fakeDP) LinkDel(id uint32) error {
@@ -194,7 +168,6 @@ func (f *fakeDP) LinkDel(id uint32) error {
 		return dpproto.Errorf(dpproto.CodeNotFound, "no link %d", id)
 	}
 	delete(f.links, id)
-	f.dels = append(f.dels, id)
 	return nil
 }
 func (f *fakeDP) LinkList() ([]dpproto.LinkInfo, error) {
@@ -206,16 +179,54 @@ func (f *fakeDP) LinkList() ([]dpproto.LinkInfo, error) {
 	}
 	return out, nil
 }
-func (f *fakeDP) TunCreate(dpproto.TunCreate) (dpproto.TunCreateReply, error) {
-	return dpproto.TunCreateReply{}, dpproto.Errorf(dpproto.CodeUnsupported, "fake")
+func (f *fakeDP) TunSet(dpproto.TunSet) (dpproto.TunInfo, error) {
+	return dpproto.TunInfo{}, dpproto.Errorf(dpproto.CodeUnsupported, "fake")
 }
-func (f *fakeDP) TunStart(uint32) error               { return nil }
-func (f *fakeDP) TunDestroy(uint32) error             { return nil }
+func (f *fakeDP) TunDel(uint32) error                 { return nil }
 func (f *fakeDP) TunList() ([]dpproto.TunInfo, error) { return nil, nil }
-func (f *fakeDP) RouteSet(dpproto.Route) error        { return nil }
-func (f *fakeDP) RouteDel(uint32) error               { return nil }
+func (f *fakeDP) RouteSet([]dpproto.Route) error      { return nil }
 func (f *fakeDP) RouteList() ([]dpproto.Route, error) { return nil, nil }
 func (f *fakeDP) Inject(m dpproto.Inject)             { f.injects <- m }
+func (f *fakeDP) Close() {
+	f.mu.Lock()
+	f.closed = true
+	f.mu.Unlock()
+}
+
+type fakeServer struct {
+	*dpproto.Server
+	mu   sync.Mutex
+	dps  []*fakeDP
+	sess []*dpproto.Session
+}
+
+func newFakeServer(t *testing.T, sock string) *fakeServer {
+	t.Helper()
+	fs := &fakeServer{}
+	srv, err := dpproto.NewServer(sock, func(s *dpproto.Session) dpproto.Handler {
+		dp := newFakeDP()
+		fs.mu.Lock()
+		fs.dps = append(fs.dps, dp)
+		fs.sess = append(fs.sess, s)
+		fs.mu.Unlock()
+		return dp
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Server = srv
+	go srv.Run()
+	return fs
+}
+
+func (fs *fakeServer) last() (*fakeDP, *dpproto.Session) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.dps) == 0 {
+		return nil, nil
+	}
+	return fs.dps[len(fs.dps)-1], fs.sess[len(fs.sess)-1]
+}
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
@@ -231,16 +242,8 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "dp.sock")
-	dp := newFakeDP(1)
-	dp.links[9] = dpproto.LinkAdd{PeerID: 9, PubKey: [32]byte{9}}
-	dp.links[2] = dpproto.LinkAdd{PeerID: 2, PubKey: [32]byte{0xee}}
-
-	srv, err := dpproto.NewServer(sock, dp)
-	if err != nil {
-		t.Fatal(err)
-	}
+	srv := newFakeServer(t, sock)
 	defer srv.Close()
-	go srv.Run()
 
 	n := newTestNode(t)
 	n.device = dpproto.DeviceSet{LocalID: 1, MTU: 1300, ListenPort: 60198}
@@ -251,6 +254,7 @@ func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 	go func() { defer close(done); n.runSessions(sock, stop) }()
 
 	waitFor(t, "attach", func() bool { return n.dp() != nil })
+	dp, sess := srv.last()
 	if p := n.pubkey.Load(); p == nil || *p != [32]byte{0xaa} {
 		t.Fatalf("pubkey = %v, want the one DeviceSet returned", p)
 	}
@@ -259,12 +263,6 @@ func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 		defer dp.mu.Unlock()
 		return len(dp.links) == 2 && dp.links[2].PubKey == [32]byte{2} && dp.links[2].Endpoint == "10.0.0.2:60198" && dp.links[3].PubKey == [32]byte{3}
 	})
-	dp.mu.Lock()
-	staleGone := dp.links[9].PeerID == 0
-	dp.mu.Unlock()
-	if !staleGone {
-		t.Fatal("stale link 9 not removed")
-	}
 
 	seen := map[uint32]bool{}
 	waitFor(t, "liveness injected on both links", func() bool {
@@ -283,7 +281,7 @@ func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 		}
 	})
 
-	srv.Punt(livenessPunt(2, linkStateDown, 8))
+	sess.Punt(livenessPunt(2, linkStateDown, 8))
 	waitFor(t, "punt delivered to link 2's monitor", func() bool { return n.links[2].monitor.State() == linkStateInit })
 
 	close(stop)
@@ -299,27 +297,19 @@ func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 			t.Fatalf("no AdminDown on links after stop, saw %v", got)
 		}
 	}
-	dp.mu.Lock()
-	nLinks := len(dp.links)
-	dp.mu.Unlock()
-	if nLinks != 2 {
-		t.Fatalf("shutdown touched the data plane's links (%d left, want 2)", nLinks)
-	}
 	if n.dp() != nil {
 		t.Fatal("still attached after stop")
 	}
+	waitFor(t, "data plane instance closed", func() bool {
+		dp.mu.Lock()
+		defer dp.mu.Unlock()
+		return dp.closed
+	})
 }
 
 func TestSessionSurvivesDataPlaneRestart(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "dp.sock")
-	start := func() *dpproto.Server {
-		srv, err := dpproto.NewServer(sock, newFakeDP(1))
-		if err != nil {
-			t.Fatal(err)
-		}
-		go srv.Run()
-		return srv
-	}
+	start := func() *fakeServer { return newFakeServer(t, sock) }
 	srv := start()
 
 	n := newTestNode(t)
@@ -347,42 +337,4 @@ func TestSessionSurvivesDataPlaneRestart(t *testing.T) {
 	srv2 := start()
 	defer srv2.Close()
 	waitFor(t, "re-attach", func() bool { c := n.dp(); return c != nil && c != first })
-}
-
-func TestAttachReplacesMisconfiguredDataplane(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "dp.sock")
-	dp := newFakeDP(1)
-	dp.dev = &dpproto.DeviceSet{LocalID: 1, MTU: 1200}
-	srv, err := dpproto.NewServer(sock, dp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer srv.Close()
-	go srv.Run()
-
-	n := newTestNode(t)
-	n.device = dpproto.DeviceSet{LocalID: 1, MTU: 1416}
-	if _, err := n.attach(sock); err == nil {
-		t.Fatal("attach to a differently-configured data plane succeeded")
-	}
-	waitFor(t, "DeviceDel request", func() bool {
-		dp.mu.Lock()
-		defer dp.mu.Unlock()
-		return dp.deviceDels == 1
-	})
-}
-
-func TestWrongBinary(t *testing.T) {
-	n := &Node{}
-	if n.wrongBinary(uint32(os.Getpid())) {
-		t.Fatal("no dpCommand: nothing is wrong")
-	}
-	n.dpCommand = []string{os.Args[0]}
-	if n.wrongBinary(uint32(os.Getpid())) {
-		t.Fatal("same binary flagged as wrong")
-	}
-	n.dpCommand = []string{"/bin/sh"}
-	if !n.wrongBinary(uint32(os.Getpid())) {
-		t.Fatal("different binary not flagged")
-	}
 }

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -14,11 +13,11 @@ import (
 
 const spawnWait = 5 * time.Second
 
-func (n *Node) dialDataplane(socket string, onPunt func(dpproto.Punt), onEvent func(dpproto.Event)) (dpproto.Datapath, error) {
+func (n *Node) dialDataplane(socket string, onPunt func(dpproto.Punt)) (dpproto.Datapath, error) {
 	if n.kernelDataplane {
-		return dpproto.DialKernel(onPunt, onEvent)
+		return dpproto.DialKernel(onPunt)
 	}
-	cl, err := dpproto.Dial(socket, onPunt, onEvent)
+	cl, err := dpproto.Dial(socket, onPunt)
 	if err == nil {
 		return cl, nil
 	}
@@ -33,7 +32,7 @@ func (n *Node) dialDataplane(socket string, onPunt func(dpproto.Punt), onEvent f
 	}
 	deadline := time.Now().Add(spawnWait)
 	for {
-		if cl, err = dpproto.Dial(socket, onPunt, onEvent); err == nil {
+		if cl, err = dpproto.Dial(socket, onPunt); err == nil {
 			return cl, nil
 		}
 		if time.Now().After(deadline) {
@@ -71,73 +70,5 @@ func (n *Node) spawnDataplane(socket string) error {
 		n.log.Errorf("data plane (pid %d) exited: %v", cmd.Process.Pid, err)
 		close(done)
 	}()
-	return nil
-}
-
-func (n *Node) wrongBinary(pid uint32) bool {
-	if len(n.dpCommand) == 0 || pid == 0 {
-		return false
-	}
-	have, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-	if err != nil {
-		return false
-	}
-	want, err := exec.LookPath(n.dpCommand[0])
-	if err != nil {
-		return false
-	}
-	if w, err := filepath.EvalSymlinks(want); err == nil {
-		want = w
-	}
-	if h, err := filepath.EvalSymlinks(have); err == nil {
-		have = h
-	}
-	return have != want
-}
-
-func (n *Node) replaceDataplane(cl dpproto.Datapath, why string, restart bool) error {
-	n.log.Errorf("replacing the data plane: %s", why)
-	if err := cl.DeviceDel(); err != nil {
-		cl.Close()
-		return fmt.Errorf("tearing down the data plane's device (%s): %w", why, err)
-	}
-	if q, ok := cl.(dpproto.Quitter); ok && restart {
-		if err := q.Quit(); err != nil {
-			cl.Close()
-			return fmt.Errorf("asking the data plane to exit (%s): %w", why, err)
-		}
-		select {
-		case <-cl.Done():
-		case <-time.After(3 * time.Second):
-		}
-	}
-	cl.Close()
-	return fmt.Errorf("replaced the data plane (%s)", why)
-}
-
-func stopDataplane(cfg *Config) error {
-	var cl dpproto.Datapath
-	var err error
-	if cfg.KernelDataplane {
-		cl, err = dpproto.DialKernel(nil, nil)
-	} else {
-		cl, err = dpproto.Dial(cfg.DataplaneSocket, nil, nil)
-	}
-	if err != nil {
-		return fmt.Errorf("no data plane reachable: %w", err)
-	}
-	defer cl.Close()
-	if err := cl.DeviceDel(); err != nil {
-		return err
-	}
-	if q, ok := cl.(dpproto.Quitter); ok {
-		if err := q.Quit(); err != nil {
-			return err
-		}
-	}
-	select {
-	case <-cl.Done():
-	case <-time.After(5 * time.Second):
-	}
 	return nil
 }

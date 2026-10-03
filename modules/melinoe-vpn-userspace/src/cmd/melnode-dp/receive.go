@@ -398,7 +398,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			}
 			proto, src, dst := elem.packet[0], elem.packet[1], elem.packet[2]
 			if proto != 0 {
-				device.ctl.Punt(dpproto.Punt{
+				device.sess.Punt(dpproto.Punt{
 					Ingress: peer.id,
 					Proto:   proto,
 					Src:     src,

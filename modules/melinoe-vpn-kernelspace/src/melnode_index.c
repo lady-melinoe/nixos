@@ -8,8 +8,11 @@
 #include "melnode_core.h"
 #include "melnode_index.h"
 
-static DEFINE_HASHTABLE(index_table, 10);
-static DEFINE_SPINLOCK(index_lock);
+void melnode_index_table_init(struct melnode_index_table *t)
+{
+	hash_init(t->table);
+	spin_lock_init(&t->lock);
+}
 
 static bool index_live(const struct melnode_link *link, __le32 index)
 {
@@ -24,11 +27,11 @@ static bool index_live(const struct melnode_link *link, __le32 index)
 	       (kps->next_kp.valid && kps->next_kp.local_index == index);
 }
 
-static bool index_used(__le32 index)
+static bool index_used(struct melnode_index_table *t, __le32 index)
 {
 	struct melnode_index_slot *slot;
 
-	hash_for_each_possible(index_table, slot, node, le32_to_cpu(index)) {
+	hash_for_each_possible(t->table, slot, node, le32_to_cpu(index)) {
 		if (slot->index == index)
 			return true;
 	}
@@ -51,18 +54,21 @@ static void sync_locked(struct melnode_link *link)
 
 void melnode_index_sync(struct melnode_link *link)
 {
-	spin_lock_bh(&index_lock);
+	struct melnode_index_table *t = &link->inst->index;
+
+	spin_lock_bh(&t->lock);
 	sync_locked(link);
-	spin_unlock_bh(&index_lock);
+	spin_unlock_bh(&t->lock);
 }
 
 u32 melnode_index_alloc(struct melnode_link *link)
 {
+	struct melnode_index_table *t = &link->inst->index;
 	struct melnode_index_slot *slot = NULL;
 	__le32 index;
 	int i;
 
-	spin_lock_bh(&index_lock);
+	spin_lock_bh(&t->lock);
 	sync_locked(link);
 	for (i = 0; i < MELNODE_INDEX_SLOTS; i++) {
 		if (!link->index_slots[i].hashed) {
@@ -71,29 +77,29 @@ u32 melnode_index_alloc(struct melnode_link *link)
 		}
 	}
 	if (!slot) {
-		spin_unlock_bh(&index_lock);
+		spin_unlock_bh(&t->lock);
 		return 0;
 	}
 
 	do {
 		index = cpu_to_le32(get_random_u32());
-	} while (!index || index_used(index));
+	} while (!index || index_used(t, index));
 
 	slot->index = index;
 	slot->link = link;
 	slot->hashed = true;
-	hash_add_rcu(index_table, &slot->node, le32_to_cpu(index));
-	spin_unlock_bh(&index_lock);
+	hash_add_rcu(t->table, &slot->node, le32_to_cpu(index));
+	spin_unlock_bh(&t->lock);
 	return le32_to_cpu(index);
 }
 
-struct melnode_link *melnode_index_lookup(__le32 index)
+struct melnode_link *melnode_index_lookup(struct melnode_instance *inst, __le32 index)
 {
 	struct melnode_index_slot *slot;
 	struct melnode_link *link = NULL;
 
 	rcu_read_lock();
-	hash_for_each_possible_rcu(index_table, slot, node, le32_to_cpu(index)) {
+	hash_for_each_possible_rcu(inst->index.table, slot, node, le32_to_cpu(index)) {
 		if (slot->index == index) {
 			link = slot->link;
 			if (!kref_get_unless_zero(&link->kref))

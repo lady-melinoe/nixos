@@ -7,7 +7,10 @@
 
 #include "melnode_messages.h"
 
+struct melnode_ratelimiter;
+
 struct melnode_cookie_checker {
+	struct melnode_ratelimiter *ratelimiter;
 	rwlock_t secret_lock;
 	u8 secret[MELNODE_NOISE_HASH_LEN];
 	u8 cookie_encryption_key[MELNODE_NOISE_SYMMETRIC_KEY_LEN];
@@ -32,7 +35,8 @@ enum melnode_cookie_mac_state {
 	MELNODE_COOKIE_VALID_MAC_WITH_COOKIE,
 };
 
-void melnode_cookie_checker_init(struct melnode_cookie_checker *checker);
+void melnode_cookie_checker_init(struct melnode_cookie_checker *checker,
+				 struct melnode_ratelimiter *ratelimiter);
 void melnode_cookie_checker_precompute_device_keys(struct melnode_cookie_checker *checker,
 						   const u8 device_static_public[MELNODE_NOISE_PUBLIC_KEY_LEN]);
 void melnode_cookie_precompute_peer_keys(struct melnode_cookie *cookie,

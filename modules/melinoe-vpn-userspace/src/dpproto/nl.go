@@ -49,23 +49,16 @@ const (
 	ctrlCmdGetFamily = 3
 	ctrlVersion      = 2
 
-	ctrlAttrFamilyID    = 1
-	ctrlAttrFamilyName  = 2
-	ctrlAttrVersion     = 3
-	ctrlAttrHdrSize     = 4
-	ctrlAttrMaxAttr     = 5
-	ctrlAttrMcastGroups = 7
-
-	ctrlAttrMcastGrpName = 1
-	ctrlAttrMcastGrpID   = 2
+	ctrlAttrFamilyID   = 1
+	ctrlAttrFamilyName = 2
+	ctrlAttrVersion    = 3
+	ctrlAttrHdrSize    = 4
+	ctrlAttrMaxAttr    = 5
 )
 
 const (
 	FamilyName = "melnode"
 	FamilyID   = 198
-
-	eventsGroupName = "events"
-	eventsGroupID   = 1
 )
 
 func align4(n int) int { return (n + 3) &^ 3 }

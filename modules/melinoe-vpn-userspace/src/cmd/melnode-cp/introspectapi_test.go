@@ -46,7 +46,7 @@ func (d *countingDP) LinkList() ([]dpproto.LinkInfo, error) {
 
 func (d *countingDP) TunList() ([]dpproto.TunInfo, error) {
 	d.hit()
-	return []dpproto.TunInfo{{PeerID: 2, Name: "node-2", MTU: 1416, Started: true}}, nil
+	return []dpproto.TunInfo{{PeerID: 2, Name: "node-2", IfIndex: 7}}, nil
 }
 
 func (d *countingDP) RouteList() ([]dpproto.Route, error) {

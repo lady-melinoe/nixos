@@ -34,12 +34,6 @@ func (s *dpSession) onPunt(p dpproto.Punt) {
 	}
 }
 
-func (n *Node) onEvent(e dpproto.Event) {
-	if e.Kind == dpproto.EventLinkHandshake {
-		n.log.Verbosef("link(%d) - handshake complete (peer at %s)", e.PeerID, e.Endpoint)
-	}
-}
-
 func (s *dpSession) livenessWorker(n *Node) {
 	for {
 		select {
@@ -107,7 +101,7 @@ func (n *Node) attach(socket string) (*dpSession, error) {
 		punts:         make(chan dpproto.Punt, puntQueueSize),
 		done:          make(chan struct{}),
 	}
-	cl, err := n.dialDataplane(socket, sess.onPunt, n.onEvent)
+	cl, err := n.dialDataplane(socket, sess.onPunt)
 	if err != nil {
 		return nil, err
 	}
@@ -117,47 +111,19 @@ func (n *Node) attach(socket string) (*dpSession, error) {
 		return nil, err
 	}
 
-	hr, err := cl.Hello()
-	if err != nil {
-		return fail(fmt.Errorf("hello: %w", err))
-	}
-	if n.wrongBinary(hr.PID) {
-		return nil, n.replaceDataplane(cl, fmt.Sprintf("pid %d is not running %s", hr.PID, n.dpCommand[0]), true)
-	}
-
 	dsr, err := cl.DeviceSet(n.device)
-	if dpproto.IsCode(err, dpproto.CodeExists) {
-		return nil, n.replaceDataplane(cl, "it was configured differently ("+err.Error()+")", false)
-	}
 	if err != nil {
 		return fail(fmt.Errorf("configuring the data plane: %w", err))
 	}
 	pub := dsr.PubKey
 	n.pubkey.Store(&pub)
 
-	want := n.links
-	have, err := cl.LinkList()
-	if err != nil {
-		return fail(fmt.Errorf("listing links: %w", err))
-	}
-	for _, li := range have {
-		if l, ok := want[li.PeerID]; ok && l.pubkey == li.PubKey {
-			continue
-		}
-		if err := cl.LinkDel(li.PeerID); err != nil && !dpproto.IsCode(err, dpproto.CodeNotFound) {
-			return fail(fmt.Errorf("removing stale link %d: %w", li.PeerID, err))
-		}
-		n.log.Verbosef("removed link %d from the data plane (not in config, or its key changed)", li.PeerID)
-	}
 	for _, l := range n.sortedLinks() {
-		if err := cl.LinkAdd(dpproto.LinkAdd{PeerID: l.id, PubKey: l.pubkey, Endpoint: l.endpoint}); err != nil {
+		if err := cl.LinkSet(dpproto.LinkSet{PeerID: l.id, PubKey: l.pubkey, Endpoint: l.endpoint}); err != nil {
 			return fail(fmt.Errorf("configuring link %d: %w", l.id, err))
 		}
 	}
 
-	if err := cl.Attach(); err != nil {
-		return fail(fmt.Errorf("attaching to the data plane: %w", err))
-	}
 	go sess.livenessWorker(n)
 	go sess.worker(n)
 	n.dpc.Store(&dpHandle{cl})
@@ -165,7 +131,7 @@ func (n *Node) attach(socket string) (*dpSession, error) {
 	for _, l := range n.sortedLinks() {
 		l.monitor.Start()
 	}
-	n.log.Verbosef("attached to data plane (pid %d, node %d, mtu %d, udp port %d)", hr.PID, n.device.LocalID, n.device.MTU, n.device.ListenPort)
+	n.log.Verbosef("attached to data plane (node %d, mtu %d, udp port %d)", n.device.LocalID, n.device.MTU, n.device.ListenPort)
 	return sess, nil
 }
 

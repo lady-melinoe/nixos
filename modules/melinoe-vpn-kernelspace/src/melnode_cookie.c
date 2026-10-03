@@ -34,9 +34,11 @@ static void precompute_key(u8 key[MELNODE_NOISE_SYMMETRIC_KEY_LEN],
 	blake2s_final(&blake, key);
 }
 
-void melnode_cookie_checker_init(struct melnode_cookie_checker *checker)
+void melnode_cookie_checker_init(struct melnode_cookie_checker *checker,
+				 struct melnode_ratelimiter *ratelimiter)
 {
 	memset(checker, 0, sizeof(*checker));
+	checker->ratelimiter = ratelimiter;
 	rwlock_init(&checker->secret_lock);
 	checker->secret_birthdate = ktime_get_coarse_boottime_ns();
 	get_random_bytes(checker->secret, MELNODE_NOISE_HASH_LEN);
@@ -133,7 +135,7 @@ enum melnode_cookie_mac_state melnode_cookie_validate_packet(struct melnode_cook
 	if (crypto_memneq(computed_mac, macs->mac2, MELNODE_COOKIE_LEN))
 		return MELNODE_COOKIE_VALID_MAC_BUT_NO_COOKIE;
 
-	if (!melnode_ratelimiter_allow(from_addr, from_len))
+	if (!melnode_ratelimiter_allow(checker->ratelimiter, from_addr, from_len))
 		return MELNODE_COOKIE_VALID_MAC_WITH_COOKIE_BUT_RATELIMITED;
 
 	return MELNODE_COOKIE_VALID_MAC_WITH_COOKIE;

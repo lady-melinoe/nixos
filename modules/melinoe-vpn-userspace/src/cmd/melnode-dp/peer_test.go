@@ -91,7 +91,7 @@ func TestDataInFlightCap(t *testing.T) {
 func TestCloseAllTunsStopsWriters(t *testing.T) {
 	d := testDevice(t)
 	w := newTunWriter(3)
-	d.router.tuns[3] = &tunEntry{dev: nopTun{}, name: "t3", started: true, writer: w}
+	d.router.tuns[3] = &tunEntry{dev: nopTun{}, name: "t3", writer: w}
 	d.router.closeAllTuns()
 	select {
 	case <-w.stop:

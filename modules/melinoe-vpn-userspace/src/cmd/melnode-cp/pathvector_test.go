@@ -243,12 +243,10 @@ func (f *fakeHost) Tuns() ([]uint32, error) {
 	return out, nil
 }
 
-func (f *fakeHost) ProgramRoutes(want map[uint32]uint32, prune bool) error {
+func (f *fakeHost) ProgramRoutes(want map[uint32]uint32) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.dpRoutes == nil || prune {
-		f.dpRoutes = make(map[uint32]uint32, len(want))
-	}
+	f.dpRoutes = make(map[uint32]uint32, len(want))
 	for d, nh := range want {
 		f.dpRoutes[d] = nh
 	}

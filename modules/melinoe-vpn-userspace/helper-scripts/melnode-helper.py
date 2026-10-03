@@ -7,8 +7,11 @@ tuns lives here instead:
 
   hook-create <peerid> <ifname>
       melnode tunCreateHookBin: set up per-node policy routing (fwmark and
-      table `table_base + peerid`, default route via the tun) and register
-      the tun in the nft conntrack-pinning set/map.
+      table `table_base + peerid`) and register the tun in the nft
+      conntrack-pinning set/map, then bring the tun up and point the
+      table's default route at it. Until then the table's default route
+      is `unreachable`, so marked traffic never leaks out of another
+      interface while the tun is still down.
 
   hook-destroy <peerid> <ifname>
       melnode tunDestroyHookBin: undo the above (runs after the tun is gone).
@@ -191,11 +194,19 @@ def nft_delete(cfg: Config, marks: list[int], ifnames: list[str]) -> None:
                "deregister peer marks from nftables")
 
 
+def ensure_blackhole(table: int) -> None:
+    run_ok(["ip", "-4", "route", "replace", "unreachable", "default", "table", str(table),
+            "proto", ROUTE_PROTO],
+           f"unreachable default route in table {table}")
+
+
 def setup_peer(cfg: Config, peer_id: int, ifname: str) -> None:
     table = cfg.table(peer_id)
+    ensure_blackhole(table)
     ensure_rule(table)
-    ensure_route(table, ifname)
     nft_add(cfg, {peer_id: ifname})
+    run_ok(["ip", "link", "set", "dev", ifname, "up"], f"bring up {ifname}")
+    ensure_route(table, ifname)
     log.info("set up peer %d (%s): table/mark %d", peer_id, ifname, table)
 
 

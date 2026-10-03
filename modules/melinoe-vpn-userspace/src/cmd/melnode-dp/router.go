@@ -1,8 +1,9 @@
 package main
 
 import (
-	"fmt"
+	"net"
 	"sync"
+	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
 
@@ -22,10 +23,9 @@ type Router struct {
 }
 
 type tunEntry struct {
-	dev     tun.Device
-	name    string
-	started bool
-	writer  *tunWriter
+	dev    tun.Device
+	name   string
+	writer *tunWriter
 }
 
 func newRouter(dev *Device, localID uint32) *Router {
@@ -66,24 +66,21 @@ func (r *Router) LookupTunWriter(peerID uint32) (*tunWriter, bool) {
 	return t.writer, true
 }
 
-func (r *Router) SetRoute(dst, nh uint32) {
-	r.mu.Lock()
-	old, had := r.routeTable[dst]
-	r.routeTable[dst] = nh
-	r.mu.Unlock()
-	switch {
-	case !had:
-	case old != nh:
+func (r *Router) ReplaceRoutes(routes []dpproto.Route) error {
+	table := make(map[uint32]uint32, len(routes))
+	for _, rt := range routes {
+		if rt.Dst > 255 || rt.NextHop > 255 {
+			return dpproto.Errorf(dpproto.CodeInvalid, "route %d via %d: peerids are 0-255", rt.Dst, rt.NextHop)
+		}
+		if _, dup := table[rt.Dst]; dup {
+			return dpproto.Errorf(dpproto.CodeInvalid, "duplicate route for destination %d", rt.Dst)
+		}
+		table[rt.Dst] = rt.NextHop
 	}
-}
-
-func (r *Router) DelRoute(dst uint32) {
 	r.mu.Lock()
-	_, had := r.routeTable[dst]
-	delete(r.routeTable, dst)
+	r.routeTable = table
 	r.mu.Unlock()
-	if had {
-	}
+	return nil
 }
 
 func (r *Router) Routes() []dpproto.Route {
@@ -96,78 +93,65 @@ func (r *Router) Routes() []dpproto.Route {
 	return out
 }
 
+func tunIfIndex(name string) uint32 {
+	ifi, err := net.InterfaceByName(name)
+	if err != nil {
+		return 0
+	}
+	return uint32(ifi.Index)
+}
+
 func (r *Router) Tuns() []dpproto.TunInfo {
 	r.mu.RLock()
-	entries := make(map[uint32]*tunEntry, len(r.tuns))
-	started := make(map[uint32]bool, len(r.tuns))
+	out := make([]dpproto.TunInfo, 0, len(r.tuns))
 	for id, t := range r.tuns {
-		entries[id] = t
-		started[id] = t.started
+		out = append(out, dpproto.TunInfo{PeerID: id, Name: t.name, IfIndex: tunIfIndex(t.name)})
 	}
 	r.mu.RUnlock()
-	out := make([]dpproto.TunInfo, 0, len(entries))
-	for id, t := range entries {
-		mtu, _ := t.dev.MTU()
-		out = append(out, dpproto.TunInfo{PeerID: id, Name: t.name, MTU: uint32(mtu), Started: started[id]})
-	}
 	return out
 }
 
-func (r *Router) CreateTun(dstPeerID uint32, ifname string) (name string, started bool, err error) {
+func (r *Router) CreateTun(dstPeerID uint32, ifname string) (dpproto.TunInfo, error) {
 	pl := r.peerLock(dstPeerID)
 	pl.Lock()
 	defer pl.Unlock()
 
 	r.mu.RLock()
 	t, ok := r.tuns[dstPeerID]
-	if ok {
-		name, started = t.name, t.started
-	}
 	r.mu.RUnlock()
 	if ok {
-		return name, started, nil
+		if t.name != ifname {
+			return dpproto.TunInfo{}, dpproto.Errorf(dpproto.CodeExists, "peerid %d already has tun %q", dstPeerID, t.name)
+		}
+		return dpproto.TunInfo{PeerID: dstPeerID, Name: t.name, IfIndex: tunIfIndex(t.name)}, nil
+	}
+
+	deadline := time.Now().Add(restartGrace)
+	for tunIfIndex(ifname) != 0 {
+		if time.Now().After(deadline) {
+			return dpproto.TunInfo{}, dpproto.Errorf(dpproto.CodeExists, "interface name %q is already in use", ifname)
+		}
+		time.Sleep(restartPoll)
 	}
 
 	d, err := createPeerTun(ifname, dstPeerID, r.dev.mtu)
 	if err != nil {
-		return "", false, fmt.Errorf("creating tun: %w", err)
+		return dpproto.TunInfo{}, dpproto.Errorf(dpproto.CodeInternal, "creating tun: %v", err)
 	}
-	name, err = d.Name()
+	name, err := d.Name()
 	if err != nil {
 		d.Close()
-		return "", false, fmt.Errorf("naming tun: %w", err)
-	}
-	r.mu.Lock()
-	r.tuns[dstPeerID] = &tunEntry{dev: d, name: name}
-	r.mu.Unlock()
-	go drainTunEvents(d)
-	return name, false, nil
-}
-
-func (r *Router) StartTun(dstPeerID uint32) error {
-	pl := r.peerLock(dstPeerID)
-	pl.Lock()
-	defer pl.Unlock()
-
-	r.mu.Lock()
-	t, ok := r.tuns[dstPeerID]
-	if !ok {
-		r.mu.Unlock()
-		return dpproto.Errorf(dpproto.CodeNotFound, "no tun for peerid %d", dstPeerID)
-	}
-	if t.started {
-		r.mu.Unlock()
-		return nil
+		return dpproto.TunInfo{}, dpproto.Errorf(dpproto.CodeInternal, "naming tun: %v", err)
 	}
 	w := newTunWriter(dstPeerID)
-	t.writer = w
-	t.started = true
+	r.mu.Lock()
+	r.tuns[dstPeerID] = &tunEntry{dev: d, name: name, writer: w}
 	r.mu.Unlock()
-
-	go r.runTunWriter(dstPeerID, t.dev, w)
+	go drainTunEvents(d)
+	go r.runTunWriter(dstPeerID, d, w)
 	r.dev.queue.encryption.wg.Add(1)
-	go r.dev.RoutineReadFromTUN(dstPeerID, t.dev)
-	return nil
+	go r.dev.RoutineReadFromTUN(dstPeerID, d)
+	return dpproto.TunInfo{PeerID: dstPeerID, Name: name, IfIndex: tunIfIndex(name)}, nil
 }
 
 func (r *Router) DestroyTun(dstPeerID uint32) {
@@ -248,6 +232,9 @@ func drainTunEvents(dev tun.Device) {
 }
 
 const (
+	restartGrace = 3 * time.Second
+	restartPoll  = 50 * time.Millisecond
+
 	headerSize      = 4
 	maxIPPacketSize = 65535
 

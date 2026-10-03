@@ -130,15 +130,14 @@ func keyToBase64(k []byte) string { return base64.StdEncoding.EncodeToString(k) 
 type tunInfo struct {
 	PeerID  uint32  `json:"peer_id"`
 	Name    string  `json:"name"`
-	MTU     int     `json:"mtu"`
+	IfIndex uint32  `json:"ifindex"`
 	NextHop *uint32 `json:"next_hop"`
-	Started bool    `json:"started"`
 }
 
 func tunsFrom(v dpView) []tunInfo {
 	out := make([]tunInfo, 0, len(v.tuns))
 	for _, t := range v.tuns {
-		ti := tunInfo{PeerID: t.PeerID, Name: t.Name, MTU: int(t.MTU), Started: t.Started}
+		ti := tunInfo{PeerID: t.PeerID, Name: t.Name, IfIndex: t.IfIndex}
 		if nh, ok := v.routes[t.PeerID]; ok {
 			ti.NextHop = &nh
 		}
