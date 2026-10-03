@@ -125,6 +125,88 @@ let
     pkgs.iproute2
     pkgs.nftables
   ];
+
+  # Hot-swaps the melnode kernel module to the build in this generation, so a
+  # `nixos-rebuild switch` picks up module changes without a reboot.
+  #
+  # modprobe can't do this: NixOS points it at the *booted* generation's module
+  # tree, so a module built after boot is invisible to it. The new .ko is
+  # loaded by store path with insmod instead (its dependencies still come from
+  # the booted tree, which is fine because the kernel is the same).
+  #
+  # Runs as melnode-cp's ExecStartPre, i.e. after the old melnode-cp has
+  # stopped. Unloading the module tears down the tuns and links; melnode-cp
+  # recreates them on start, and melnode-helper's reconcile loop fixes up the
+  # policy routing.
+  kernelModuleSwap = pkgs.writeShellScript "melnode-kmod-swap" ''
+    export PATH=${
+      lib.makeBinPath [
+        pkgs.kmod
+        pkgs.coreutils
+        pkgs.gnused
+        pkgs.findutils
+      ]
+    }
+    set -u
+
+    marker=/run/melnode-kmod-loaded
+    log() { echo "melnode-kmod: $*"; }
+
+    ko=$(find ${mCfg.kernelDataplane.package}/lib/modules -name 'melnode.ko*' -print -quit)
+    if [ -z "$ko" ]; then
+      log "ERROR: no melnode.ko in ${mCfg.kernelDataplane.package}"
+      exit 1
+    fi
+
+    load_deps() {
+      for dep in $(modinfo -F softdep "$ko" | sed -E 's/(pre|post)://g') \
+                 $(modinfo -F depends "$ko" | tr ',' ' '); do
+        modprobe -q "$dep" || true
+      done
+    }
+
+    if [ -d /sys/module/melnode ]; then
+      want=$(modinfo -F srcversion "$ko")
+      have=$(cat /sys/module/melnode/srcversion 2>/dev/null || true)
+      if { [ -n "$want" ] && [ "$want" = "$have" ]; } || [ "$(cat "$marker" 2>/dev/null)" = "$ko" ]; then
+        log "already running this build, nothing to swap"
+        exit 0
+      fi
+
+      running=$(uname -r)
+      built_for=$(modinfo -F vermagic "$ko" | cut -d' ' -f1)
+      if [ "$running" != "$built_for" ]; then
+        log "WARNING: new module is built for kernel $built_for but $running is running; keeping the loaded module until reboot"
+        exit 0
+      fi
+
+      log "swapping module: $have -> $want"
+      tries=0
+      until rmmod melnode 2>/dev/null; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 10 ]; then
+          log "WARNING: could not unload melnode ($(rmmod melnode 2>&1)); keeping the loaded module"
+          exit 0
+        fi
+        sleep 0.5
+      done
+    fi
+
+    load_deps
+    if insmod "$ko"; then
+      echo "$ko" > "$marker"
+      log "loaded $ko"
+      exit 0
+    fi
+
+    log "ERROR: insmod of $ko failed; falling back to the booted generation's module"
+    rm -f "$marker"
+    if modprobe melnode; then
+      log "restored the booted generation's module"
+      exit 0
+    fi
+    exit 1
+  '';
 in
 {
   options.melinoe.services.melnode = {
@@ -228,6 +310,12 @@ in
           modules/melinoe-vpn-kernelspace/ARCHITECTURE.md (untracked, local
           reference only) for the design. Still early: enable on nodes you can
           watch closely and roll back easily, not as a default.
+
+          With dataplane = "kernel", `nixos-rebuild switch` hot-swaps the
+          module: melnode-cp restarts, unloads the running melnode.ko, and
+          loads the new build, so module changes don't need a reboot. Tunnels
+          are down for a few seconds while it happens. If the generation
+          changes the kernel itself, the loaded module is kept until reboot.
         '';
       };
 
@@ -342,9 +430,7 @@ in
       restartTriggers = [ (builtins.hashString "sha256" config.networking.nftables.ruleset) ];
       path = toolPath;
       serviceConfig = {
-        ExecStartPre = lib.optional (
-          mCfg.dataplane == "kernel"
-        ) "+/run/current-system/sw/bin/modprobe melnode";
+        ExecStartPre = lib.optional (mCfg.dataplane == "kernel") "+${kernelModuleSwap}";
         ExecStart = "${cpBin} -config ${cpConfig}";
         Restart = "always";
         RestartSec = 1;
