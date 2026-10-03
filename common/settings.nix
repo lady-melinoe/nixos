@@ -136,7 +136,6 @@
 
     extraConfig = ''
       makestep 1.0 3
-      rtcsync
     '';
   };
 
