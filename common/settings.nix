@@ -126,17 +126,12 @@
 
   services.chrony = {
     enable = true;
-
     servers = [
       "0.au.pool.ntp.org"
       "1.au.pool.ntp.org"
       "2.au.pool.ntp.org"
       "3.au.pool.ntp.org"
     ];
-
-    extraConfig = ''
-      makestep 1.0 3
-    '';
   };
 
   services.iperf3.enable = true;
