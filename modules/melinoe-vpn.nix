@@ -65,9 +65,9 @@ let
     doCheck = false;
   } (builtins.readFile ./melinoe-vpn-helpers/melnode-helper.py);
 
-  mnctl = pkgs.writers.writePython3Bin "mnctl" {
-    doCheck = false;
-  } (builtins.readFile ./melinoe-vpn-helpers/mnctl.py);
+  mnctl = pkgs.runCommand "mnctl" { } ''
+    install -Dm755 ${mCfg.package}/bin/mnctl $out/bin/mnctl
+  '';
 
   helperConfig = pkgs.writeText "melnode-helper.json" (
     builtins.toJSON {
@@ -265,7 +265,7 @@ in
       type = types.package;
       default = melnodeGoBinary;
       readOnly = true;
-      description = "The built melnode package (bin/melnode-dp and bin/melnode-cp).";
+      description = "The built melnode package (bin/melnode-dp, bin/melnode-cp and bin/mnctl).";
     };
 
     dataplane = mkOption {
