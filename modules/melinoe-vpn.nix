@@ -305,11 +305,13 @@ in
           instead of running melnode-dp in userspace. GPLv2, built out-of-tree
           against `config.boot.kernelPackages` for this host.
 
-          Implements the full "melnode" genl family (device/link/route/tun
-          lifecycle, Noise handshake, forwarding) - see
-          modules/melinoe-vpn-kernelspace/ARCHITECTURE.md (untracked, local
-          reference only) for the design. Still early: enable on nodes you can
-          watch closely and roll back easily, not as a default.
+          Implements the full "melnode" generic netlink (genl) family
+          (device/link/route/tun lifecycle, Noise handshake, forwarding).
+          Each netlink socket that configures the family gets its own
+          independent instance, which is destroyed when the socket closes,
+          so restarting melnode-cp restarts the data plane. Still early:
+          enable on nodes you can watch closely and roll back easily, not as
+          a default.
 
           With dataplane = "kernel", `nixos-rebuild switch` hot-swaps the
           module: melnode-cp restarts, unloads the running melnode.ko, and

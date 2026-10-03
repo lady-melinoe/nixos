@@ -18,6 +18,8 @@
 #include "melnode_genl.h"
 #include "melnode_noise.h"
 #include "melnode_cookie.h"
+#include "melnode_index.h"
+#include "melnode_ratelimiter.h"
 
 #define MELNODE_MAX_PEER 256
 #define MELNODE_HANDSHAKE_DSCP 0x88
@@ -52,9 +54,12 @@ struct melnode_hs_item {
 	u8 data[];
 };
 
+struct melnode_instance;
+
 struct melnode_link {
 	struct kref kref;
 	struct rcu_head rcu;
+	struct melnode_instance *inst;
 	u8 peer_id;
 	u8 public_key[32];
 
@@ -86,32 +91,24 @@ struct melnode_link {
 	struct list_head teardown_node;
 };
 
-struct melnode_route {
+struct melnode_routes {
 	struct rcu_head rcu;
-	u8 nexthop;
-};
-
-enum melnode_tun_state {
-	MELNODE_TUN_CREATED,
-	MELNODE_TUN_STARTED,
-	MELNODE_TUN_DESTROYING,
-};
-
-struct melnode_tun {
-	struct rcu_head rcu;
-	u8 peer_id;
-	struct net_device *dev;
-	enum melnode_tun_state state;
+	DECLARE_BITMAP(present, MELNODE_MAX_PEER);
+	u8 nexthop[MELNODE_MAX_PEER];
 };
 
 struct melnode_tun_priv {
 	u8 peer_id;
+	struct melnode_instance *inst;
 	struct gro_cells gcells;
 };
 
-struct melnode_device {
-	struct mutex config_lock;
-	bool configured;
+struct melnode_instance {
+	struct kref kref;
+	struct list_head list;
+	struct work_struct destroy_work;
+	struct net *net;
+	u32 portid;
 
 	u32 local_id;
 	u16 listen_port;
@@ -122,15 +119,15 @@ struct melnode_device {
 	u8 private_key[32];
 	u8 public_key[32];
 
-	spinlock_t attach_lock;
-	u32 attached_portid;
-
 	struct mutex tables_mutex;
-	struct melnode_route __rcu *routes[MELNODE_MAX_PEER];
+	bool dead;
+	struct melnode_routes __rcu *routes;
 	struct melnode_link __rcu *links[MELNODE_MAX_PEER];
-	struct melnode_tun __rcu *tuns[MELNODE_MAX_PEER];
+	struct net_device __rcu *tuns[MELNODE_MAX_PEER];
 
 	struct melnode_cookie_checker cookie_checker;
+	struct melnode_index_table index;
+	struct melnode_ratelimiter ratelimiter;
 
 	spinlock_t hs_lock;
 	struct list_head hs_queue;
@@ -146,6 +143,7 @@ struct melnode_device {
 	struct work_struct rx_work;
 	u8 *rx_buf;
 
+	struct mutex tun_create_lock;
 	spinlock_t pending_teardown_lock;
 	struct list_head pending_teardown;
 	struct work_struct tun_teardown_work;
@@ -153,12 +151,18 @@ struct melnode_device {
 	atomic64_t stats[MELNODE_STAT_RX_QUEUE_FULL + 1];
 };
 
-extern struct melnode_device melnode_dev;
-
 extern struct workqueue_struct *melnode_wq;
 
-void melnode_stat_inc(enum melnode_stat id);
-void melnode_get_keys(u8 public_key[32], u8 private_key[32]);
-void melnode_handle_datagram(u8 *data, size_t len, const struct melnode_endpoint *from);
+void melnode_instance_release(struct kref *kref);
+
+static inline void melnode_instance_put(struct melnode_instance *inst)
+{
+	kref_put(&inst->kref, melnode_instance_release);
+}
+
+void melnode_stat_inc(struct melnode_instance *inst, enum melnode_stat id);
+void melnode_get_keys(struct melnode_instance *inst, u8 public_key[32], u8 private_key[32]);
+void melnode_handle_datagram(struct melnode_instance *inst, u8 *data, size_t len,
+			     const struct melnode_endpoint *from);
 
 #endif

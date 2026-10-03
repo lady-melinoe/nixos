@@ -35,27 +35,27 @@ static void put_cmsg_raw(struct msghdr *msg, u8 *buf, int level, int type, const
 
 static void melnode_data_ready4(struct sock *sk)
 {
-	struct melnode_device *dev = sk->sk_user_data;
+	struct melnode_instance *inst = sk->sk_user_data;
 
-	if (!dev)
+	if (!inst)
 		return;
-	if (dev->orig_sk_data_ready4)
-		dev->orig_sk_data_ready4(sk);
-	queue_work(melnode_wq, &dev->rx_work);
+	if (inst->orig_sk_data_ready4)
+		inst->orig_sk_data_ready4(sk);
+	queue_work(melnode_wq, &inst->rx_work);
 }
 
 static void melnode_data_ready6(struct sock *sk)
 {
-	struct melnode_device *dev = sk->sk_user_data;
+	struct melnode_instance *inst = sk->sk_user_data;
 
-	if (!dev)
+	if (!inst)
 		return;
-	if (dev->orig_sk_data_ready6)
-		dev->orig_sk_data_ready6(sk);
-	queue_work(melnode_wq, &dev->rx_work);
+	if (inst->orig_sk_data_ready6)
+		inst->orig_sk_data_ready6(sk);
+	queue_work(melnode_wq, &inst->rx_work);
 }
 
-static int open_one(struct melnode_device *dev, int family, u16 local_port, u32 fwmark,
+static int open_one(struct melnode_instance *inst, int family, u16 local_port, u32 fwmark,
 		    struct socket **sockp)
 {
 	struct sockaddr_storage addr = {};
@@ -64,7 +64,7 @@ static int open_one(struct melnode_device *dev, int family, u16 local_port, u32 
 	int addr_len;
 	int err;
 
-	err = sock_create_kern(&init_net, family, SOCK_DGRAM, IPPROTO_UDP, &sock);
+	err = sock_create_kern(inst->net, family, SOCK_DGRAM, IPPROTO_UDP, &sock);
 	if (err)
 		return err;
 	sk = sock->sk;
@@ -99,12 +99,12 @@ static int open_one(struct melnode_device *dev, int family, u16 local_port, u32 
 
 	lock_sock(sk);
 	melnode_compat_sock_set_mark(sk, fwmark);
-	sk->sk_user_data = dev;
+	sk->sk_user_data = inst;
 	if (family == AF_INET) {
-		dev->orig_sk_data_ready4 = sk->sk_data_ready;
+		inst->orig_sk_data_ready4 = sk->sk_data_ready;
 		sk->sk_data_ready = melnode_data_ready4;
 	} else {
-		dev->orig_sk_data_ready6 = sk->sk_data_ready;
+		inst->orig_sk_data_ready6 = sk->sk_data_ready;
 		sk->sk_data_ready = melnode_data_ready6;
 	}
 	release_sock(sk);
@@ -113,7 +113,7 @@ static int open_one(struct melnode_device *dev, int family, u16 local_port, u32 
 	return 0;
 }
 
-int melnode_socket_open(struct melnode_device *dev, u16 local_port, u32 fwmark)
+int melnode_socket_open(struct melnode_instance *inst, u16 local_port, u32 fwmark)
 {
 	u8 *buf;
 	int err;
@@ -121,18 +121,18 @@ int melnode_socket_open(struct melnode_device *dev, u16 local_port, u32 fwmark)
 	buf = kvmalloc(MELNODE_RECV_BUF_SIZE, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
-	WRITE_ONCE(dev->rx_buf, buf);
+	WRITE_ONCE(inst->rx_buf, buf);
 
-	err = open_one(dev, AF_INET, local_port, fwmark, &dev->sock4);
+	err = open_one(inst, AF_INET, local_port, fwmark, &inst->sock4);
 	if (err) {
-		cancel_work_sync(&dev->rx_work);
-		WRITE_ONCE(dev->rx_buf, NULL);
+		cancel_work_sync(&inst->rx_work);
+		WRITE_ONCE(inst->rx_buf, NULL);
 		kvfree(buf);
 		return err;
 	}
 
-	if (open_one(dev, AF_INET6, local_port, fwmark, &dev->sock6))
-		dev->sock6 = NULL;
+	if (open_one(inst, AF_INET6, local_port, fwmark, &inst->sock6))
+		inst->sock6 = NULL;
 
 	return 0;
 }
@@ -147,27 +147,27 @@ static void detach_socket(struct socket *sock, void (*orig_data_ready)(struct so
 	write_unlock_bh(&sk->sk_callback_lock);
 }
 
-void melnode_socket_close(struct melnode_device *dev)
+void melnode_socket_close(struct melnode_instance *inst)
 {
 	struct socket *sock4, *sock6;
 
-	down_write(&dev->sock_sem);
-	sock4 = dev->sock4;
-	sock6 = dev->sock6;
-	WRITE_ONCE(dev->sock4, NULL);
-	WRITE_ONCE(dev->sock6, NULL);
-	up_write(&dev->sock_sem);
+	down_write(&inst->sock_sem);
+	sock4 = inst->sock4;
+	sock6 = inst->sock6;
+	WRITE_ONCE(inst->sock4, NULL);
+	WRITE_ONCE(inst->sock6, NULL);
+	up_write(&inst->sock_sem);
 
 	if (sock4)
-		detach_socket(sock4, dev->orig_sk_data_ready4);
+		detach_socket(sock4, inst->orig_sk_data_ready4);
 	if (sock6)
-		detach_socket(sock6, dev->orig_sk_data_ready6);
+		detach_socket(sock6, inst->orig_sk_data_ready6);
 
 	synchronize_rcu();
-	cancel_work_sync(&dev->rx_work);
+	cancel_work_sync(&inst->rx_work);
 
-	kvfree(dev->rx_buf);
-	WRITE_ONCE(dev->rx_buf, NULL);
+	kvfree(inst->rx_buf);
+	WRITE_ONCE(inst->rx_buf, NULL);
 
 	if (sock4)
 		sock_release(sock4);
@@ -175,7 +175,7 @@ void melnode_socket_close(struct melnode_device *dev)
 		sock_release(sock6);
 }
 
-int melnode_socket_send(struct melnode_device *dev, const void *buf, size_t len,
+int melnode_socket_send(struct melnode_instance *inst, const void *buf, size_t len,
 			const struct melnode_endpoint *ep, u8 tos)
 {
 	const struct sockaddr *sa = (const struct sockaddr *)ep->addr;
@@ -220,10 +220,10 @@ int melnode_socket_send(struct melnode_device *dev, const void *buf, size_t len,
 		}
 	}
 
-	down_read(&dev->sock_sem);
-	sock = sa->sa_family == AF_INET ? dev->sock4 : dev->sock6;
+	down_read(&inst->sock_sem);
+	sock = sa->sa_family == AF_INET ? inst->sock4 : inst->sock6;
 	ret = sock ? kernel_sendmsg(sock, &msg, &iov, 1, len) : -ENETUNREACH;
-	up_read(&dev->sock_sem);
+	up_read(&inst->sock_sem);
 	return ret;
 }
 
@@ -256,7 +256,7 @@ static void parse_pktinfo(const u8 *buf, size_t len, struct melnode_endpoint *ep
 	}
 }
 
-static bool drain_socket(struct socket *sock, u8 *buf)
+static bool drain_socket(struct melnode_instance *inst, struct socket *sock, u8 *buf)
 {
 	struct sockaddr_storage from;
 	union melnode_cmsg_buf cbuf;
@@ -292,7 +292,7 @@ static bool drain_socket(struct socket *sock, u8 *buf)
 		ep.addr_len = msg.msg_namelen;
 		parse_pktinfo(cbuf.raw, sizeof(cbuf.raw) - msg.msg_controllen, &ep);
 
-		melnode_handle_datagram(buf, ret, &ep);
+		melnode_handle_datagram(inst, buf, ret, &ep);
 		cond_resched();
 	}
 	return true;
@@ -300,21 +300,21 @@ static bool drain_socket(struct socket *sock, u8 *buf)
 
 static void melnode_rx_work_fn(struct work_struct *work)
 {
-	struct melnode_device *dev = container_of(work, struct melnode_device, rx_work);
-	u8 *buf = READ_ONCE(dev->rx_buf);
+	struct melnode_instance *inst = container_of(work, struct melnode_instance, rx_work);
+	u8 *buf = READ_ONCE(inst->rx_buf);
 	bool more;
 
 	if (!buf)
 		return;
 
-	more = drain_socket(READ_ONCE(dev->sock4), buf);
-	more |= drain_socket(READ_ONCE(dev->sock6), buf);
+	more = drain_socket(inst, READ_ONCE(inst->sock4), buf);
+	more |= drain_socket(inst, READ_ONCE(inst->sock6), buf);
 
 	if (more)
-		queue_work(melnode_wq, &dev->rx_work);
+		queue_work(melnode_wq, &inst->rx_work);
 }
 
-void melnode_socket_init_work(struct melnode_device *dev)
+void melnode_socket_init_work(struct melnode_instance *inst)
 {
-	INIT_WORK(&dev->rx_work, melnode_rx_work_fn);
+	INIT_WORK(&inst->rx_work, melnode_rx_work_fn);
 }

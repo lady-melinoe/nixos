@@ -73,8 +73,7 @@ type Device struct {
 		injectSent, injectDropped                                atomic.Uint64
 	}
 
-	keepCtl bool
-	ctl     *dpproto.Server
+	sess *dpproto.Session
 
 	closedFlag atomic.Bool
 	closed     chan struct{}
@@ -133,9 +132,6 @@ func (device *Device) Close() {
 		peer.Stop()
 	}
 	device.peers.RUnlock()
-	if device.ctl != nil && !device.keepCtl {
-		device.ctl.Close()
-	}
 	if device.router != nil {
 		device.router.closeAllTuns()
 	}

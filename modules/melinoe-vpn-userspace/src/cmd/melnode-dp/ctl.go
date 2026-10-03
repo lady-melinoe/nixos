@@ -1,9 +1,11 @@
 package main
 
 import (
-	"os"
+	"errors"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
 
@@ -11,12 +13,12 @@ import (
 )
 
 type ctlHandler struct {
-	srv  *dpproto.Server
-	quit func()
+	sess *dpproto.Session
 
 	mu     sync.Mutex
 	dev    *Device
 	params dpproto.DeviceSet
+	closed bool
 
 	linkMu sync.Mutex
 }
@@ -38,19 +40,45 @@ func (h *ctlHandler) current() *Device {
 	return h.dev
 }
 
-func (h *ctlHandler) Hello(dpproto.Hello) (dpproto.HelloReply, error) {
+func (h *ctlHandler) Close() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	return dpproto.HelloReply{Version: dpproto.Version, PID: uint32(os.Getpid()), Configured: h.dev != nil}, nil
+	dev := h.dev
+	h.dev = nil
+	h.closed = true
+	h.mu.Unlock()
+	if dev != nil {
+		dev.Close()
+	}
+}
+
+func openBind(port uint16) (conn.Bind, []conn.ReceiveFunc, error) {
+	deadline := time.Now().Add(restartGrace)
+	for {
+		bind := conn.NewStdNetBind()
+		fns, _, err := bind.Open(port)
+		if err == nil {
+			return bind, fns, nil
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) || time.Now().After(deadline) {
+			if errors.Is(err, syscall.EADDRINUSE) {
+				return nil, nil, dpproto.Errorf(dpproto.CodeAddrInUse, "udp port %d is already in use", port)
+			}
+			return nil, nil, dpproto.Errorf(dpproto.CodeInternal, "binding udp port %d: %v", port, err)
+		}
+		time.Sleep(restartPoll)
+	}
 }
 
 func (h *ctlHandler) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if h.closed {
+		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeNotReady, "session closed")
+	}
 	if h.dev != nil {
 		if m != h.params {
-			return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeExists, "already configured with different settings (restart the data plane to change them)")
+			return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeExists, "already configured with different settings (open a new session to change them)")
 		}
 		return dpproto.DeviceSetReply{PubKey: h.dev.staticIdentity.publicKey}, nil
 	}
@@ -68,10 +96,9 @@ func (h *ctlHandler) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, err
 		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeInvalid, "private key is all zeroes")
 	}
 
-	bind := conn.NewStdNetBind()
-	receiveFuncs, _, err := bind.Open(m.ListenPort)
+	bind, receiveFuncs, err := openBind(m.ListenPort)
 	if err != nil {
-		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeInternal, "binding udp port %d: %v", m.ListenPort, err)
+		return dpproto.DeviceSetReply{}, err
 	}
 	if m.Fwmark != 0 {
 		if err := bind.SetMark(m.Fwmark); err != nil {
@@ -85,7 +112,7 @@ func (h *ctlHandler) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, err
 	dev.log = NewLogger(LogLevelError, "")
 	dev.net.bind = bind
 	dev.router = newRouter(dev, m.LocalID)
-	dev.ctl = h.srv
+	dev.sess = h.sess
 	dev.startCryptoWorkers()
 
 	dev.net.stopping.Add(len(receiveFuncs))
@@ -100,44 +127,28 @@ func (h *ctlHandler) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, err
 }
 
 func (h *ctlHandler) Stats() ([]dpproto.Stat, error) {
-	out := []dpproto.Stat{
-		{ID: dpproto.StatPuntSent, Value: h.srv.PuntsSent()},
-		{ID: dpproto.StatPuntDropped, Value: h.srv.PuntDropped()},
-		{ID: dpproto.StatEventsDropped, Value: h.srv.EventsDropped()},
+	d, err := h.device()
+	if err != nil {
+		return nil, err
 	}
-	if d := h.current(); d != nil {
-		s := &d.stats
-		out = append(out,
-			dpproto.Stat{ID: dpproto.StatInjectSent, Value: s.injectSent.Load()},
-			dpproto.Stat{ID: dpproto.StatInjectDropped, Value: s.injectDropped.Load()},
-			dpproto.Stat{ID: dpproto.StatRxNoRoute, Value: s.rxNoRoute.Load()},
-			dpproto.Stat{ID: dpproto.StatRxTTLExpired, Value: s.rxTTL.Load()},
-			dpproto.Stat{ID: dpproto.StatRxNoTun, Value: s.rxNoTun.Load()},
-			dpproto.Stat{ID: dpproto.StatRxTunFull, Value: s.rxTunFull.Load()},
-			dpproto.Stat{ID: dpproto.StatRxBadPacket, Value: s.rxBad.Load()},
-			dpproto.Stat{ID: dpproto.StatRxQueueFull, Value: s.rxQueueFull.Load()},
-			dpproto.Stat{ID: dpproto.StatTxNoRoute, Value: s.txNoRoute.Load()},
-			dpproto.Stat{ID: dpproto.StatTxQueueFull, Value: s.txQueueFull.Load()},
-		)
-	}
-	return out, nil
+	s := &d.stats
+	return []dpproto.Stat{
+		{ID: dpproto.StatPuntSent, Value: h.sess.PuntsSent()},
+		{ID: dpproto.StatPuntDropped, Value: h.sess.PuntDropped()},
+		{ID: dpproto.StatInjectSent, Value: s.injectSent.Load()},
+		{ID: dpproto.StatInjectDropped, Value: s.injectDropped.Load()},
+		{ID: dpproto.StatRxNoRoute, Value: s.rxNoRoute.Load()},
+		{ID: dpproto.StatRxTTLExpired, Value: s.rxTTL.Load()},
+		{ID: dpproto.StatRxNoTun, Value: s.rxNoTun.Load()},
+		{ID: dpproto.StatRxTunFull, Value: s.rxTunFull.Load()},
+		{ID: dpproto.StatRxBadPacket, Value: s.rxBad.Load()},
+		{ID: dpproto.StatTxNoRoute, Value: s.txNoRoute.Load()},
+		{ID: dpproto.StatTxQueueFull, Value: s.txQueueFull.Load()},
+		{ID: dpproto.StatRxQueueFull, Value: s.rxQueueFull.Load()},
+	}, nil
 }
 
-func (h *ctlHandler) DeviceDel() error {
-	h.mu.Lock()
-	dev := h.dev
-	h.dev, h.params = nil, dpproto.DeviceSet{}
-	h.mu.Unlock()
-	if dev != nil {
-		dev.keepCtl = true
-		dev.Close()
-	}
-	return nil
-}
-
-func (h *ctlHandler) Quit() { h.quit() }
-
-func (h *ctlHandler) LinkAdd(m dpproto.LinkAdd) error {
+func (h *ctlHandler) LinkSet(m dpproto.LinkSet) error {
 	d, err := h.device()
 	if err != nil {
 		return err
@@ -240,36 +251,24 @@ func validIfName(n string) bool {
 	return n != "" && len(n) <= 15 && !strings.ContainsAny(n, "/ \t\n")
 }
 
-func (h *ctlHandler) TunCreate(m dpproto.TunCreate) (dpproto.TunCreateReply, error) {
+func (h *ctlHandler) TunSet(m dpproto.TunSet) (dpproto.TunInfo, error) {
 	d, err := h.device()
 	if err != nil {
-		return dpproto.TunCreateReply{}, err
+		return dpproto.TunInfo{}, err
 	}
 	if m.PeerID > 255 {
-		return dpproto.TunCreateReply{}, dpproto.Errorf(dpproto.CodeInvalid, "peerid %d out of range (0-255)", m.PeerID)
+		return dpproto.TunInfo{}, dpproto.Errorf(dpproto.CodeInvalid, "peerid %d out of range (0-255)", m.PeerID)
 	}
 	if m.PeerID == d.localID {
-		return dpproto.TunCreateReply{}, dpproto.Errorf(dpproto.CodeInvalid, "no tun for this node itself (peerid %d)", m.PeerID)
+		return dpproto.TunInfo{}, dpproto.Errorf(dpproto.CodeInvalid, "no tun for this node itself (peerid %d)", m.PeerID)
 	}
 	if !validIfName(m.Name) {
-		return dpproto.TunCreateReply{}, dpproto.Errorf(dpproto.CodeInvalid, "invalid interface name %q", m.Name)
+		return dpproto.TunInfo{}, dpproto.Errorf(dpproto.CodeInvalid, "invalid interface name %q", m.Name)
 	}
-	name, started, err := d.router.CreateTun(m.PeerID, m.Name)
-	if err != nil {
-		return dpproto.TunCreateReply{}, err
-	}
-	return dpproto.TunCreateReply{Name: name, Started: started}, nil
+	return d.router.CreateTun(m.PeerID, m.Name)
 }
 
-func (h *ctlHandler) TunStart(peerID uint32) error {
-	d, err := h.device()
-	if err != nil {
-		return err
-	}
-	return d.router.StartTun(peerID)
-}
-
-func (h *ctlHandler) TunDestroy(peerID uint32) error {
+func (h *ctlHandler) TunDel(peerID uint32) error {
 	d, err := h.device()
 	if err != nil {
 		return err
@@ -286,25 +285,12 @@ func (h *ctlHandler) TunList() ([]dpproto.TunInfo, error) {
 	return d.router.Tuns(), nil
 }
 
-func (h *ctlHandler) RouteSet(r dpproto.Route) error {
+func (h *ctlHandler) RouteSet(routes []dpproto.Route) error {
 	d, err := h.device()
 	if err != nil {
 		return err
 	}
-	if r.Dst > 255 || r.NextHop > 255 {
-		return dpproto.Errorf(dpproto.CodeInvalid, "route %d via %d: peerids are 0-255", r.Dst, r.NextHop)
-	}
-	d.router.SetRoute(r.Dst, r.NextHop)
-	return nil
-}
-
-func (h *ctlHandler) RouteDel(dst uint32) error {
-	d, err := h.device()
-	if err != nil {
-		return err
-	}
-	d.router.DelRoute(dst)
-	return nil
+	return d.router.ReplaceRoutes(routes)
 }
 
 func (h *ctlHandler) RouteList() ([]dpproto.Route, error) {

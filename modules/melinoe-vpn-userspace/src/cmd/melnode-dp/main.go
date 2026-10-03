@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
-	"sync"
 	"syscall"
 
 	"melnode/dpproto"
@@ -39,29 +38,19 @@ func main() {
 		}()
 	}
 
-	quit := make(chan struct{})
-	var quitOnce sync.Once
-	h := &ctlHandler{quit: func() { quitOnce.Do(func() { close(quit) }) }}
-	srv, err := dpproto.NewServer(*socket, h)
+	srv, err := dpproto.NewServer(*socket, func(s *dpproto.Session) dpproto.Handler {
+		return &ctlHandler{sess: s}
+	})
 	if err != nil {
 		log.Fatalf("control socket: failed to listen on %s: %v", *socket, err)
 	}
-	h.srv = srv
 	go srv.Run()
-	log.Printf("control socket listening on %s (waiting for melnode-cp to configure this data plane)", *socket)
+	log.Printf("control socket listening on %s (each connection is an independent data plane instance)", *socket)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	select {
-	case sig := <-sigCh:
-		log.Printf("received %v, shutting down", sig)
-	case <-quit:
-		log.Print("shutdown requested by the control plane")
-	}
-	if dev := h.current(); dev != nil {
-		dev.Close()
-	} else {
-		srv.Close()
-	}
+	sig := <-sigCh
+	log.Printf("received %v, shutting down", sig)
+	srv.Close()
 	log.Print("exiting")
 }

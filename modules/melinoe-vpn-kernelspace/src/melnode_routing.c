@@ -32,19 +32,22 @@ static void link_release(struct kref *kref)
 {
 	struct melnode_link *link = container_of(kref, struct melnode_link, kref);
 
+	struct melnode_instance *inst = link->inst;
+
 	ptr_ring_cleanup(&link->outq, item_free);
 	memzero_explicit(&link->keypairs, sizeof(link->keypairs));
 	memzero_explicit(&link->handshake, sizeof(link->handshake));
 	memzero_explicit(&link->cookie, sizeof(link->cookie));
 	kfree_rcu(link, rcu);
+	melnode_instance_put(inst);
 }
 
-struct melnode_link *melnode_link_get(u8 peer_id)
+struct melnode_link *melnode_link_get(struct melnode_instance *inst, u8 peer_id)
 {
 	struct melnode_link *link;
 
 	rcu_read_lock();
-	link = rcu_dereference(melnode_dev.links[peer_id]);
+	link = rcu_dereference(inst->links[peer_id]);
 	if (link && !kref_get_unless_zero(&link->kref))
 		link = NULL;
 	rcu_read_unlock();
@@ -223,7 +226,8 @@ static size_t melnode_padding_size(size_t len, u32 mtu)
 
 int melnode_routing_send_now(struct melnode_link *link, const u8 *plain, size_t plain_len)
 {
-	size_t pad = melnode_padding_size(plain_len, READ_ONCE(melnode_dev.mtu) + MELNODE_HDR_LEN);
+	struct melnode_instance *inst = link->inst;
+	size_t pad = melnode_padding_size(plain_len, READ_ONCE(inst->mtu) + MELNODE_HDR_LEN);
 	size_t enc_len = plain_len + pad;
 	size_t out_len = sizeof(struct melnode_wire_data) + melnode_noise_encrypted_len(enc_len);
 	u8 key[MELNODE_NOISE_SYMMETRIC_KEY_LEN];
@@ -273,7 +277,7 @@ int melnode_routing_send_now(struct melnode_link *link, const u8 *plain, size_t 
 	melnode_transport_encrypt(out->encrypted_data, out->encrypted_data, enc_len, key, counter);
 	memzero_explicit(key, sizeof(key));
 
-	if (melnode_socket_send(&melnode_dev, out, out_len, &endpoint, 0) < 0)
+	if (melnode_socket_send(inst, out, out_len, &endpoint, 0) < 0)
 		ret = -EIO;
 	else
 		atomic64_add(out_len, &link->tx_bytes);
@@ -294,7 +298,7 @@ static void outq_work_fn(struct work_struct *work)
 
 		if (err == -ENOENT) {
 			melnode_send_initiation(link, false);
-			melnode_stat_inc(MELNODE_STAT_TX_NO_ROUTE);
+			melnode_stat_inc(link->inst, MELNODE_STAT_TX_NO_ROUTE);
 		}
 		item_free(item);
 		cond_resched();
@@ -312,12 +316,13 @@ int melnode_routing_link_init(struct melnode_link *link)
 	return ptr_ring_init(&link->outq, MELNODE_LINK_OUTQ_SIZE, GFP_KERNEL);
 }
 
-static int send_via_link(u8 link_peer_id, u8 *plain, size_t plain_len)
+static int send_via_link(struct melnode_instance *inst, u8 link_peer_id, u8 *plain,
+			 size_t plain_len)
 {
 	struct melnode_link *link;
 	struct melnode_routing_item *item;
 
-	link = melnode_link_get(link_peer_id);
+	link = melnode_link_get(inst, link_peer_id);
 	if (!link) {
 		kfree(plain);
 		return -ENOLINK;
@@ -345,36 +350,36 @@ static int send_via_link(u8 link_peer_id, u8 *plain, size_t plain_len)
 	return 0;
 }
 
-int melnode_routing_route_and_send(u8 dst_peer_id, u8 *plain, size_t plain_len)
+int melnode_routing_route_and_send(struct melnode_instance *inst, u8 dst_peer_id, u8 *plain,
+				   size_t plain_len)
 {
-	struct melnode_route *route;
+	struct melnode_routes *routes;
 	u8 nexthop;
 
 	rcu_read_lock();
-	route = rcu_dereference(melnode_dev.routes[dst_peer_id]);
-	if (!route) {
+	routes = rcu_dereference(inst->routes);
+	if (!routes || !test_bit(dst_peer_id, routes->present)) {
 		rcu_read_unlock();
 		kfree(plain);
 		return -ENODEV;
 	}
-	nexthop = route->nexthop;
+	nexthop = routes->nexthop[dst_peer_id];
 	rcu_read_unlock();
 
-	return send_via_link(nexthop, plain, plain_len);
+	return send_via_link(inst, nexthop, plain, plain_len);
 }
 
-static void deliver_local(u8 src, u8 *plain, size_t plain_len)
+static void deliver_local(struct melnode_instance *inst, u8 src, u8 *plain, size_t plain_len)
 {
 	size_t len = plain_len - MELNODE_HDR_LEN;
 	const u8 *data = plain + MELNODE_HDR_LEN;
 	struct melnode_tun_priv *priv;
-	struct melnode_tun *tun;
 	struct net_device *dev;
 	struct sk_buff *skb;
 	__be16 proto;
 
 	if (!len) {
-		melnode_stat_inc(MELNODE_STAT_RX_BAD_PACKET);
+		melnode_stat_inc(inst, MELNODE_STAT_RX_BAD_PACKET);
 		goto out_free;
 	}
 	switch (data[0] >> 4) {
@@ -385,13 +390,13 @@ static void deliver_local(u8 src, u8 *plain, size_t plain_len)
 		proto = htons(ETH_P_IPV6);
 		break;
 	default:
-		melnode_stat_inc(MELNODE_STAT_RX_BAD_PACKET);
+		melnode_stat_inc(inst, MELNODE_STAT_RX_BAD_PACKET);
 		goto out_free;
 	}
 
 	skb = alloc_skb(len, GFP_KERNEL);
 	if (!skb) {
-		melnode_stat_inc(MELNODE_STAT_RX_QUEUE_FULL);
+		melnode_stat_inc(inst, MELNODE_STAT_RX_QUEUE_FULL);
 		goto out_free;
 	}
 	skb_put_data(skb, data, len);
@@ -399,20 +404,19 @@ static void deliver_local(u8 src, u8 *plain, size_t plain_len)
 	skb_reset_network_header(skb);
 
 	rcu_read_lock();
-	tun = rcu_dereference(melnode_dev.tuns[src]);
-	if (!tun || READ_ONCE(tun->state) != MELNODE_TUN_STARTED) {
+	dev = rcu_dereference(inst->tuns[src]);
+	if (!dev || !(READ_ONCE(dev->flags) & IFF_UP)) {
 		rcu_read_unlock();
 		kfree_skb(skb);
-		melnode_stat_inc(MELNODE_STAT_RX_NO_TUN);
+		melnode_stat_inc(inst, MELNODE_STAT_RX_NO_TUN);
 		goto out_free;
 	}
-	dev = tun->dev;
 	skb->dev = dev;
 	priv = netdev_priv(dev);
 
 	local_bh_disable();
 	if (melnode_compat_gro_receive(&priv->gcells, skb) == NET_RX_DROP) {
-		melnode_stat_inc(MELNODE_STAT_RX_TUN_FULL);
+		melnode_stat_inc(inst, MELNODE_STAT_RX_TUN_FULL);
 		DEV_STATS_INC(dev, rx_dropped);
 	} else {
 		DEV_STATS_INC(dev, rx_packets);
@@ -446,30 +450,31 @@ static bool trim_ip(size_t *plain_len, const u8 *plain)
 	return true;
 }
 
-void melnode_routing_deliver_or_forward(u8 src, u8 dst, u8 ttl, u8 *plain, size_t plain_len)
+void melnode_routing_deliver_or_forward(struct melnode_instance *inst, u8 src, u8 dst, u8 ttl,
+					u8 *plain, size_t plain_len)
 {
 	int err;
 
 	if (!trim_ip(&plain_len, plain)) {
 		kfree(plain);
-		melnode_stat_inc(MELNODE_STAT_RX_BAD_PACKET);
+		melnode_stat_inc(inst, MELNODE_STAT_RX_BAD_PACKET);
 		return;
 	}
 
-	if (dst == READ_ONCE(melnode_dev.local_id)) {
-		deliver_local(src, plain, plain_len);
+	if (dst == READ_ONCE(inst->local_id)) {
+		deliver_local(inst, src, plain, plain_len);
 		return;
 	}
 
 	if (ttl <= 1) {
 		kfree(plain);
-		melnode_stat_inc(MELNODE_STAT_RX_TTL_EXPIRED);
+		melnode_stat_inc(inst, MELNODE_STAT_RX_TTL_EXPIRED);
 		return;
 	}
 	plain[MELNODE_HDR_OFF_TTL] = ttl - 1;
 
-	err = melnode_routing_route_and_send(dst, plain, plain_len);
+	err = melnode_routing_route_and_send(inst, dst, plain, plain_len);
 	if (err)
-		melnode_stat_inc(err == -ENOSPC ? MELNODE_STAT_RX_QUEUE_FULL :
-						  MELNODE_STAT_RX_NO_ROUTE);
+		melnode_stat_inc(inst, err == -ENOSPC ? MELNODE_STAT_RX_QUEUE_FULL :
+							MELNODE_STAT_RX_NO_ROUTE);
 }

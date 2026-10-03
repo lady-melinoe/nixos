@@ -10,7 +10,7 @@ import (
 
 func roundTrip(t *testing.T, put func(*nlb), get func(attrs) error) {
 	t.Helper()
-	b := newNL(FamilyID, 0, 1, 0, CmdHello, uint8(Version))
+	b := newNL(FamilyID, 0, 1, 0, CmdLinkSet, uint8(Version))
 	put(b)
 	msgs, err := splitMessages(b.bytes())
 	if err != nil || len(msgs) != 1 {
@@ -31,23 +31,23 @@ func TestCodecRoundTrip(t *testing.T) {
 		k[i] = byte(i)
 	}
 	{
-		want := LinkAdd{PeerID: 7, PubKey: k, Endpoint: "[2001:db8::1]:60198"}
-		var got LinkAdd
+		want := LinkSet{PeerID: 7, PubKey: k, Endpoint: "[2001:db8::1]:60198"}
+		var got LinkSet
 		roundTrip(t, func(b *nlb) {
 			if err := want.put(b); err != nil {
 				t.Fatal(err)
 			}
 		}, got.get)
 		if got != want {
-			t.Fatalf("LinkAdd: %+v", got)
+			t.Fatalf("LinkSet: %+v", got)
 		}
 	}
 	{
-		want := LinkAdd{PeerID: 7, PubKey: k}
-		var got LinkAdd
+		want := LinkSet{PeerID: 7, PubKey: k}
+		var got LinkSet
 		roundTrip(t, func(b *nlb) { _ = want.put(b) }, got.get)
 		if got != want {
-			t.Fatalf("listen-only LinkAdd: %+v", got)
+			t.Fatalf("listen-only LinkSet: %+v", got)
 		}
 	}
 	check := func(name string, put func(*nlb), get func(attrs) error, eq func() bool) {
@@ -57,17 +57,13 @@ func TestCodecRoundTrip(t *testing.T) {
 			t.Fatalf("%s did not round trip", name)
 		}
 	}
-	hr, ghr := HelloReply{Version: Version, PID: 4242, Configured: true}, HelloReply{}
-	check("HelloReply", hr.put, ghr.get, func() bool { return ghr == hr })
 	ds, gds := DeviceSet{LocalID: 3, PrivateKey: k, ListenPort: 60198, Fwmark: 0x1234, MTU: 1416}, DeviceSet{}
 	check("DeviceSet", ds.put, gds.get, func() bool { return gds == ds })
 	dr, gdr := DeviceSetReply{PubKey: k}, DeviceSetReply{}
 	check("DeviceSetReply", dr.put, gdr.get, func() bool { return gdr == dr })
-	tc, gtc := TunCreate{PeerID: 4, Name: "node-4"}, TunCreate{}
-	check("TunCreate", tc.put, gtc.get, func() bool { return gtc == tc })
-	tr, gtr := TunCreateReply{Name: "node-4", Started: true}, TunCreateReply{}
-	check("TunCreateReply", tr.put, gtr.get, func() bool { return gtr == tr })
-	ti, gti := TunInfo{PeerID: 4, Name: "node-4", MTU: 1416, Started: true}, TunInfo{}
+	ts, gts := TunSet{PeerID: 4, Name: "node-4"}, TunSet{}
+	check("TunSet", ts.put, gts.get, func() bool { return gts == ts })
+	ti, gti := TunInfo{PeerID: 4, Name: "node-4", IfIndex: 17}, TunInfo{}
 	check("TunInfo", ti.put, gti.get, func() bool { return gti == ti })
 	rt, grt := Route{Dst: 3, NextHop: 4}, Route{}
 	check("Route", rt.put, grt.get, func() bool { return grt == rt })
@@ -75,12 +71,23 @@ func TestCodecRoundTrip(t *testing.T) {
 	check("Stat", st.put, gst.get, func() bool { return gst == st })
 	li, gli := LinkInfo{PeerID: 1, PubKey: k, Endpoint: "1.2.3.4:5", LastHandshakeUnixNano: 99, TxBytes: 1 << 33, RxBytes: 2}, LinkInfo{}
 	check("LinkInfo", func(b *nlb) { _ = li.put(b) }, gli.get, func() bool { return gli == li })
-	ev, gev := Event{Kind: EventLinkHandshake, PeerID: 2, UnixNano: 123456789, Endpoint: "[::1]:60198"}, Event{}
-	check("Event", func(b *nlb) { _ = ev.put(b) }, gev.get, func() bool { return gev == ev })
 	p, gp := Punt{Ingress: 9, Proto: 2, Src: 1, Dst: 3, TTL: 1, Payload: []byte("hello\x00\x00")}, Punt{}
 	check("Punt", p.put, gp.get, func() bool { return reflect.DeepEqual(gp, p) })
 	in, gin := Inject{Link: 2, Proto: 1, Dst: 2, TTL: 1, Payload: []byte{1, 2, 3}}, Inject{}
 	check("Inject", in.put, gin.get, func() bool { return reflect.DeepEqual(gin, in) })
+	routes := []Route{{Dst: 1, NextHop: 2}, {Dst: 3, NextHop: 2}, {Dst: 9, NextHop: 4}}
+	var gotRoutes []Route
+	roundTrip(t, func(b *nlb) { putRoutes(b, routes) }, func(a attrs) (err error) { gotRoutes, err = getRoutes(a); return })
+	if !reflect.DeepEqual(gotRoutes, routes) {
+		t.Fatalf("route table: %+v", gotRoutes)
+	}
+	roundTrip(t, func(b *nlb) { putRoutes(b, nil) }, func(a attrs) (err error) { gotRoutes, err = getRoutes(a); return })
+	if len(gotRoutes) != 0 {
+		t.Fatalf("empty route table: %+v", gotRoutes)
+	}
+	if _, err := getRoutes(attrs{}); !IsCode(err, CodeInvalid) {
+		t.Fatalf("missing route table: %v", err)
+	}
 	gp = Punt{}
 	roundTrip(t, Punt{Proto: 1}.put, gp.get)
 	if len(gp.Payload) != 0 {
@@ -157,24 +164,26 @@ func TestErrorMessages(t *testing.T) {
 	}
 }
 
+type dpRegistry struct {
+	mu     sync.Mutex
+	closed int
+}
+
 type fakeDP struct {
-	mu         sync.Mutex
-	links      map[uint32]LinkAdd
-	tuns       map[uint32]*TunInfo
-	routes     map[uint32]uint32
-	injects    chan Inject
-	dev        *DeviceSet
-	deviceDels int
-	quit       chan struct{}
+	reg     *dpRegistry
+	sess    *Session
+	mu      sync.Mutex
+	links   map[uint32]LinkSet
+	tuns    map[uint32]TunInfo
+	routes  map[uint32]uint32
+	injects chan Inject
+	dev     *DeviceSet
 }
 
-func newFakeDP() *fakeDP {
-	return &fakeDP{links: map[uint32]LinkAdd{}, tuns: map[uint32]*TunInfo{}, routes: map[uint32]uint32{}, injects: make(chan Inject, 16), quit: make(chan struct{})}
+func newFakeDP(reg *dpRegistry, sess *Session) *fakeDP {
+	return &fakeDP{reg: reg, sess: sess, links: map[uint32]LinkSet{}, tuns: map[uint32]TunInfo{}, routes: map[uint32]uint32{}, injects: make(chan Inject, 16)}
 }
 
-func (f *fakeDP) Hello(Hello) (HelloReply, error) {
-	return HelloReply{Version: Version, PID: 99}, nil
-}
 func (f *fakeDP) DeviceSet(m DeviceSet) (DeviceSetReply, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -182,19 +191,10 @@ func (f *fakeDP) DeviceSet(m DeviceSet) (DeviceSetReply, error) {
 		return DeviceSetReply{}, Errorf(CodeExists, "configured differently")
 	}
 	f.dev = &m
-	return DeviceSetReply{PubKey: [32]byte{0xaa}}, nil
+	return DeviceSetReply{PubKey: [32]byte{0xaa, byte(m.LocalID)}}, nil
 }
 func (f *fakeDP) Stats() ([]Stat, error) { return []Stat{{StatPuntSent, 5}}, nil }
-func (f *fakeDP) DeviceDel() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.dev = nil
-	f.links, f.tuns, f.routes = map[uint32]LinkAdd{}, map[uint32]*TunInfo{}, map[uint32]uint32{}
-	f.deviceDels++
-	return nil
-}
-func (f *fakeDP) Quit() { close(f.quit) }
-func (f *fakeDP) LinkAdd(m LinkAdd) error {
+func (f *fakeDP) LinkSet(m LinkSet) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if old, ok := f.links[m.PeerID]; ok && old.PubKey != m.PubKey {
@@ -221,29 +221,26 @@ func (f *fakeDP) LinkList() ([]LinkInfo, error) {
 	}
 	return out, nil
 }
-func (f *fakeDP) TunCreate(m TunCreate) (TunCreateReply, error) {
+func (f *fakeDP) TunSet(m TunSet) (TunInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if t, ok := f.tuns[m.PeerID]; ok {
-		return TunCreateReply{Name: t.Name, Started: t.Started}, nil
+		if t.Name != m.Name {
+			return TunInfo{}, Errorf(CodeExists, "tun %d is named %q", m.PeerID, t.Name)
+		}
+		return t, nil
 	}
-	f.tuns[m.PeerID] = &TunInfo{PeerID: m.PeerID, Name: m.Name}
-	return TunCreateReply{Name: m.Name}, nil
+	t := TunInfo{PeerID: m.PeerID, Name: m.Name, IfIndex: 100 + m.PeerID}
+	f.tuns[m.PeerID] = t
+	return t, nil
 }
-func (f *fakeDP) TunStart(id uint32) error {
+func (f *fakeDP) TunDel(id uint32) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	t, ok := f.tuns[id]
-	if !ok {
+	if _, ok := f.tuns[id]; !ok {
 		return Errorf(CodeNotFound, "no tun %d", id)
 	}
-	t.Started = true
-	return nil
-}
-func (f *fakeDP) TunDestroy(id uint32) error {
-	f.mu.Lock()
 	delete(f.tuns, id)
-	f.mu.Unlock()
 	return nil
 }
 func (f *fakeDP) TunList() ([]TunInfo, error) {
@@ -251,20 +248,21 @@ func (f *fakeDP) TunList() ([]TunInfo, error) {
 	defer f.mu.Unlock()
 	var out []TunInfo
 	for _, t := range f.tuns {
-		out = append(out, *t)
+		out = append(out, t)
 	}
 	return out, nil
 }
-func (f *fakeDP) RouteSet(r Route) error {
+func (f *fakeDP) RouteSet(rs []Route) error {
 	f.mu.Lock()
-	f.routes[r.Dst] = r.NextHop
-	f.mu.Unlock()
-	return nil
-}
-func (f *fakeDP) RouteDel(d uint32) error {
-	f.mu.Lock()
-	delete(f.routes, d)
-	f.mu.Unlock()
+	defer f.mu.Unlock()
+	next := map[uint32]uint32{}
+	for _, r := range rs {
+		if _, dup := next[r.Dst]; dup {
+			return Errorf(CodeInvalid, "duplicate destination %d", r.Dst)
+		}
+		next[r.Dst] = r.NextHop
+	}
+	f.routes = next
 	return nil
 }
 func (f *fakeDP) RouteList() ([]Route, error) {
@@ -277,41 +275,78 @@ func (f *fakeDP) RouteList() ([]Route, error) {
 	return out, nil
 }
 func (f *fakeDP) Inject(m Inject) { f.injects <- m }
+func (f *fakeDP) Close() {
+	f.reg.mu.Lock()
+	f.reg.closed++
+	f.reg.mu.Unlock()
+}
 
-func TestClientServer(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "dp.sock")
-	h := newFakeDP()
-	srv, err := NewServer(sock, h)
+func (r *dpRegistry) closedCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closed
+}
+
+type testServer struct {
+	srv  *Server
+	sock string
+	reg  *dpRegistry
+	mu   sync.Mutex
+	dps  []*fakeDP
+}
+
+func (ts *testServer) dp(i int) *fakeDP {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.dps[i]
+}
+
+func startServer(t *testing.T, prepare func(*fakeDP)) *testServer {
+	t.Helper()
+	ts := &testServer{sock: filepath.Join(t.TempDir(), "dp.sock"), reg: &dpRegistry{}}
+	srv, err := NewServer(ts.sock, func(s *Session) Handler {
+		f := newFakeDP(ts.reg, s)
+		if prepare != nil {
+			prepare(f)
+		}
+		ts.mu.Lock()
+		ts.dps = append(ts.dps, f)
+		ts.mu.Unlock()
+		return f
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srv.Close()
+	ts.srv = srv
 	go srv.Run()
+	t.Cleanup(srv.Close)
+	return ts
+}
 
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestClientServer(t *testing.T) {
+	ts := startServer(t, nil)
 	punts := make(chan Punt, 4)
-	events := make(chan Event, 4)
-	cl, err := Dial(sock, func(p Punt) { punts <- p }, func(e Event) { events <- e })
+	cl, err := Dial(ts.sock, func(p Punt) { punts <- p })
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cl.Close()
-
-	hr, err := cl.Hello()
-	if err != nil || hr.PID != 99 || hr.Configured {
-		t.Fatalf("hello: %v %+v", err, hr)
-	}
-	if srv.Connected() {
-		t.Fatal("a session that has not Attached must not be the control plane")
-	}
-	if err := cl.Attach(); err != nil {
-		t.Fatal(err)
-	}
-	if !srv.Connected() {
-		t.Fatal("Attach did not register the session")
-	}
+	waitFor(t, "session", func() bool { return ts.srv.Sessions() == 1 })
+	h := ts.dp(0)
 
 	ds := DeviceSet{LocalID: 1, ListenPort: 60198, MTU: 1416}
-	if r, err := cl.DeviceSet(ds); err != nil || r.PubKey != [32]byte{0xaa} {
+	if r, err := cl.DeviceSet(ds); err != nil || r.PubKey != [32]byte{0xaa, 1} {
 		t.Fatalf("DeviceSet: %v %+v", err, r)
 	}
 	if _, err := cl.DeviceSet(ds); err != nil {
@@ -327,10 +362,10 @@ func TestClientServer(t *testing.T) {
 
 	var k1, k2 [32]byte
 	k1[0], k2[0] = 1, 2
-	if err := cl.LinkAdd(LinkAdd{PeerID: 5, PubKey: k1, Endpoint: "1.1.1.1:1"}); err != nil {
+	if err := cl.LinkSet(LinkSet{PeerID: 5, PubKey: k1, Endpoint: "1.1.1.1:1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cl.LinkAdd(LinkAdd{PeerID: 5, PubKey: k2}); !IsCode(err, CodeExists) {
+	if err := cl.LinkSet(LinkSet{PeerID: 5, PubKey: k2}); !IsCode(err, CodeExists) {
 		t.Fatalf("want CodeExists, got %v", err)
 	}
 	if err := cl.LinkDel(99); !IsCode(err, CodeNotFound) {
@@ -340,26 +375,45 @@ func TestClientServer(t *testing.T) {
 		t.Fatalf("LinkList: %v %+v", err, l)
 	}
 
-	if r, err := cl.TunCreate(4, "node-4"); err != nil || r.Name != "node-4" || r.Started {
-		t.Fatalf("TunCreate: %v %+v", err, r)
+	if r, err := cl.TunSet(TunSet{PeerID: 4, Name: "node-4"}); err != nil || r.Name != "node-4" || r.IfIndex != 104 {
+		t.Fatalf("TunSet: %v %+v", err, r)
 	}
-	if err := cl.TunStart(4); err != nil {
+	if _, err := cl.TunSet(TunSet{PeerID: 4, Name: "node-4"}); err != nil {
+		t.Fatalf("repeating an identical TunSet must succeed: %v", err)
+	}
+	if _, err := cl.TunSet(TunSet{PeerID: 4, Name: "other"}); !IsCode(err, CodeExists) {
+		t.Fatalf("renaming a tun: want CodeExists, got %v", err)
+	}
+	if tl, err := cl.TunList(); err != nil || len(tl) != 1 || tl[0].IfIndex != 104 {
+		t.Fatalf("TunList: %v %+v", err, tl)
+	}
+
+	if err := cl.RouteSet([]Route{{Dst: 4, NextHop: 5}, {Dst: 6, NextHop: 5}}); err != nil {
 		t.Fatal(err)
 	}
-	if r, _ := cl.TunCreate(4, "node-4"); !r.Started {
-		t.Fatal("TunCreate on existing started tun should report Started")
-	}
-	if err := cl.RouteSet(Route{Dst: 4, NextHop: 5}); err != nil {
-		t.Fatal(err)
-	}
-	if rl, err := cl.RouteList(); err != nil || len(rl) != 1 || rl[0] != (Route{4, 5}) {
+	if rl, err := cl.RouteList(); err != nil || len(rl) != 2 {
 		t.Fatalf("RouteList: %v %+v", err, rl)
 	}
-	if err := cl.RouteDel(4); err != nil {
+	if err := cl.RouteSet([]Route{{Dst: 7, NextHop: 5}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cl.TunDestroy(4); err != nil {
+	if rl, err := cl.RouteList(); err != nil || len(rl) != 1 || rl[0] != (Route{7, 5}) {
+		t.Fatalf("RouteSet must replace the whole table: %v %+v", err, rl)
+	}
+	if err := cl.RouteSet([]Route{{Dst: 7, NextHop: 5}, {Dst: 7, NextHop: 6}}); !IsCode(err, CodeInvalid) {
+		t.Fatalf("duplicate destination: %v", err)
+	}
+	if err := cl.RouteSet(nil); err != nil {
 		t.Fatal(err)
+	}
+	if rl, err := cl.RouteList(); err != nil || len(rl) != 0 {
+		t.Fatalf("an empty table must clear the routes: %v %+v", err, rl)
+	}
+	if err := cl.TunDel(4); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.TunDel(4); !IsCode(err, CodeNotFound) {
+		t.Fatalf("second TunDel: %v", err)
 	}
 
 	if err := cl.ack(99, nil); !IsCode(err, CodeUnsupported) {
@@ -368,15 +422,8 @@ func TestClientServer(t *testing.T) {
 	if err := cl.ack(CmdLinkDel, nil); !IsCode(err, CodeInvalid) {
 		t.Fatalf("missing attribute: %v", err)
 	}
-
-	if err := cl.DeviceDel(); err != nil {
-		t.Fatal(err)
-	}
-	if l, _ := cl.LinkList(); len(l) != 0 {
-		t.Fatalf("links survived DeviceDel: %+v", l)
-	}
-	if _, err := cl.DeviceSet(ds); err != nil {
-		t.Fatalf("DeviceSet after DeviceDel: %v", err)
+	if err := cl.ack(CmdRouteSet, nil); !IsCode(err, CodeInvalid) {
+		t.Fatalf("ROUTE_SET without a table: %v", err)
 	}
 
 	if err := cl.Inject(Inject{Link: 5, Proto: 1, Dst: 5, TTL: 1, Payload: []byte("ping")}); err != nil {
@@ -391,17 +438,7 @@ func TestClientServer(t *testing.T) {
 		t.Fatal("inject not delivered")
 	}
 
-	srv.Event(Event{Kind: EventLinkHandshake, PeerID: 5, UnixNano: 42, Endpoint: "1.2.3.4:5"})
-	select {
-	case e := <-events:
-		if e.PeerID != 5 || e.Endpoint != "1.2.3.4:5" {
-			t.Fatalf("event: %+v", e)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("event not delivered")
-	}
-
-	srv.Punt(Punt{Ingress: 5, Proto: 2, Src: 5, Dst: 1, TTL: 1, Payload: []byte("pv")})
+	h.sess.Punt(Punt{Ingress: 5, Proto: 2, Src: 5, Dst: 1, TTL: 1, Payload: []byte("pv")})
 	select {
 	case p := <-punts:
 		if p.Ingress != 5 || p.Proto != 2 || string(p.Payload) != "pv" {
@@ -410,21 +447,129 @@ func TestClientServer(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("punt not delivered")
 	}
+	if h.sess.PuntsSent() != 1 || h.sess.PuntDropped() != 0 {
+		t.Fatalf("punt counters: sent %d dropped %d", h.sess.PuntsSent(), h.sess.PuntDropped())
+	}
 }
 
-func TestDumpsAreMultipart(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "dp.sock")
-	h := newFakeDP()
-	for i := uint32(0); i < 200; i++ {
-		h.links[i] = LinkAdd{PeerID: i, PubKey: [32]byte{byte(i)}, Endpoint: "10.0.0.1:1"}
+func TestSessionsAreIndependent(t *testing.T) {
+	ts := startServer(t, nil)
+	punts := [2]chan Punt{make(chan Punt, 4), make(chan Punt, 4)}
+	var cls [2]*Client
+	for i := range cls {
+		cl, err := Dial(ts.sock, func(p Punt) { punts[i] <- p })
+		if err != nil {
+			t.Fatal(err)
+		}
+		cls[i] = cl
+		waitFor(t, "session", func() bool { return ts.srv.Sessions() == i+1 })
 	}
-	srv, err := NewServer(sock, h)
+	defer cls[1].Close()
+
+	for i, cl := range cls {
+		r, err := cl.DeviceSet(DeviceSet{LocalID: uint32(i + 1), ListenPort: uint16(60000 + i), MTU: 1416})
+		if err != nil || r.PubKey[1] != byte(i+1) {
+			t.Fatalf("session %d DeviceSet: %v %+v", i, err, r)
+		}
+		if err := cl.LinkSet(LinkSet{PeerID: uint32(10 + i), PubKey: [32]byte{byte(i + 1)}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.RouteSet([]Route{{Dst: uint32(20 + i), NextHop: uint32(10 + i)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, cl := range cls {
+		l, err := cl.LinkList()
+		if err != nil || len(l) != 1 || l[0].PeerID != uint32(10+i) {
+			t.Fatalf("session %d sees %+v (%v)", i, l, err)
+		}
+		rl, err := cl.RouteList()
+		if err != nil || len(rl) != 1 || rl[0].Dst != uint32(20+i) {
+			t.Fatalf("session %d routes %+v (%v)", i, rl, err)
+		}
+	}
+
+	ts.dp(0).sess.Punt(Punt{Proto: 2, Payload: []byte("a")})
+	ts.dp(1).sess.Punt(Punt{Proto: 2, Payload: []byte("b")})
+	for i, want := range []string{"a", "b"} {
+		select {
+		case p := <-punts[i]:
+			if string(p.Payload) != want {
+				t.Fatalf("session %d got punt %q", i, p.Payload)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("session %d punt not delivered", i)
+		}
+		select {
+		case p := <-punts[i]:
+			t.Fatalf("session %d got a second punt %q", i, p.Payload)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	cls[0].Close()
+	waitFor(t, "first session teardown", func() bool { return ts.reg.closedCount() == 1 })
+	if ts.srv.Sessions() != 1 {
+		t.Fatalf("sessions after one close: %d", ts.srv.Sessions())
+	}
+	if l, err := cls[1].LinkList(); err != nil || len(l) != 1 || l[0].PeerID != 11 {
+		t.Fatalf("closing one session disturbed the other: %v %+v", err, l)
+	}
+	select {
+	case <-cls[1].Done():
+		t.Fatal("the surviving session was closed")
+	default:
+	}
+}
+
+func TestPuntAfterSessionCloseIsCounted(t *testing.T) {
+	ts := startServer(t, nil)
+	cl, err := Dial(ts.sock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srv.Close()
-	go srv.Run()
-	cl, err := Dial(sock, nil, nil)
+	waitFor(t, "session", func() bool { return ts.srv.Sessions() == 1 })
+	sess := ts.dp(0).sess
+	cl.Close()
+	waitFor(t, "teardown", func() bool { return ts.reg.closedCount() == 1 })
+	sess.Punt(Punt{Proto: 1})
+	if sess.PuntDropped() != 1 {
+		t.Fatalf("dropped = %d", sess.PuntDropped())
+	}
+}
+
+func TestServerCloseEndsSessions(t *testing.T) {
+	ts := startServer(t, nil)
+	var cls [3]*Client
+	for i := range cls {
+		cl, err := Dial(ts.sock, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cl.Close()
+		cls[i] = cl
+	}
+	waitFor(t, "sessions", func() bool { return ts.srv.Sessions() == 3 })
+	ts.srv.Close()
+	if n := ts.reg.closedCount(); n != 3 {
+		t.Fatalf("handlers closed: %d", n)
+	}
+	for i, cl := range cls {
+		select {
+		case <-cl.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatalf("client %d did not notice the server going away", i)
+		}
+	}
+}
+
+func TestDumpsAreMultipart(t *testing.T) {
+	ts := startServer(t, func(f *fakeDP) {
+		for i := uint32(0); i < 200; i++ {
+			f.links[i] = LinkSet{PeerID: i, PubKey: [32]byte{byte(i)}, Endpoint: "10.0.0.1:1"}
+		}
+	})
+	cl, err := Dial(ts.sock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,110 +583,9 @@ func TestDumpsAreMultipart(t *testing.T) {
 	}
 }
 
-func TestQuitRepliesThenCallsHandler(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "dp.sock")
-	h := newFakeDP()
-	srv, err := NewServer(sock, h)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer srv.Close()
-	go srv.Run()
-	cl, err := Dial(sock, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cl.Close()
-	if err := cl.Quit(); err != nil {
-		t.Fatalf("Quit must be acknowledged before the data plane exits: %v", err)
-	}
-	select {
-	case <-h.quit:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handler's Quit not called")
-	}
-}
-
-func TestEventsWithoutSessionAreCounted(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "dp.sock")
-	srv, err := NewServer(sock, newFakeDP())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer srv.Close()
-	srv.Event(Event{Kind: EventLinkHandshake})
-	if srv.EventsDropped() != 1 {
-		t.Fatalf("EventsDropped = %d", srv.EventsDropped())
-	}
-}
-
-func TestSessionReplacementAndLoss(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "dp.sock")
-	srv, err := NewServer(sock, newFakeDP())
-	if err != nil {
-		t.Fatal(err)
-	}
-	go srv.Run()
-
-	srv.Punt(Punt{Proto: 1})
-	if srv.PuntDropped() != 1 {
-		t.Fatalf("dropped = %d", srv.PuntDropped())
-	}
-
-	a, err := Dial(sock, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := a.Attach(); err != nil {
-		t.Fatal(err)
-	}
-	tool, err := Dial(sock, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tool.Hello(); err != nil {
-		t.Fatal(err)
-	}
-	tool.Close()
-	select {
-	case <-a.Done():
-		t.Fatal("a non-attaching session replaced the control plane")
-	case <-time.After(100 * time.Millisecond):
-	}
-	b, err := Dial(sock, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer b.Close()
-	if err := b.Attach(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-a.Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("old session not closed when replaced")
-	}
-	if _, err := a.Hello(); err == nil {
-		t.Fatal("call on a dead session should fail")
-	}
-
-	srv.Close()
-	select {
-	case <-b.Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("session loss not detected")
-	}
-}
-
 func TestFamilyResolution(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "dp.sock")
-	srv, err := NewServer(sock, newFakeDP())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer srv.Close()
-	go srv.Run()
-	cl, err := Dial(sock, nil, nil)
+	ts := startServer(t, nil)
+	cl, err := Dial(ts.sock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,18 +605,6 @@ func TestFamilyResolution(t *testing.T) {
 	if a.str(ctrlAttrFamilyName) != FamilyName || a.u32(ctrlAttrVersion) != Version {
 		t.Fatalf("family info: %+v", a)
 	}
-	grps, ok := a.get(ctrlAttrMcastGroups)
-	if !ok {
-		t.Fatal("no multicast groups in the family info")
-	}
-	entries, err := parseAttrs(grps)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("groups: %v %d", err, len(entries))
-	}
-	g, err := parseAttrs(entries[0].data)
-	if err != nil || g.str(ctrlAttrMcastGrpName) != eventsGroupName || g.u32(ctrlAttrMcastGrpID) != eventsGroupID {
-		t.Fatalf("events group: %v %+v", err, g)
-	}
 
 	_, err = cl.request(genlIDCtrl, ctrlCmdGetFamily, ctrlVersion, false, func(b *nlb) error {
 		b.str(ctrlAttrFamilyName, "wireguard")
@@ -581,7 +613,7 @@ func TestFamilyResolution(t *testing.T) {
 	if !IsCode(err, CodeNotFound) {
 		t.Fatalf("unknown family name: %v", err)
 	}
-	if _, err = cl.request(FamilyID+1, CmdHello, uint8(Version), false, nil); !IsCode(err, CodeNotFound) {
+	if _, err = cl.request(FamilyID+1, CmdStatsGet, uint8(Version), false, nil); !IsCode(err, CodeNotFound) {
 		t.Fatalf("wrong family id: %v", err)
 	}
 }

@@ -12,7 +12,6 @@ import (
 func main() {
 	configPath := flag.String("config", "", "path to the control plane's TOML config")
 	verbose := flag.Bool("verbose", false, "log link and route events and other per-event detail (default: errors only)")
-	stopDP := flag.Bool("stop-dataplane", false, "ask the running data plane to exit, then exit (stopping the control plane on its own deliberately leaves the data plane forwarding)")
 	flag.Parse()
 
 	if *configPath == "" {
@@ -21,14 +20,6 @@ func main() {
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("config error: %v", err)
-	}
-
-	if *stopDP {
-		if err := stopDataplane(cfg); err != nil {
-			log.Fatalf("stop-dataplane: %v", err)
-		}
-		log.Print("data plane stopped")
-		return
 	}
 
 	node, err := newNode(cfg, *verbose)
@@ -80,7 +71,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	sig := <-sigCh
-	log.Printf("received %v, shutting down (the data plane keeps forwarding)", sig)
+	log.Printf("received %v, shutting down", sig)
 
 	close(stop)
 	<-sessionsDone

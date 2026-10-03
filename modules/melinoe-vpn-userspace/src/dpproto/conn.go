@@ -17,24 +17,18 @@ const CallTimeout = 5 * time.Second
 const puntQueueSize = 1024
 
 type Datapath interface {
-	Hello() (HelloReply, error)
-	Attach() error
-
 	DeviceSet(DeviceSet) (DeviceSetReply, error)
-	DeviceDel() error
 	Stats() ([]Stat, error)
 
-	LinkAdd(LinkAdd) error
+	LinkSet(LinkSet) error
 	LinkDel(peerID uint32) error
 	LinkList() ([]LinkInfo, error)
 
-	TunCreate(peerID uint32, name string) (TunCreateReply, error)
-	TunStart(peerID uint32) error
-	TunDestroy(peerID uint32) error
+	TunSet(TunSet) (TunInfo, error)
+	TunDel(peerID uint32) error
 	TunList() ([]TunInfo, error)
 
-	RouteSet(Route) error
-	RouteDel(dst uint32) error
+	RouteSet([]Route) error
 	RouteList() ([]Route, error)
 
 	Inject(Inject) error
@@ -42,10 +36,6 @@ type Datapath interface {
 	Done() <-chan struct{}
 	Err() error
 	Close()
-}
-
-type Quitter interface {
-	Quit() error
 }
 
 type rawConn interface {
@@ -85,13 +75,10 @@ type call struct {
 }
 
 type Client struct {
-	c             *conn
-	family        uint16
-	eventsGroupID uint32
-	isKernel      bool
-	nextSeq       atomic.Uint32
-	onPunt        func(Punt)
-	onEvent       func(Event)
+	c       *conn
+	family  uint16
+	nextSeq atomic.Uint32
+	onPunt  func(Punt)
 
 	mu      sync.Mutex
 	pending map[uint32]*call
@@ -101,17 +88,14 @@ type Client struct {
 	err     error
 }
 
-var (
-	_ Datapath = (*Client)(nil)
-	_ Quitter  = (*Client)(nil)
-)
+var _ Datapath = (*Client)(nil)
 
-func Dial(path string, onPunt func(Punt), onEvent func(Event)) (*Client, error) {
+func Dial(path string, onPunt func(Punt)) (*Client, error) {
 	uc, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: path, Net: "unixpacket"})
 	if err != nil {
 		return nil, err
 	}
-	cl := &Client{c: newConn(uc), onPunt: onPunt, onEvent: onEvent, pending: make(map[uint32]*call), done: make(chan struct{})}
+	cl := &Client{c: newConn(uc), onPunt: onPunt, pending: make(map[uint32]*call), done: make(chan struct{})}
 	go cl.readLoop()
 	if err := cl.resolveFamily(); err != nil {
 		cl.Close()
@@ -120,7 +104,7 @@ func Dial(path string, onPunt func(Punt), onEvent func(Event)) (*Client, error) 
 	return cl, nil
 }
 
-func DialKernel(onPunt func(Punt), onEvent func(Event)) (*Client, error) {
+func DialKernel(onPunt func(Punt)) (*Client, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_GENERIC)
 	if err != nil {
 		return nil, fmt.Errorf("dpproto: netlink socket: %w", err)
@@ -139,17 +123,11 @@ func DialKernel(onPunt func(Punt), onEvent func(Event)) (*Client, error) {
 	}
 	f := os.NewFile(uintptr(fd), "melnode-genl")
 
-	cl := &Client{c: newConn(f), isKernel: true, onPunt: onPunt, onEvent: onEvent, pending: make(map[uint32]*call), done: make(chan struct{})}
+	cl := &Client{c: newConn(f), onPunt: onPunt, pending: make(map[uint32]*call), done: make(chan struct{})}
 	go cl.readLoop()
 	if err := cl.resolveFamily(); err != nil {
 		cl.Close()
 		return nil, err
-	}
-	if cl.eventsGroupID != 0 {
-		if err := unix.SetsockoptInt(fd, unix.SOL_NETLINK, unix.NETLINK_ADD_MEMBERSHIP, int(cl.eventsGroupID)); err != nil {
-			cl.Close()
-			return nil, fmt.Errorf("dpproto: joining %q multicast group: %w", eventsGroupName, err)
-		}
 	}
 	return cl, nil
 }
@@ -170,23 +148,6 @@ func (cl *Client) resolveFamily() error {
 		return fmt.Errorf("data plane implements %s API v%d, control plane v%d", FamilyName, v, Version)
 	}
 	cl.family = a.u16(ctrlAttrFamilyID)
-
-	if raw, ok := a.get(ctrlAttrMcastGroups); ok {
-		entries, err := parseAttrs(raw)
-		if err != nil {
-			return fmt.Errorf("resolving netlink family %q: bad multicast group list: %w", FamilyName, err)
-		}
-		for _, e := range entries {
-			g, err := parseAttrs(e.data)
-			if err != nil {
-				continue
-			}
-			if g.str(ctrlAttrMcastGrpName) == eventsGroupName {
-				cl.eventsGroupID = g.u32(ctrlAttrMcastGrpID)
-				break
-			}
-		}
-	}
 	return nil
 }
 
@@ -242,21 +203,14 @@ func (cl *Client) handle(m nlmsg) {
 			r.err = parseErrMessage(m)
 		}
 		p.ch <- r
-	case m.typ >= 0x10 && m.seq == 0 && (m.cmd == CmdPunt || m.cmd == CmdEvent):
+	case m.typ >= 0x10 && m.seq == 0 && m.cmd == CmdPunt:
 		a, err := m.attrs()
 		if err != nil {
 			return
 		}
-		if m.cmd == CmdPunt {
-			var p Punt
-			if p.get(a) == nil && cl.onPunt != nil {
-				cl.onPunt(p)
-			}
-		} else {
-			var e Event
-			if e.get(a) == nil && cl.onEvent != nil {
-				cl.onEvent(e)
-			}
+		var p Punt
+		if p.get(a) == nil && cl.onPunt != nil {
+			cl.onPunt(p)
 		}
 	case m.typ >= 0x10:
 		body := append([]byte(nil), m.body...)
@@ -347,17 +301,6 @@ func (cl *Client) Inject(i Inject) error {
 	return cl.c.send(b.bytes())
 }
 
-func (cl *Client) Hello() (HelloReply, error) {
-	a, err := cl.one(CmdHello, func(b *nlb) error { Hello{Version: Version}.put(b); return nil })
-	if err != nil {
-		return HelloReply{}, err
-	}
-	var r HelloReply
-	return r, r.get(a)
-}
-
-func (cl *Client) Attach() error { return cl.ack(CmdAttach, nil) }
-
 func (cl *Client) DeviceSet(m DeviceSet) (DeviceSetReply, error) {
 	a, err := cl.one(CmdDeviceSet, func(b *nlb) error { m.put(b); return nil })
 	if err != nil {
@@ -365,15 +308,6 @@ func (cl *Client) DeviceSet(m DeviceSet) (DeviceSetReply, error) {
 	}
 	var r DeviceSetReply
 	return r, r.get(a)
-}
-
-func (cl *Client) DeviceDel() error { return cl.ack(CmdDeviceDel, nil) }
-
-func (cl *Client) Quit() error {
-	if cl.isKernel {
-		return nil
-	}
-	return cl.ack(CmdXQuit, nil)
 }
 
 func (cl *Client) Stats() ([]Stat, error) {
@@ -392,8 +326,8 @@ func (cl *Client) Stats() ([]Stat, error) {
 	return out, nil
 }
 
-func (cl *Client) LinkAdd(m LinkAdd) error {
-	return cl.ack(CmdLinkAdd, m.put)
+func (cl *Client) LinkSet(m LinkSet) error {
+	return cl.ack(CmdLinkSet, m.put)
 }
 
 func (cl *Client) LinkDel(peerID uint32) error {
@@ -416,21 +350,17 @@ func (cl *Client) LinkList() ([]LinkInfo, error) {
 	return out, nil
 }
 
-func (cl *Client) TunCreate(peerID uint32, name string) (TunCreateReply, error) {
-	a, err := cl.one(CmdTunCreate, func(b *nlb) error { TunCreate{PeerID: peerID, Name: name}.put(b); return nil })
+func (cl *Client) TunSet(m TunSet) (TunInfo, error) {
+	a, err := cl.one(CmdTunSet, func(b *nlb) error { m.put(b); return nil })
 	if err != nil {
-		return TunCreateReply{}, err
+		return TunInfo{}, err
 	}
-	var r TunCreateReply
+	var r TunInfo
 	return r, r.get(a)
 }
 
-func (cl *Client) TunStart(peerID uint32) error {
-	return cl.ack(CmdTunStart, func(b *nlb) error { putID(b, AttrPeerID, peerID); return nil })
-}
-
-func (cl *Client) TunDestroy(peerID uint32) error {
-	return cl.ack(CmdTunDestroy, func(b *nlb) error { putID(b, AttrPeerID, peerID); return nil })
+func (cl *Client) TunDel(peerID uint32) error {
+	return cl.ack(CmdTunDel, func(b *nlb) error { putID(b, AttrPeerID, peerID); return nil })
 }
 
 func (cl *Client) TunList() ([]TunInfo, error) {
@@ -449,12 +379,8 @@ func (cl *Client) TunList() ([]TunInfo, error) {
 	return out, nil
 }
 
-func (cl *Client) RouteSet(r Route) error {
-	return cl.ack(CmdRouteSet, func(b *nlb) error { r.put(b); return nil })
-}
-
-func (cl *Client) RouteDel(dst uint32) error {
-	return cl.ack(CmdRouteDel, func(b *nlb) error { putID(b, AttrRouteDst, dst); return nil })
+func (cl *Client) RouteSet(routes []Route) error {
+	return cl.ack(CmdRouteSet, func(b *nlb) error { putRoutes(b, routes); return nil })
 }
 
 func (cl *Client) RouteList() ([]Route, error) {
@@ -474,37 +400,33 @@ func (cl *Client) RouteList() ([]Route, error) {
 }
 
 type Handler interface {
-	Hello(Hello) (HelloReply, error)
 	DeviceSet(DeviceSet) (DeviceSetReply, error)
-	DeviceDel() error
 	Stats() ([]Stat, error)
-	Quit()
-	LinkAdd(LinkAdd) error
+	LinkSet(LinkSet) error
 	LinkDel(peerID uint32) error
 	LinkList() ([]LinkInfo, error)
-	TunCreate(TunCreate) (TunCreateReply, error)
-	TunStart(peerID uint32) error
-	TunDestroy(peerID uint32) error
+	TunSet(TunSet) (TunInfo, error)
+	TunDel(peerID uint32) error
 	TunList() ([]TunInfo, error)
-	RouteSet(Route) error
-	RouteDel(dst uint32) error
+	RouteSet([]Route) error
 	RouteList() ([]Route, error)
 	Inject(Inject)
+	Close()
 }
+
+type Factory func(*Session) Handler
 
 type Server struct {
-	l *net.UnixListener
-	h Handler
+	l       *net.UnixListener
+	factory Factory
 
-	mu  sync.Mutex
-	cur *session
-
-	puntDropped   atomic.Uint64
-	eventsDropped atomic.Uint64
-	puntsSent     atomic.Uint64
+	mu       sync.Mutex
+	sessions map[*Session]struct{}
+	closed   bool
+	wg       sync.WaitGroup
 }
 
-func NewServer(path string, h Handler) (*Server, error) {
+func NewServer(path string, factory Factory) (*Server, error) {
 	_ = os.Remove(path)
 	l, err := net.ListenUnix("unixpacket", &net.UnixAddr{Name: path, Net: "unixpacket"})
 	if err != nil {
@@ -514,7 +436,7 @@ func NewServer(path string, h Handler) (*Server, error) {
 		l.Close()
 		return nil, err
 	}
-	return &Server{l: l, h: h}, nil
+	return &Server{l: l, factory: factory, sessions: make(map[*Session]struct{})}, nil
 }
 
 func (s *Server) Run() {
@@ -523,7 +445,17 @@ func (s *Server) Run() {
 		if err != nil {
 			return
 		}
-		sess := &session{srv: s, c: newConn(uc), punts: make(chan []byte, puntQueueSize), done: make(chan struct{})}
+		sess := &Session{srv: s, c: newConn(uc), punts: make(chan []byte, puntQueueSize), done: make(chan struct{})}
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			uc.Close()
+			return
+		}
+		s.sessions[sess] = struct{}{}
+		s.wg.Add(1)
+		s.mu.Unlock()
+		sess.h = s.factory(sess)
 		go sess.writeLoop()
 		go sess.readLoop()
 	}
@@ -532,86 +464,75 @@ func (s *Server) Run() {
 func (s *Server) Close() {
 	s.l.Close()
 	s.mu.Lock()
-	cur := s.cur
-	s.cur = nil
-	s.mu.Unlock()
-	if cur != nil {
-		cur.close()
+	s.closed = true
+	live := make([]*Session, 0, len(s.sessions))
+	for ss := range s.sessions {
+		live = append(live, ss)
 	}
+	s.mu.Unlock()
+	for _, ss := range live {
+		ss.close()
+	}
+	s.wg.Wait()
 }
 
-func (s *Server) Connected() bool {
+func (s *Server) Sessions() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.cur != nil
+	return len(s.sessions)
 }
 
-func (s *Server) PuntsSent() uint64 { return s.puntsSent.Load() }
+type Session struct {
+	srv   *Server
+	h     Handler
+	c     *conn
+	punts chan []byte
+	done  chan struct{}
+	once  sync.Once
 
-func (s *Server) PuntDropped() uint64 { return s.puntDropped.Load() }
+	puntsSent   atomic.Uint64
+	puntDropped atomic.Uint64
+}
 
-func (s *Server) Punt(p Punt) {
-	s.mu.Lock()
-	cur := s.cur
-	s.mu.Unlock()
-	if cur == nil {
-		s.puntDropped.Add(1)
+func (ss *Session) Done() <-chan struct{} { return ss.done }
+
+func (ss *Session) PuntsSent() uint64 { return ss.puntsSent.Load() }
+
+func (ss *Session) PuntDropped() uint64 { return ss.puntDropped.Load() }
+
+func (ss *Session) Punt(p Punt) {
+	select {
+	case <-ss.done:
+		ss.puntDropped.Add(1)
 		return
+	default:
 	}
 	b := newNL(FamilyID, 0, 0, 0, CmdPunt, uint8(Version))
 	b.b = append(make([]byte, 0, HeaderLen+48+len(p.Payload)), b.b...)
 	p.put(b)
 	select {
-	case cur.punts <- b.bytes():
-		s.puntsSent.Add(1)
+	case ss.punts <- b.bytes():
+		ss.puntsSent.Add(1)
 	default:
-		s.puntDropped.Add(1)
+		ss.puntDropped.Add(1)
 	}
 }
 
-func (s *Server) Event(e Event) {
-	s.mu.Lock()
-	cur := s.cur
-	s.mu.Unlock()
-	if cur == nil {
-		s.eventsDropped.Add(1)
-		return
-	}
-	b := newNL(FamilyID, 0, 0, 0, CmdEvent, uint8(Version))
-	if err := e.put(b); err != nil {
-		s.eventsDropped.Add(1)
-		return
-	}
-	select {
-	case cur.punts <- b.bytes():
-	default:
-		s.eventsDropped.Add(1)
-	}
-}
-
-func (s *Server) EventsDropped() uint64 { return s.eventsDropped.Load() }
-
-type session struct {
-	srv   *Server
-	c     *conn
-	punts chan []byte
-	done  chan struct{}
-	once  sync.Once
-}
-
-func (ss *session) close() {
+func (ss *Session) close() {
 	ss.once.Do(func() {
 		close(ss.done)
 		ss.c.c.Close()
-		ss.srv.mu.Lock()
-		if ss.srv.cur == ss {
-			ss.srv.cur = nil
+		if ss.h != nil {
+			ss.h.Close()
 		}
+		ss.srv.mu.Lock()
+		delete(ss.srv.sessions, ss)
 		ss.srv.mu.Unlock()
+		ss.srv.wg.Done()
 	})
 }
 
-func (ss *session) writeLoop() {
+func (ss *Session) writeLoop() {
 	for {
 		select {
 		case <-ss.done:
@@ -625,17 +546,7 @@ func (ss *session) writeLoop() {
 	}
 }
 
-func (ss *session) attach() {
-	ss.srv.mu.Lock()
-	old := ss.srv.cur
-	ss.srv.cur = ss
-	ss.srv.mu.Unlock()
-	if old != nil && old != ss {
-		old.close()
-	}
-}
-
-func (ss *session) readLoop() {
+func (ss *Session) readLoop() {
 	defer ss.close()
 	for {
 		msgs, err := ss.c.recv()
@@ -650,7 +561,7 @@ func (ss *session) readLoop() {
 	}
 }
 
-func (ss *session) serve(m nlmsg) bool {
+func (ss *Session) serve(m nlmsg) bool {
 	if m.typ < 0x10 || m.flags&nlmFRequest == 0 {
 		return true
 	}
@@ -660,7 +571,7 @@ func (ss *session) serve(m nlmsg) bool {
 	if m.typ != FamilyID {
 		return ss.c.send(errMessage(m, Errorf(CodeNotFound, "no such netlink family %d", m.typ))) == nil
 	}
-	h := ss.srv.h
+	h := ss.h
 	a, perr := m.attrs()
 	if m.cmd == CmdInject {
 		if perr == nil {
@@ -706,42 +617,18 @@ func (ss *session) serve(m nlmsg) bool {
 	case dump:
 		done := newNL(nlmsgDone, nlmFMulti, m.seq, 0, 0, 0)
 		done.b = nativeEndian.AppendUint32(done.b[:nlmsgHdrLen], 0)
-		if ss.c.send(done.bytes()) != nil {
-			return false
-		}
+		return ss.c.send(done.bytes()) == nil
 	case m.flags&nlmFAck != 0:
-		if ss.c.send(errMessage(m, nil)) != nil {
-			return false
-		}
-	}
-	if m.cmd == CmdXQuit {
-		h.Quit()
-		return false
+		return ss.c.send(errMessage(m, nil)) == nil
 	}
 	return true
 }
 
 func one(put func(*nlb) error) []func(*nlb) error { return []func(*nlb) error{put} }
 
-func (ss *session) dispatch(cmd uint8, a attrs) ([]func(*nlb) error, error) {
-	h := ss.srv.h
+func (ss *Session) dispatch(cmd uint8, a attrs) ([]func(*nlb) error, error) {
+	h := ss.h
 	switch cmd {
-	case CmdHello:
-		var m Hello
-		if err := m.get(a); err != nil {
-			return nil, err
-		}
-		if m.Version != Version {
-			return nil, Errorf(CodeUnsupported, "control plane speaks API v%d, data plane v%d", m.Version, Version)
-		}
-		r, err := h.Hello(m)
-		if err != nil {
-			return nil, err
-		}
-		return one(func(b *nlb) error { r.put(b); return nil }), nil
-	case CmdAttach:
-		ss.attach()
-		return nil, nil
 	case CmdDeviceSet:
 		var m DeviceSet
 		if err := m.get(a); err != nil {
@@ -752,10 +639,6 @@ func (ss *session) dispatch(cmd uint8, a attrs) ([]func(*nlb) error, error) {
 			return nil, err
 		}
 		return one(func(b *nlb) error { r.put(b); return nil }), nil
-	case CmdDeviceDel:
-		return nil, h.DeviceDel()
-	case CmdXQuit:
-		return nil, nil
 	case CmdStatsGet:
 		l, err := h.Stats()
 		if err != nil {
@@ -766,25 +649,21 @@ func (ss *session) dispatch(cmd uint8, a attrs) ([]func(*nlb) error, error) {
 			out = append(out, func(b *nlb) error { x.put(b); return nil })
 		}
 		return out, nil
-	case CmdLinkAdd:
-		var m LinkAdd
+	case CmdLinkSet:
+		var m LinkSet
 		if err := m.get(a); err != nil {
 			return nil, Errorf(CodeInvalid, "%v", err)
 		}
-		return nil, h.LinkAdd(m)
-	case CmdLinkDel, CmdTunStart, CmdTunDestroy:
+		return nil, h.LinkSet(m)
+	case CmdLinkDel, CmdTunDel:
 		id, err := getID(a, AttrPeerID)
 		if err != nil {
 			return nil, err
 		}
-		switch cmd {
-		case CmdLinkDel:
+		if cmd == CmdLinkDel {
 			return nil, h.LinkDel(id)
-		case CmdTunStart:
-			return nil, h.TunStart(id)
-		default:
-			return nil, h.TunDestroy(id)
 		}
+		return nil, h.TunDel(id)
 	case CmdLinkGet:
 		l, err := h.LinkList()
 		if err != nil {
@@ -795,12 +674,12 @@ func (ss *session) dispatch(cmd uint8, a attrs) ([]func(*nlb) error, error) {
 			out = append(out, x.put)
 		}
 		return out, nil
-	case CmdTunCreate:
-		var m TunCreate
+	case CmdTunSet:
+		var m TunSet
 		if err := m.get(a); err != nil {
 			return nil, err
 		}
-		r, err := h.TunCreate(m)
+		r, err := h.TunSet(m)
 		if err != nil {
 			return nil, err
 		}
@@ -816,17 +695,11 @@ func (ss *session) dispatch(cmd uint8, a attrs) ([]func(*nlb) error, error) {
 		}
 		return out, nil
 	case CmdRouteSet:
-		var m Route
-		if err := m.get(a); err != nil {
-			return nil, err
-		}
-		return nil, h.RouteSet(m)
-	case CmdRouteDel:
-		id, err := getID(a, AttrRouteDst)
+		routes, err := getRoutes(a)
 		if err != nil {
 			return nil, err
 		}
-		return nil, h.RouteDel(id)
+		return nil, h.RouteSet(routes)
 	case CmdRouteGet:
 		l, err := h.RouteList()
 		if err != nil {
@@ -841,7 +714,7 @@ func (ss *session) dispatch(cmd uint8, a attrs) ([]func(*nlb) error, error) {
 	return nil, Errorf(CodeUnsupported, "unknown command %d", cmd)
 }
 
-func (ss *session) serveController(m nlmsg) bool {
+func (ss *Session) serveController(m nlmsg) bool {
 	a, err := m.attrs()
 	if m.cmd != ctrlCmdGetFamily || err != nil {
 		return ss.c.send(errMessage(m, Errorf(CodeUnsupported, "unsupported controller request"))) == nil
@@ -851,12 +724,7 @@ func (ss *session) serveController(m nlmsg) bool {
 	}
 	b := newNL(genlIDCtrl, 0, m.seq, 0, ctrlCmdNewFamily, ctrlVersion)
 	b.u16(ctrlAttrFamilyID, FamilyID).str(ctrlAttrFamilyName, FamilyName).u32(ctrlAttrVersion, uint32(Version))
-	b.u32(ctrlAttrHdrSize, 0).u32(ctrlAttrMaxAttr, uint32(AttrEvtTime))
-	b.nest(ctrlAttrMcastGroups, func(b *nlb) {
-		b.nest(1, func(b *nlb) {
-			b.str(ctrlAttrMcastGrpName, eventsGroupName).u32(ctrlAttrMcastGrpID, eventsGroupID)
-		})
-	})
+	b.u32(ctrlAttrHdrSize, 0).u32(ctrlAttrMaxAttr, uint32(AttrPktData))
 	if ss.c.send(b.bytes()) != nil {
 		return false
 	}
