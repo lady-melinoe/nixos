@@ -131,8 +131,13 @@ int melnode_socket_open(struct melnode_instance *inst, u16 local_port, u32 fwmar
 		return err;
 	}
 
-	if (open_one(inst, AF_INET6, local_port, fwmark, &inst->sock6))
+	err = open_one(inst, AF_INET6, local_port, fwmark, &inst->sock6);
+	if (err) {
 		inst->sock6 = NULL;
+		if (err != -EAFNOSUPPORT)
+			pr_warn("melnode: IPv6 socket on port %u failed (%d); running IPv4-only\n",
+				local_port, err);
+	}
 
 	return 0;
 }

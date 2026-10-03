@@ -1132,6 +1132,9 @@ static void melnode_hs_enqueue(struct melnode_instance *inst, const u8 *data, si
 {
 	struct melnode_hs_item *item;
 
+	if (READ_ONCE(inst->hs_count) >= MELNODE_MAX_QUEUED_HANDSHAKES)
+		return;
+
 	item = kmalloc(sizeof(*item) + len, GFP_KERNEL);
 	if (!item)
 		return;
@@ -1140,7 +1143,7 @@ static void melnode_hs_enqueue(struct melnode_instance *inst, const u8 *data, si
 	memcpy(item->data, data, len);
 
 	spin_lock_bh(&inst->hs_lock);
-	if (inst->hs_count > MELNODE_MAX_QUEUED_HANDSHAKES) {
+	if (inst->hs_count >= MELNODE_MAX_QUEUED_HANDSHAKES) {
 		spin_unlock_bh(&inst->hs_lock);
 		kfree(item);
 		return;
@@ -1647,5 +1650,6 @@ module_exit(melnode_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("melnode kernel data plane (genl family \"melnode\")");
+MODULE_VERSION(__stringify(MELNODE_GENL_VERSION));
 MODULE_ALIAS_RTNL_LINK(MELNODE_LINK_KIND);
 MODULE_SOFTDEP("pre: libcurve25519 libchacha20poly1305");

@@ -22,17 +22,7 @@ let
   controlSocket = "/run/melnode/control.sock";
   dpSocket = "/run/melnode-dp/dp.sock";
 
-  melnodeGoBinary = pkgs.buildGoModule {
-    pname = "melnode";
-    version = "0.0.2";
-
-    src = ./melinoe-vpn-userspace/src;
-    subPackages = [
-      "cmd/melnode-dp"
-      "cmd/melnode-cp"
-    ];
-    vendorHash = "sha256-qG9O8ed6bK0WpaQxof+pxsMa7IudmB0rnGTWYjuXm2g=";
-  };
+  melnodeGoBinary = pkgs.callPackage ./melinoe-vpn-userspace/package.nix { };
 
   dpBin = "${mCfg.package}/bin/melnode-dp";
   cpBin = "${mCfg.package}/bin/melnode-cp";
@@ -72,11 +62,11 @@ let
 
   helper = pkgs.writers.writePython3Bin "melnode-helper" {
     doCheck = false;
-  } (builtins.readFile ./melinoe-vpn-userspace/helper-scripts/melnode-helper.py);
+  } (builtins.readFile ./melinoe-vpn-helpers/melnode-helper.py);
 
   mnctl = pkgs.writers.writePython3Bin "mnctl" {
     doCheck = false;
-  } (builtins.readFile ./melinoe-vpn-userspace/helper-scripts/mnctl.py);
+  } (builtins.readFile ./melinoe-vpn-helpers/mnctl.py);
 
   helperConfig = pkgs.writeText "melnode-helper.json" (
     builtins.toJSON {
