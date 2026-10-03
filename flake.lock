@@ -18,6 +18,38 @@
         "type": "github"
       }
     },
+    "melinoe-vpn-kernelspace": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791054943,
+        "narHash": "sha256-1ZjFsF5oLfMt59YDu9xQ80W/LaCj9FgSSACdIBvD4ig=",
+        "ref": "refs/heads/mommy",
+        "rev": "8dcac2dd845e3c4597aea322c79d5c534fc3fbbf",
+        "revCount": 1,
+        "type": "git",
+        "url": "https://gitlab.melinoe.net/homelab/mel-nix-pkgs/melinoe-vpn-kernelspace"
+      },
+      "original": {
+        "type": "git",
+        "url": "https://gitlab.melinoe.net/homelab/mel-nix-pkgs/melinoe-vpn-kernelspace"
+      }
+    },
+    "melinoe-vpn-userspace": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791054907,
+        "narHash": "sha256-DhzPuwlPKwfYPFJ3GlIAOmjpLz6k2rkPBJMX7P7TTew=",
+        "ref": "refs/heads/mommy",
+        "rev": "2286e09a48e905ed60615d17bf73c956e36a04e5",
+        "revCount": 1,
+        "type": "git",
+        "url": "https://gitlab.melinoe.net/homelab/mel-nix-pkgs/melinoe-vpn-userspace"
+      },
+      "original": {
+        "type": "git",
+        "url": "https://gitlab.melinoe.net/homelab/mel-nix-pkgs/melinoe-vpn-userspace"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1780930886,
@@ -69,6 +101,8 @@
     "root": {
       "inputs": {
         "disko": "disko",
+        "melinoe-vpn-kernelspace": "melinoe-vpn-kernelspace",
+        "melinoe-vpn-userspace": "melinoe-vpn-userspace",
         "nixpkgs": "nixpkgs_2",
         "nixpkgs-kernel": "nixpkgs-kernel"
       }
