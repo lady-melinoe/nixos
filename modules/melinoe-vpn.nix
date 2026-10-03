@@ -2,6 +2,7 @@
   config,
   lib,
   pkgs,
+  inputs,
   melinoeNodeIntraIP,
   ...
 }:
@@ -11,7 +12,7 @@ let
   mCfg = cfg.services.melnode;
 
   melnodeKernelPackage =
-    config.boot.kernelPackages.callPackage ./melinoe-vpn-kernelspace/package.nix
+    config.boot.kernelPackages.callPackage (inputs.melinoe-vpn-kernelspace + "/package.nix")
       { };
   netCfg = cfg.node.networking;
   nodeID = cfg.node.id;
@@ -22,7 +23,7 @@ let
   controlSocket = "/run/melnode/control.sock";
   dpSocket = "/run/melnode-dp/dp.sock";
 
-  melnodeGoBinary = pkgs.callPackage ./melinoe-vpn-userspace/package.nix { };
+  melnodeGoBinary = pkgs.callPackage (inputs.melinoe-vpn-userspace + "/package.nix") { };
 
   dpBin = "${mCfg.package}/bin/melnode-dp";
   cpBin = "${mCfg.package}/bin/melnode-cp";
@@ -276,7 +277,7 @@ in
       description = ''
         Which data plane melnode-cp attaches to. "userspace" (default) runs
         melnode-dp as its own systemd service, as before. "kernel" attaches
-        to the melnode kernel module (modules/melinoe-vpn-kernelspace) over generic
+        to the melnode kernel module (the melinoe-vpn-kernelspace flake input) over generic
         netlink instead - no melnode-dp process at all - which requires
         melinoe.services.melnode.kernelDataplane.enable to be set too (that
         loads the module; this makes melnode-cp actually use it).
@@ -291,8 +292,8 @@ in
         type = types.bool;
         default = false;
         description = ''
-          Load the melnode kernel module (modules/melinoe-vpn-kernelspace)
-          instead of running melnode-dp in userspace. GPLv2, built out-of-tree
+          Load the melnode kernel module (the melinoe-vpn-kernelspace flake
+          input) instead of running melnode-dp in userspace. GPLv2, built out-of-tree
           against `config.boot.kernelPackages` for this host.
 
           Implements the full "melnode" generic netlink (genl) family
@@ -339,9 +340,9 @@ in
         assertion =
           !mCfg.kernelDataplane.enable
           ||
-            builtins.readFile ./melinoe-vpn-userspace/src/dpproto/melnode_genl.h
-            == builtins.readFile ./melinoe-vpn-kernelspace/src/melnode_genl.h;
-        message = "modules/melinoe-vpn-kernelspace/src/melnode_genl.h and modules/melinoe-vpn-userspace/src/dpproto/melnode_genl.h are incompatible.";
+            builtins.readFile (inputs.melinoe-vpn-userspace + "/src/dpproto/melnode_genl.h")
+            == builtins.readFile (inputs.melinoe-vpn-kernelspace + "/src/melnode_genl.h");
+        message = "melinoe-vpn-kernelspace src/melnode_genl.h and melinoe-vpn-userspace src/dpproto/melnode_genl.h are incompatible.";
       }
       {
         assertion = !mCfg.enabled || mCfg.dataplane != "kernel" || mCfg.kernelDataplane.enable;
