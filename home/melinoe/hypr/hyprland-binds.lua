@@ -48,8 +48,7 @@ hl.bind(mainMod .. " + ALT + S", hl.dsp.exec_cmd([[printf "\u00A7" | wl-copy -]]
 hl.bind(mainMod .. " + a",       hl.dsp.exec_cmd("killall activate-linux || activate-linux"))
 hl.bind(mainMod .. " + SHIFT + R", hl.dsp.exec_cmd("killall iio-hyprland || iio-hyprland"))
 hl.bind(mainMod .. " + K",       hl.dsp.exec_cmd("killall -s 34 wvkbd-mobintl"))
--- TODO(part 2): kitty term-panel
--- hl.bind(mainMod .. " + t",       hl.dsp.exec_cmd("kitten @ --to=unix:${HOME}/.cache/term-panel resize-os-window --action=toggle-visibility"))
+hl.bind(mainMod .. " + t",       hl.dsp.exec_cmd("kitten @ --to=unix:${HOME}/.cache/term-panel resize-os-window --action=toggle-visibility"))
 
 -- Media & Hardware Controls
 hl.bind("XF86AudioNext",  hl.dsp.exec_cmd("playerctl next"), { locked = true })

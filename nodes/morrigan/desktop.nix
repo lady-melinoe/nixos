@@ -26,5 +26,11 @@
   services.upower.enable = true; # hyprlock battery label
   hardware.sensor.iio.enable = true; # iio-hyprland
 
-  fonts.packages = [ pkgs.noto-fonts ];
+  hardware.bluetooth.enable = true; # bar's Bluetooth module (Quickshell.Bluetooth, bluetoothctl)
+
+  fonts.packages = [
+    pkgs.noto-fonts
+    pkgs.nerd-fonts.symbols-only # bar icons ("Symbols Nerd Font")
+    pkgs.inter # bar tooltips
+  ];
 }

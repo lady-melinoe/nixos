@@ -4,6 +4,8 @@
     ./ghostty.nix
     ./hypr.nix
     ./keychain.nix
+    ./kitty.nix
+    ./quickshell.nix
     ./shell.nix
   ];
 
