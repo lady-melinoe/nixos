@@ -1,8 +1,8 @@
 { config, lib, pkgs, ... }:
 let
   splash = ../../assets/splash.png;
-  playerctl = lib.getExe pkgs.playerctl;
-  hyprlock = lib.getExe pkgs.hyprlock;
+  playerctlExe = lib.getExe pkgs.playerctl;
+  hyprlockExe = lib.getExe pkgs.hyprlock;
   loginctl = "${pkgs.systemd}/bin/loginctl";
 in
 {
@@ -45,8 +45,8 @@ in
     enable = true;
     settings = {
       general = {
-        lock_cmd = "${playerctl} -a pause & ${hyprlock} --grace 0 --immediate-render --no-fade-in";
-        before_sleep_cmd = "${playerctl} -a pause & ${hyprlock} --grace 0 --immediate-render --no-fade-in && sleep 1";
+        lock_cmd = "${playerctlExe} -a pause & ${hyprlockExe} --grace 0 --immediate-render --no-fade-in";
+        before_sleep_cmd = "${playerctlExe} -a pause & ${hyprlockExe} --grace 0 --immediate-render --no-fade-in && sleep 1";
         ignore_dbus_inhibit = false;
         ignore_systemd_inhibit = false;
       };
