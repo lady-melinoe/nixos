@@ -11,7 +11,7 @@
       background-blur = false;
       theme = "Kitty Default";
       font-family = "Noto Sans Mono";
-      font-size = 36;
+      font-size = 24;
       term = "ghostty";
       shell-integration = "none";
 #     gtk-adwaita = false; seems to be broken on nix? idk.
