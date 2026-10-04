@@ -1,8 +1,18 @@
-{ ... }:
+{ pkgs, inputs, ... }:
 {
   imports = [
     ./disk-config.nix
+    inputs.lanzaboote.nixosModules.lanzaboote
   ];
+
+  boot.loader.grub.enable = false;
+  boot.loader.systemd-boot.enable = false;
+  boot.lanzaboote = {
+    enable = true;
+    pkiBundle = "/var/lib/sbctl";
+  };
+  environment.systemPackages = [ pkgs.sbctl ];
+
   nix.distributedBuilds = true;
   nix.settings.builders-use-substitutes = true;
   melinoe.node.remoteBuildOn = [
@@ -57,7 +67,18 @@
     "uas"
     "sd_mod"
   ];
-  boot.kernelModules = [ "kvm-amd" ];
+  boot.kernelModules = [
+    "kvm-amd"
+    "i2c-dev"
+  ];
+
+  services.tlp = {
+    enable = true;
+    settings = {
+      STOP_CHARGE_THRESH_BAT0 = "1"; # Lenovo conservation mode
+      DEVICES_TO_ENABLE_ON_STARTUP = "wifi bluetooth";
+    };
+  };
 
   networking.wireless.iwd = {
     enable = true;
