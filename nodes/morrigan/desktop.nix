@@ -8,11 +8,18 @@
     enable = true; # also installs xdg-desktop-portal-hyprland
     withUWSM = true;
   };
+  # initial_session (autologin) is a real "user" class logind session, which
+  # `loginctl lock-session` (and so hypridle) needs; default_session would be
+  # a "greeter" class session that can't be locked. default_session only
+  # runs after the initial session exits, as a plain login prompt like on void.
   services.greetd = {
     enable = true;
-    settings.default_session = {
-      command = "uwsm start hyprland-uwsm.desktop";
-      user = "melinoe";
+    settings = {
+      initial_session = {
+        command = "uwsm start hyprland-uwsm.desktop";
+        user = "melinoe";
+      };
+      default_session.command = "${pkgs.greetd}/bin/agreety --cmd ${pkgs.bashInteractive}/bin/bash";
     };
   };
 
