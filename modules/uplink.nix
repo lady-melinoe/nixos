@@ -135,14 +135,9 @@ in
 
     systemd.services.melinoe-inet-setup = lib.mkIf uplinksEnabled {
       description = "Configure policy routing around the uplink interfaces";
-      after = [
-        "network-pre.target"
-        "systemd-networkd-wait-online.service"
-      ];
-      wants = [
-        "network-pre.target"
-        "systemd-networkd-wait-online.service"
-      ];
+      # Only installs ip rules/routes, which don't need any link to be up.
+      after = [ "network-pre.target" ];
+      wants = [ "network-pre.target" ];
       wantedBy = [ "multi-user.target" ];
       serviceConfig = {
         Type = "oneshot";

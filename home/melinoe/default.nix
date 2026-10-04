@@ -1,6 +1,7 @@
 { ... }:
 {
   imports = [
+    ./ghostty.nix
     ./hypr.nix
     ./keychain.nix
     ./shell.nix

@@ -8,7 +8,6 @@ in
 {
   home.packages = with pkgs; [
     # launched/toggled from hyprland binds & autostart
-    ghostty
     librewolf
     rofi
     gtk3 # gtk-launch
