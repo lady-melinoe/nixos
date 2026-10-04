@@ -51,6 +51,12 @@ in
 pkgs.writeShellApplication {
   name = "mel-ssh-provision";
 
+  checkPhase = ''
+    runHook preCheck
+    ${pkgs.stdenv.shellDryRun} "$target"
+    runHook postCheck
+  '';
+
   runtimeInputs = with pkgs; [
     openssh
     python3
