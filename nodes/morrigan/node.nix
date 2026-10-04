@@ -2,8 +2,16 @@
 {
   imports = [
     ./disk-config.nix
+    ./desktop.nix
     inputs.lanzaboote.nixosModules.lanzaboote
+    inputs.home-manager.nixosModules.home-manager
   ];
+
+  home-manager = {
+    useGlobalPkgs = true;
+    useUserPackages = true;
+    users.melinoe = import ../../home/melinoe;
+  };
 
   boot.loader.grub.enable = false;
   boot.loader.systemd-boot.enable = false;
