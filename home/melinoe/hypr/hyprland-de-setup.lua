@@ -24,20 +24,17 @@ hl.env("GTK_THEME",                       "Dracula-dark")
 -- ──────────────────────────────────────────────
 -- AUTOSTART  (exec-once)
 -- ──────────────────────────────────────────────
--- pipewire, hyprpaper, hypridle, mako, hyprpolkitagent, xdg-desktop-portal-hyprland
+-- quickshell (testshell), pipewire, hyprpaper, hypridle, mako, hyprpolkitagent, xdg-desktop-portal-hyprland
 -- and the cursor theme are managed by NixOS/home-manager (systemd), not started here.
 hl.on("hyprland.start", function()
-    -- TODO(part 2): kitty term-panel
-    -- hl.exec_cmd("rm -f ${HOME}/.cache/term-panel")
-    -- hl.exec_cmd(
-    --     "kitten panel --edge=bottom --lines=15 --focus-policy=on-demand " ..
-    --     "--layer top -o background_opacity=1 --start-as-hidden " ..
-    --     "--listen-on=unix:${HOME}/.cache/term-panel " ..
-    --     "-o allow_remote_control=socket-only kitten run-shell"
-    -- )
+    hl.exec_cmd("rm -f ${HOME}/.cache/term-panel")
+    hl.exec_cmd(
+        "kitten panel --edge=bottom --lines=15 --focus-policy=on-demand " ..
+        "--layer top -o background_opacity=1 --start-as-hidden " ..
+        "--listen-on=unix:${HOME}/.cache/term-panel " ..
+        "-o allow_remote_control=socket-only kitten run-shell"
+    )
     hl.exec_cmd("wvkbd-mobintl -L 256 -H 512 --hidden")
-    -- TODO(part 2): testshell
-    -- hl.exec_cmd("qs -p ~/Projects/testshell/")
     hl.exec_cmd("activate-linux")
     hl.exec_cmd("iio-hyprland")
 end)
@@ -48,9 +45,8 @@ end)
 hl.layer_rule({ match = { namespace = "waybar" },       order      = 2     })
 hl.layer_rule({ match = { namespace = "waybar" },       no_anim    = true  })
 hl.layer_rule({ match = { namespace = "waybar" },       above_lock = true  })
--- TODO(part 2): kitty term-panel
--- hl.layer_rule({ match = { namespace = "kitty-panel" },  order      = 3     })
--- hl.layer_rule({ match = { namespace = "kitty-panel" },  no_anim    = true  })
+hl.layer_rule({ match = { namespace = "kitty-panel" },  order      = 3     })
+hl.layer_rule({ match = { namespace = "kitty-panel" },  no_anim    = true  })
 
 
 hl.on("window.title", function(w)
