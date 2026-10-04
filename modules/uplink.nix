@@ -115,7 +115,6 @@ in
         ManageForeignRoutes = false;
         ManageForeignRoutingPolicyRules = false;
       };
-      wait-online.timeout = 30;
       netdevs = lib.mkMerge (map (units: units.netdevs) uplinkUnits);
       networks = lib.mkMerge (map (units: units.networks) uplinkUnits);
     };
