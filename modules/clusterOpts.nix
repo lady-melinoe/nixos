@@ -1,71 +1,20 @@
-{ lib, config, ... }:
+{
+  lib,
+  config,
+  melinoeLib,
+  ...
+}:
 let
   inherit (lib) mkOption types;
   addr = config.melinoe.cluster.networking;
 
-  pow2 = n: if n == 0 then 1 else 2 * pow2 (n - 1);
-  mod = a: b: a - (a / b) * b;
-
-  ip4ToInt = ip: lib.foldl' (acc: octet: acc * 256 + lib.toInt octet) 0 (lib.splitString "." ip);
-
-  int4ToIp =
-    n:
-    lib.concatStringsSep "." (
-      map (shift: toString (mod (n / pow2 shift) 256)) [
-        24
-        16
-        8
-        0
-      ]
-    );
-
-  parseCidr =
-    cidr:
-    let
-      parts = lib.splitString "/" cidr;
-      ipInt = ip4ToInt (lib.elemAt parts 0);
-      prefixLength = lib.toInt (lib.elemAt parts 1);
-      hostBits = 32 - prefixLength;
-      blockSize = pow2 hostBits;
-      networkInt = ipInt - (mod ipInt blockSize);
-    in
-    if networkInt != ipInt then
-      throw "melinoe.cluster.networking: ${cidr} is not aligned to its /${toString prefixLength} network base (did you mean ${int4ToIp networkInt}/${toString prefixLength}?)"
-    else
-      {
-        inherit prefixLength hostBits blockSize;
-        network = networkInt;
-      };
-
   smallestBlockSize = lib.foldl' lib.min (1 * 256 * 256 * 256) (
-    map (cidr: (parseCidr cidr).blockSize) [
+    map (cidr: (melinoeLib.ip.parseCidr cidr).blockSize) [
       addr.hostCidr
     ]
   );
 
-  accessRuleType = description: {
-    type = types.submodule {
-      options = {
-        tcp = mkOption {
-          type = types.listOf types.port;
-          default = [ ];
-          description = "TCP ports to allow.";
-        };
-        udp = mkOption {
-          type = types.listOf types.port;
-          default = [ ];
-          description = "UDP ports to allow.";
-        };
-        ipProtocols = mkOption {
-          type = types.listOf types.ints.u8;
-          default = [ ];
-          description = "IP protocol numbers to allow (e.g. 4 for IPIP).";
-        };
-      };
-    };
-    default = { };
-    inherit description;
-  };
+  inherit (melinoeLib) accessRuleType;
 in
 {
   options.melinoe.cluster = {
@@ -135,7 +84,7 @@ in
         default = "198.18.0.0/24";
         description = ''
           Per-node "host"/intra address range. Node N's own address on this
-          range (see melinoeNodeIntraIP) is used for haproxy sourcing and
+          range (see melinoe.node.networking.intraIP) is used for haproxy sourcing and
           the firewall's own-node range.
         '';
       };

@@ -10,9 +10,6 @@ let
   mark = toString netCfg.uplinkFwMark;
   uplinkGroup = 1;
   uplinksEnabled = netCfg.enabled && netCfg.uplinks != [ ];
-  uplinkIface =
-    idx: uplink:
-    if builtins.length uplink.iface > 1 then "bond${toString idx}" else builtins.head uplink.iface;
   uplinkAddress =
     uplink:
     let
@@ -37,7 +34,7 @@ let
     let
       ifaces = uplink.iface;
       isBonded = builtins.length ifaces > 1;
-      iface = uplinkIface idx uplink;
+      iface = builtins.elemAt netCfg.uplinkIfaceNames idx;
       isPrimary = idx == 0 && uplink.gateway != null;
     in
     {

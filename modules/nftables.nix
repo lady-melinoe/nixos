@@ -1,20 +1,17 @@
 {
   config,
   lib,
-  melinoeNodeIntraIP,
   ...
 }:
 let
   netCfg = config.melinoe.node.networking;
   addr = config.melinoe.cluster.networking;
-  nodeID = config.melinoe.node.id;
-  hostAddr = melinoeNodeIntraIP nodeID;
-  pubIps = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) netCfg.uplinks);
-  pubRouteElements = lib.optionalString (pubIps != [ ]) "elements = { ${builtins.concatStringsSep ", " pubIps} }";
-  uplinkIface =
-    idx: uplink:
-    if builtins.length uplink.iface > 1 then "bond${toString idx}" else builtins.head uplink.iface;
-  uplinkIfaceNames = lib.imap0 uplinkIface netCfg.uplinks;
+  hostAddr = netCfg.intraIP;
+  pubIps = netCfg.pubIps;
+  pubRouteElements = lib.optionalString (
+    pubIps != [ ]
+  ) "elements = { ${builtins.concatStringsSep ", " pubIps} }";
+  uplinkIfaceNames = netCfg.uplinkIfaceNames;
   renderUplinkMasqueradeRules = lib.concatStringsSep "\n" (
     map (iface: ''oifname "${iface}" masquerade'') uplinkIfaceNames
   );
@@ -78,9 +75,14 @@ let
     let
       vmVmMap = builtins.concatStringsSep ", " (map (vm: "${vmIpAddr vm} . ${vmIpAddr vm}") vms);
     in
-    lib.concatMapStrings (destSet: ''
-      ct original ip daddr ${destSet} ip saddr . ip daddr { ${vmVmMap} } snat to 198.18.255.254
-    '') [ "$hostaddr" "@pubroutefix" ];
+    lib.concatMapStrings
+      (destSet: ''
+        ct original ip daddr ${destSet} ip saddr . ip daddr { ${vmVmMap} } snat to 198.18.255.254
+      '')
+      [
+        "$hostaddr"
+        "@pubroutefix"
+      ];
 
   renderAccessRule =
     {

@@ -3,7 +3,6 @@
   lib,
   pkgs,
   inputs,
-  melinoeNodeIntraIP,
   ...
 }:
 let
@@ -11,13 +10,13 @@ let
   cfg = config.melinoe;
   mCfg = cfg.services.melnode;
 
-  melnodeKernelPackage =
-    config.boot.kernelPackages.callPackage (inputs.melinoe-vpn-kernelspace + "/package.nix")
-      { };
+  melnodeKernelPackage = config.boot.kernelPackages.callPackage (
+    inputs.melinoe-vpn-kernelspace + "/package.nix"
+  ) { };
   netCfg = cfg.node.networking;
   nodeID = cfg.node.id;
 
-  hostAddr = melinoeNodeIntraIP nodeID;
+  hostAddr = netCfg.intraIP;
 
   tunPrefix = "node-";
   controlSocket = "/run/melnode/control.sock";
@@ -59,7 +58,7 @@ let
     }
     // lib.optionalAttrs (host != null) { endpoint = formatEndpoint host; };
 
-  pubIps = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) netCfg.uplinks);
+  pubIps = netCfg.pubIps;
 
   helper = pkgs.writers.writePython3Bin "melnode-helper" {
     doCheck = false;

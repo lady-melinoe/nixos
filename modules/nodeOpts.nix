@@ -1,30 +1,14 @@
-{ lib, config, ... }:
+{
+  lib,
+  config,
+  melinoeLib,
+  ...
+}:
 let
   inherit (lib) mkOption types;
 
-  accessRuleType = description: {
-    type = types.submodule {
-      options = {
-        tcp = mkOption {
-          type = types.listOf types.port;
-          default = [ ];
-          description = "TCP ports to allow.";
-        };
-        udp = mkOption {
-          type = types.listOf types.port;
-          default = [ ];
-          description = "UDP ports to allow.";
-        };
-        ipProtocols = mkOption {
-          type = types.listOf types.ints.u8;
-          default = [ ];
-          description = "IP protocol numbers to allow (e.g. 4 for IPIP).";
-        };
-      };
-    };
-    default = { };
-    inherit description;
-  };
+  inherit (melinoeLib) accessRuleType;
+  netCfg = config.melinoe.node.networking;
 in
 {
   options.melinoe.node = {
@@ -90,6 +74,33 @@ in
     };
 
     networking = {
+      intraIP = mkOption {
+        type = types.str;
+        readOnly = true;
+        default = melinoeLib.ip.nodeAddress config.melinoe.cluster.networking.hostCidr config.melinoe.node.id;
+        defaultText = lib.literalExpression "melinoeLib.ip.nodeAddress config.melinoe.cluster.networking.hostCidr config.melinoe.node.id";
+        description = "This node's own address on melinoe.cluster.networking.hostCidr, derived from melinoe.node.id.";
+      };
+
+      uplinkIfaceNames = mkOption {
+        type = types.listOf types.str;
+        readOnly = true;
+        default = lib.imap0 (
+          idx: uplink:
+          if builtins.length uplink.iface > 1 then "bond${toString idx}" else builtins.head uplink.iface
+        ) netCfg.uplinks;
+        defaultText = lib.literalMD "one name per uplink: its interface, or `bond<index>` when it has several";
+        description = "Interface name each entry of uplinks ends up on, in the same order.";
+      };
+
+      pubIps = mkOption {
+        type = types.listOf types.str;
+        readOnly = true;
+        default = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) netCfg.uplinks);
+        defaultText = lib.literalMD "every non-null `pub_ip` in uplinks";
+        description = "Public IPs of this node's uplinks.";
+      };
+
       enabled = mkOption {
         type = types.bool;
         default = true;
