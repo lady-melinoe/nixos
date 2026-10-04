@@ -2,6 +2,7 @@
   config,
   lib,
   pkgs,
+  melinoeAfterMeshAddress,
   ...
 }:
 let
@@ -13,6 +14,7 @@ in
     virtualisation.incus.enable = true;
     virtualisation.incus.package = pkgs.incus;
     virtualisation.incus.softDaemonRestart = true;
+    systemd.services.incus = melinoeAfterMeshAddress;
     melinoe.node.networking.specialHostAccess.tcp = [ 8008 ]; # Incus Cluster
     melinoe.node.networking.openPorts.tcp = [ 8069 ]; # Incus MGMT
     users.users.melinoe.extraGroups = [ "incus-admin" ];

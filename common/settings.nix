@@ -3,6 +3,7 @@
   pkgs,
   inputs,
   melinoeNodeIntraIP,
+  melinoeAfterMeshAddress,
   ...
 }:
 {
@@ -142,6 +143,7 @@
     "-B"
     (melinoeNodeIntraIP config.melinoe.node.id)
   ];
+  systemd.services.glances = melinoeAfterMeshAddress;
 
   boot.kernel.sysctl = {
     "net.ipv6.conf.all.autoconf" = false;

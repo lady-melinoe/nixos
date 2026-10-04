@@ -2,6 +2,7 @@
   config,
   lib,
   melinoeNodeIntraIP,
+  melinoeAfterMeshAddress,
   ...
 }:
 let
@@ -147,6 +148,8 @@ in
 
   config = lib.mkIf cfg.enable {
     melinoe.node.networking.openPorts.tcp = cfg.ports;
+
+    systemd.services.haproxy = melinoeAfterMeshAddress;
 
     services.haproxy = {
       enable = true;
