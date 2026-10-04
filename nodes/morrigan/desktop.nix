@@ -1,4 +1,10 @@
-{ config, pkgs, utils, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  utils,
+  ...
+}:
 {
   # UWSM provides graphical-session.target so the home-manager user services
   # (hypridle, hyprpaper, mako, hyprpolkitagent) are bound to the session.
@@ -11,25 +17,43 @@
   # as void) -> when it exits/crashes, a stock agetty login prompt -> when that
   # login session ends, back to Hyprland.
   # There is deliberately no autologin getty anywhere: the only way into a shell
-  # is a password at the stock agetty prompt. Modelled on nixpkgs' cage-tty1.
+  # is a password at the stock agetty prompt.
+  #
+  # tty1-session is the only thing started at boot; it runs hyprland-tty1 and
+  # getty@tty1 one after the other, forever. Both of those are manual-start
+  # only (nothing wants them), and getty@tty1 doesn't restart itself, so
+  # control always returns to the loop.
   systemd.defaultUnit = "graphical.target";
-  systemd.targets.graphical.wants = [ "hyprland-tty1.service" ];
 
-  systemd.services.hyprland-tty1 = {
+  systemd.services.tty1-session = {
     after = [
       "systemd-user-sessions.service"
       "systemd-logind.service"
-      "getty@tty1.service"
     ];
-    before = [ "graphical.target" ];
+    wantedBy = [ "graphical.target" ];
+    restartIfChanged = false;
+    stopIfChanged = false;
+    serviceConfig = {
+      Restart = "always";
+      ExecStart = pkgs.writeShellScript "tty1-session" ''
+        while true; do
+          systemctl start --wait hyprland-tty1.service
+          systemctl start --wait getty@tty1.service
+          sleep 1 # don't spin if both fail immediately
+        done
+      '';
+    };
+    path = [ config.systemd.package ];
+  };
+
+  systemd.services.hyprland-tty1 = {
+    after = [ "systemd-logind.service" ];
     wants = [
       "dbus.socket"
       "systemd-logind.service"
     ];
+    # never share tty1 with the login prompt
     conflicts = [ "getty@tty1.service" ];
-    # Whichever way Hyprland ends, fall through to the login prompt.
-    onSuccess = [ "getty@tty1.service" ];
-    onFailure = [ "getty@tty1.service" ];
 
     restartIfChanged = false;
     stopIfChanged = false;
@@ -55,12 +79,11 @@
     };
   };
 
-  # And back to Hyprland once the agetty login session ends, instead of
-  # agetty respawning.
+  # Stock agetty, but: not started at boot, and it exits (instead of
+  # respawning) when the login session ends so tty1-session can continue.
+  systemd.targets.getty.wants = lib.mkForce [ ];
   systemd.services."getty@tty1" = {
     overrideStrategy = "asDropin";
-    onSuccess = [ "hyprland-tty1.service" ];
-    onFailure = [ "hyprland-tty1.service" ];
     serviceConfig.Restart = "no";
   };
 
