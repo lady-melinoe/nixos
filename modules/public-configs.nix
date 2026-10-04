@@ -1,21 +1,9 @@
-{ lib, ... }:
+{ lib, melinoeLib, ... }:
 let
   inherit (lib) mkOption types;
-  nodesDir = ../nodes;
-  entries = builtins.readDir nodesDir;
-  publicModules = lib.concatMap (
-    name:
-    if entries.${name} == "directory" then
-      let
-        candidate = nodesDir + "/${name}/public.nix";
-      in
-      if builtins.pathExists candidate then [ candidate ] else [ ]
-    else
-      [ ]
-  ) (builtins.attrNames entries);
 in
 {
-  imports = publicModules;
+  imports = builtins.attrValues (melinoeLib.nodesWith ../nodes "public.nix");
 
   options.melinoe.nodePublicInfo = mkOption {
     type = types.attrsOf (

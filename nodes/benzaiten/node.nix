@@ -8,7 +8,6 @@
 }:
 {
   imports = [
-    inputs.disko.nixosModules.disko
     ./disk-config.nix
   ];
   melinoe.node.id = 4;

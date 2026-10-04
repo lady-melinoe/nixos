@@ -18,6 +18,12 @@ in
 pkgs.writeShellApplication {
   name = "mel-deploy";
 
+  checkPhase = ''
+    runHook preCheck
+    ${pkgs.stdenv.shellDryRun} "$target"
+    runHook postCheck
+  '';
+
   runtimeInputs = with pkgs; [
     coreutils
     gnugrep
@@ -86,13 +92,10 @@ pkgs.writeShellApplication {
 
     mkdir -p "$workdir/.ssh"
 
-    # shellcheck disable=SC2154
     base64 -d < "$ssh_key" > "$workdir/.ssh/id_ed25519"
 
-    # shellcheck disable=SC2154
     base64 -d < "$ssh_cert" > "$workdir/.ssh/id_ed25519-cert.pub"
 
-    # shellcheck disable=SC2154
     base64 -d < "$ssh_host_ca" > "$workdir/.ssh/host_ca.pub"
 
     chmod 600 "$workdir/.ssh/id_ed25519"
@@ -118,7 +121,6 @@ pkgs.writeShellApplication {
 
       echo "Deploying: $host → $fqdn"
 
-      # shellcheck disable=SC2029
       if ssh "''${SSH_OPTS[@]}" "gitlab-deploy@$fqdn"; then
         echo "OK: $host"
       else

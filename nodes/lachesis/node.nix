@@ -9,7 +9,6 @@
 {
   imports = [
     (modulesPath + "/profiles/qemu-guest.nix")
-    inputs.disko.nixosModules.disko
     ./disk-config.nix
   ];
   melinoe.node.serialConsoleMode = true;

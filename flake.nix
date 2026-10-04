@@ -3,7 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    disko.url = "github:nix-community/disko";
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
 
     # Pinned by rev so `nix flake update` never bumps the kernel (and thus
     # never forces a melnode module rebuild). To update: change the rev.
@@ -30,30 +33,21 @@
     let
       system = "x86_64-linux";
       lib = nixpkgs.lib;
-      pkgs = import nixpkgs { inherit system; };
+      pkgs = nixpkgs.legacyPackages.${system};
+      melinoeLib = import ./lib { inherit lib; };
 
-      nodeDir = ./nodes;
-
-      nodes =
-        let
-          dirEntries = builtins.readDir nodeDir;
-
-          nodeNames = lib.filterAttrs (
-            name: type: type == "directory" && builtins.pathExists (nodeDir + "/${name}/node.nix")
-          ) dirEntries;
-        in
-        lib.mapAttrs (name: _: nodeDir + "/${name}/node.nix") nodeNames;
+      nodes = melinoeLib.nodesWith ./nodes "node.nix";
 
       mkNixosConfiguration =
         _: module:
         lib.nixosSystem {
-          inherit system;
-
           specialArgs = {
-            inherit inputs system;
+            inherit inputs melinoeLib;
           };
 
           modules = [
+            inputs.disko.nixosModules.disko
+            { nixpkgs.hostPlatform = system; }
             ./common
             ./modules
             module
