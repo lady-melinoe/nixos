@@ -14,7 +14,7 @@
       font-size = 8;
       term = "ghostty";
       shell-integration = "none";
-      gtk-adwaita = false;
+#     gtk-adwaita = false; seems to be broken on nix? idk.
       gtk-titlebar = false;
       gtk-tabs-location = "hidden";
       window-theme = "system";
