@@ -10,6 +10,7 @@ let
   nodeID = config.melinoe.node.id;
   hostAddr = melinoeNodeIntraIP nodeID;
   pubIps = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) netCfg.uplinks);
+  pubRouteElements = lib.optionalString (pubIps != [ ]) "elements = { ${builtins.concatStringsSep ", " pubIps} }";
   uplinkIface =
     idx: uplink:
     if builtins.length uplink.iface > 1 then "bond${toString idx}" else builtins.head uplink.iface;
@@ -45,11 +46,13 @@ let
     lib.optionalString (ports != [ ]) ''
       ${matchExpr} ${proto} dport ${portSet ports} dnat to ${dst}
     '';
-  renderDestRules = lib.concatMapStrings (
-    mapping:
-    (renderProtoRule "tcp" mapping.tcp "ip daddr $local_dests" mapping.dst)
-    + (renderProtoRule "udp" mapping.udp "ip daddr $local_dests" mapping.dst)
-  ) natMappings;
+  renderDestRules =
+    destSet:
+    lib.concatMapStrings (
+      mapping:
+      (renderProtoRule "tcp" mapping.tcp "ip daddr ${destSet}" mapping.dst)
+      + (renderProtoRule "udp" mapping.udp "ip daddr ${destSet}" mapping.dst)
+    ) natMappings;
   nftIfaceSet =
     names:
     if names == [ ] then "{ }" else "{ ${lib.concatStringsSep ", " (map (n: "\"${n}\"") names)} }";
@@ -75,9 +78,9 @@ let
     let
       vmVmMap = builtins.concatStringsSep ", " (map (vm: "${vmIpAddr vm} . ${vmIpAddr vm}") vms);
     in
-    ''
-      ct original ip daddr $local_dests ip saddr . ip daddr { ${vmVmMap} } snat to 198.18.255.254
-    '';
+    lib.concatMapStrings (destSet: ''
+      ct original ip daddr ${destSet} ip saddr . ip daddr { ${vmVmMap} } snat to 198.18.255.254
+    '') [ "$hostaddr" "@pubroutefix" ];
 
   renderAccessRule =
     {
@@ -128,8 +131,6 @@ in
             flush ruleset
             define uplink_ifs = ${nftIfaceSet uplinkIfaceNames}
             define hostaddr = ${hostAddr}
-            define pubroutefix = { ${builtins.concatStringsSep ", " pubIps} }
-            define local_dests = { $hostaddr, $pubroutefix }
             table inet filter {
               chain INPUT {
                 type filter hook input priority filter; policy drop;
@@ -167,9 +168,15 @@ in
               }
             }
             table ip nat {
+              set pubroutefix {
+                type ipv4_addr
+                flags interval
+                ${pubRouteElements}
+              }
               chain prerouting {
                 type nat hook prerouting priority dstnat;
-        ${renderDestRules}
+        ${renderDestRules "$hostaddr"}
+        ${renderDestRules "@pubroutefix"}
               }
               chain postrouting {
                 type nat hook postrouting priority srcnat;
