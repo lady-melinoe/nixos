@@ -8,9 +8,9 @@
 let
   hostAddr = melinoeNodeIntraIP config.melinoe.node.id;
   netCfg = config.melinoe.node.networking;
-  # Container/mesh range (198.18.0.0/16): must never be routed out an uplink.
   meshCidr = config.melinoe.cluster.networking.containerCidr;
-  table = toString netCfg.uplinkFwMark;
+  mark = toString netCfg.uplinkFwMark;
+  uplinkGroup = "1";
   uplinkIface =
     idx: uplink:
     if builtins.length uplink.iface > 1 then "bond${toString idx}" else builtins.head uplink.iface;
@@ -48,13 +48,11 @@ let
           ip link set ${name} master ${iface}
         '') ifaces}
       ''}
-      ip link set ${iface} up
+      ip link set ${iface} group ${uplinkGroup} up
       ip addr flush dev ${iface}
       ip addr replace ${ipWithPrefix} dev ${iface}
-      ip route replace ${ipWithPrefix} dev ${iface} table ${table}
       ${lib.optionalString (uplink.subnet != null) ''
         ip route replace ${uplink.subnet} dev ${iface}
-        ip route replace ${uplink.subnet} dev ${iface} table ${table}
       ''}
     '';
 in
@@ -92,19 +90,14 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = pkgs.writeShellScript "melinoe-inet-setup" ''
-          ip rule del fwmark ${table} lookup ${table} >/dev/null 2>&1 || true
-          ip rule add fwmark ${table} lookup ${table}
+          ip rule del pref 0 fwmark ${mark} lookup main suppress_ifgroup default >/dev/null 2>&1 || true
+          ip rule add pref 0 fwmark ${mark} lookup main suppress_ifgroup default
           ip rule del pref 1 from all lookup local >/dev/null 2>&1 || true
           ip rule add pref 1 from all lookup local
           ip rule del pref 0 from all lookup local >/dev/null 2>&1 || true
           ip addr del ${hostAddr}/32 dev lo >/dev/null 2>&1 || true
           ip addr add ${hostAddr}/32 dev lo
-          # Unknown mesh addresses must fail, not fall through to the default
-          # route and leak out an uplink. Mesh /32s and VM routes are more
-          # specific, so they still win. Also in the uplink table, which has
-          # its own default route.
           ip route replace unreachable ${meshCidr}
-          ip route replace unreachable ${meshCidr} table ${table}
           sysctl -w net.ipv4.conf.default.rp_filter=0
           sysctl -w net.ipv4.conf.all.rp_filter=0
           ${lib.concatStringsSep "\n" (lib.imap0 mkUplinkScript netCfg.uplinks)}
@@ -114,7 +107,6 @@ in
             in
             lib.optionalString (firstUplink.gateway != null) ''
               ip route replace default via ${firstUplink.gateway} dev ${uplinkIface 0 firstUplink}
-              ip route replace default via ${firstUplink.gateway} dev ${uplinkIface 0 firstUplink} table ${table}
             ''
           }
         '';

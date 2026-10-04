@@ -100,10 +100,10 @@ in
         type = types.ints.u32;
         default = 51820;
         description = ''
-          fwmark value - and, since uplink.nix also uses it as
-          the policy-routing table id, table number - used to route return
-          traffic for the internet uplink(s) back out via the uplink
-          interfaces instead of over the mesh. Also set as melnode's socket
+          fwmark value used to route return traffic for the internet
+          uplink(s) back out via the uplink interfaces instead of over the
+          mesh. Marked packets are looked up in the main table with routes
+          via non-uplink interface groups suppressed. Also set as melnode's socket
           fwmark so its own UDP traffic stays on the uplink. Consumed by
           melnode.nix, uplink.nix, and nftables.nix; kept as a single
           option so those three stay in sync.
