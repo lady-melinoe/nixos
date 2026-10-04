@@ -69,7 +69,7 @@
   melinoe.node.networking.uplinks = [
     {
       dhcp = true;
-      iface = [ "wlp1s0" ];
+      iface = [ "wlan0" ];
     }
   ];
   melinoe.services.melnode.kernelDataplane.enable = true;
