@@ -18,6 +18,20 @@ in
       description = "Unique node ID used for addressing and routing.";
     };
 
+    type = mkOption {
+      type = types.enum [
+        "server"
+        "workstation"
+      ];
+      default = "server";
+      description = ''
+        What kind of machine this is. "server" is a rack/VM cluster node with
+        the old shared initrd module set. "workstation" defaults isVMHost,
+        isRemoteUpdatable and melinoe.services.haproxy.enable to false and
+        brings its own hardware config.
+      '';
+    };
+
     isVMHost = mkOption {
       type = types.bool;
       default = true;
@@ -58,7 +72,13 @@ in
     isRemoteUpdatable = mkOption {
       type = types.bool;
       default = true;
-      description = "Whether to enable the remote update scripts and the gitlab-deploy user allowed to trigger them.";
+      description = "Whether to create the gitlab-deploy user and allow it to trigger update-safe; also what mel-deploy uses to pick its targets.";
+    };
+
+    hasUpdateScripts = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Whether to install the update and update-safe scripts.";
     };
 
     serialConsoleMode = mkOption {
@@ -151,9 +171,15 @@ in
         type = types.listOf (
           types.submodule {
             options = {
+              dhcp = mkOption {
+                type = types.bool;
+                default = false;
+                description = "Get this uplink's address and default route over DHCPv4 instead of ip/subnet/gateway.";
+              };
               ip = mkOption {
-                type = types.str;
-                description = "Primary IP address for this uplink (use /32 notation).";
+                type = types.nullOr types.str;
+                default = null;
+                description = "Primary IP address for this uplink (use /32 notation). Required unless dhcp is set.";
               };
               pub_ip = mkOption {
                 type = types.nullOr types.str;

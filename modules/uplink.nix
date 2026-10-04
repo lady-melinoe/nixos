@@ -36,6 +36,10 @@ let
       isBonded = builtins.length ifaces > 1;
       iface = builtins.elemAt netCfg.uplinkIfaceNames idx;
       isPrimary = idx == 0 && uplink.gateway != null;
+      staticNetworkConfig = {
+        ConfigureWithoutCarrier = true;
+        IgnoreCarrierLoss = true;
+      };
     in
     {
       netdevs = lib.optionalAttrs isBonded {
@@ -53,17 +57,16 @@ let
       networks = {
         "10-${iface}" = {
           matchConfig.Name = iface;
-          address = [ (uplinkAddress uplink) ];
+          address = lib.optional (!uplink.dhcp) (uplinkAddress uplink);
           gateway = lib.optional isPrimary uplink.gateway;
           linkConfig = {
             Group = uplinkGroup;
             RequiredForOnline = if isPrimary then "yes" else "no";
           };
           networkConfig = {
-            ConfigureWithoutCarrier = true;
-            IgnoreCarrierLoss = true;
             IPv6AcceptRA = false;
-          };
+          }
+          // (if uplink.dhcp then { DHCP = "ipv4"; } else staticNetworkConfig);
         };
       }
       // lib.optionalAttrs isBonded (
@@ -98,6 +101,14 @@ in
         {
           assertion = !(hasBondMode && entry.bondMode != "lacp");
           message = "melinoe.node.networking.uplinks: only bondMode = \"lacp\" is supported.";
+        }
+        {
+          assertion = entry.dhcp || entry.ip != null;
+          message = "melinoe.node.networking.uplinks: ip must be set unless dhcp = true.";
+        }
+        {
+          assertion = !entry.dhcp || (entry.ip == null && entry.subnet == null && entry.gateway == null);
+          message = "melinoe.node.networking.uplinks: ip, subnet and gateway come from DHCP when dhcp = true; leave them unset.";
         }
         {
           assertion = !(hasLacpRate && !isBonded);

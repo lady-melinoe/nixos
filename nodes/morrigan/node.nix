@@ -1,32 +1,10 @@
-{
-  config,
-  pkgs,
-  lib,
-  inputs,
-  modulesPath,
-  ...
-}:
+{ ... }:
 {
   imports = [
-    (modulesPath + "/profiles/qemu-guest.nix")
     ./disk-config.nix
-  ];
-  melinoe.node.serialConsoleMode = true;
-  melinoe.node.id = 6;
-  networking.hostName = "lachesis";
-  melinoe.node.networking.uplinks = [
-    {
-      ip = "198.19.1.4/32";
-      pub_ip = "161.33.94.79/32";
-      iface = [ "ens3" ];
-      subnet = "198.19.1.0/24";
-      gateway = "198.19.1.1";
-    }
   ];
   nix.distributedBuilds = true;
   nix.settings.builders-use-substitutes = true;
-  melinoe.services.melnode.kernelDataplane.enable = true;
-  melinoe.services.melnode.dataplane = "kernel";
   melinoe.node.remoteBuildOn = [
     {
       hostName = "hecate.infra.melinoe.xyz";
@@ -65,32 +43,65 @@
       ];
     }
   ];
+  melinoe.node.type = "workstation";
+  melinoe.node.id = 8;
+  networking.hostName = "morrigan";
+
+  hardware.enableRedistributableFirmware = true;
+  hardware.cpu.amd.updateMicrocode = true;
+  boot.initrd.availableKernelModules = [
+    "nvme"
+    "xhci_pci"
+    "thunderbolt"
+    "usb_storage"
+    "uas"
+    "sd_mod"
+  ];
+  boot.kernelModules = [ "kvm-amd" ];
+
+  networking.wireless.iwd = {
+    enable = true;
+    settings = {
+      General.EnableNetworkConfiguration = false;
+      DriverQuirks.DefaultInterface = "*";
+    };
+  };
+  melinoe.node.networking.uplinks = [
+    {
+      dhcp = true;
+      iface = [ "wlp1s0" ];
+    }
+  ];
+  melinoe.services.melnode.kernelDataplane.enable = true;
+  melinoe.services.melnode.dataplane = "kernel";
   melinoe.node.networking.peers = [
     {
-      id = 7;
-    }
-    {
-      id = 5;
-      prependCount = 2;
-    }
-    {
-      id = 4;
-      prependCount = 2;
-    }
-    {
-      id = 3;
-      prependCount = 2;
+      id = 1;
+      prependCount = 4;
     }
     {
       id = 2;
-      prependCount = 2;
+      prependCount = 4;
     }
     {
-      id = 1;
-      prependCount = 2;
+      id = 3;
+      prependCount = 4;
     }
     {
-      id = 8;
+      id = 4;
+      prependCount = 4;
+    }
+    {
+      id = 5;
+      prependCount = 4;
+    }
+    {
+      id = 6;
+      prependCount = 4;
+    }
+    {
+      id = 7;
+      prependCount = 4;
     }
   ];
 }
