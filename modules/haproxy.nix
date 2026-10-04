@@ -1,15 +1,14 @@
 {
   config,
   lib,
-  melinoeNodeIntraIP,
-  melinoeAfterMeshAddress,
+  melinoeLib,
   ...
 }:
 let
   inherit (lib) mkOption types;
   mel = config.melinoe;
   cfg = mel.services.haproxy;
-  hostAddr = melinoeNodeIntraIP mel.node.id;
+  hostAddr = mel.node.networking.intraIP;
 
   serverLine =
     port: node:
@@ -149,7 +148,7 @@ in
   config = lib.mkIf cfg.enable {
     melinoe.node.networking.openPorts.tcp = cfg.ports;
 
-    systemd.services.haproxy = melinoeAfterMeshAddress;
+    systemd.services.haproxy = melinoeLib.afterMeshAddress;
 
     services.haproxy = {
       enable = true;

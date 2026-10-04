@@ -17,4 +17,17 @@
         name: type: type == "directory" && builtins.pathExists (dir + "/${name}/${file}")
       ) (builtins.readDir dir)
     );
+
+  ip = import ./ip.nix { inherit lib; };
+
+  inherit (import ./types.nix { inherit lib; }) accessRuleType;
+
+  afterMeshAddress =
+    let
+      unit = "systemd-networkd-wait-online@lo.service";
+    in
+    {
+      after = [ unit ];
+      wants = [ unit ];
+    };
 }

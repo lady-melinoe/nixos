@@ -2,8 +2,7 @@
   config,
   pkgs,
   inputs,
-  melinoeNodeIntraIP,
-  melinoeAfterMeshAddress,
+  melinoeLib,
   ...
 }:
 {
@@ -141,9 +140,9 @@
   services.glances.extraArgs = [
     "--webserver"
     "-B"
-    (melinoeNodeIntraIP config.melinoe.node.id)
+    config.melinoe.node.networking.intraIP
   ];
-  systemd.services.glances = melinoeAfterMeshAddress;
+  systemd.services.glances = melinoeLib.afterMeshAddress;
 
   boot.kernel.sysctl = {
     "net.ipv6.conf.all.autoconf" = false;
