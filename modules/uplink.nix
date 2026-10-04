@@ -2,11 +2,9 @@
   config,
   lib,
   pkgs,
-  melinoeNodeIntraIP,
   ...
 }:
 let
-  hostAddr = melinoeNodeIntraIP config.melinoe.node.id;
   netCfg = config.melinoe.node.networking;
   meshCidr = config.melinoe.cluster.networking.containerCidr;
   mark = toString netCfg.uplinkFwMark;
@@ -122,8 +120,14 @@ in
       networks = lib.mkMerge (map (units: units.networks) uplinkUnits);
     };
 
+    boot.kernel.sysctl = lib.mkIf uplinksEnabled {
+      "net.ipv4.conf.all.rp_filter" = 0;
+      "net.ipv4.conf.default.rp_filter" = 0;
+      "net.ipv4.conf.*.rp_filter" = 0;
+    };
+
     systemd.services.melinoe-inet-setup = lib.mkIf uplinksEnabled {
-      description = "Configure policy routing and mesh addressing around the uplink interfaces";
+      description = "Configure policy routing around the uplink interfaces";
       after = [
         "network-pre.target"
         "systemd-networkd-wait-online.service"
@@ -142,17 +146,10 @@ in
           ip rule del pref 1 from all lookup local >/dev/null 2>&1 || true
           ip rule add pref 1 from all lookup local
           ip rule del pref 0 from all lookup local >/dev/null 2>&1 || true
-          ip addr del ${hostAddr}/32 dev lo >/dev/null 2>&1 || true
-          ip addr add ${hostAddr}/32 dev lo
           ip route replace unreachable ${meshCidr}
-          sysctl -w net.ipv4.conf.default.rp_filter=0
-          sysctl -w net.ipv4.conf.all.rp_filter=0
         '';
       };
-      path = [
-        pkgs.iproute2
-        pkgs.procps
-      ];
+      path = [ pkgs.iproute2 ];
     };
   };
 }
