@@ -13,14 +13,7 @@ let
   uplinkIface =
     idx: uplink:
     if builtins.length uplink.iface > 1 then "bond${toString idx}" else builtins.head uplink.iface;
-  uplinkIpAddr = uplink: builtins.head (lib.splitString "/" uplink.ip);
   uplinkIfaceNames = lib.imap0 uplinkIface netCfg.uplinks;
-  renderUplinkDnatRules = lib.concatStringsSep "\n" (
-    lib.imap0 (
-      idx: uplink:
-      ''iifname "${uplinkIface idx uplink}" ip daddr ${uplinkIpAddr uplink} dnat to ${hostAddr}''
-    ) netCfg.uplinks
-  );
   renderUplinkMasqueradeRules = lib.concatStringsSep "\n" (
     map (iface: ''oifname "${iface}" masquerade'') uplinkIfaceNames
   );
@@ -52,13 +45,11 @@ let
     lib.optionalString (ports != [ ]) ''
       ${matchExpr} ${proto} dport ${portSet ports} dnat to ${dst}
     '';
-  renderDestRules =
-    destExpr:
-    lib.concatMapStrings (
-      mapping:
-      (renderProtoRule "tcp" mapping.tcp "ip daddr ${destExpr}" mapping.dst)
-      + (renderProtoRule "udp" mapping.udp "ip daddr ${destExpr}" mapping.dst)
-    ) natMappings;
+  renderDestRules = lib.concatMapStrings (
+    mapping:
+    (renderProtoRule "tcp" mapping.tcp "ip daddr $local_dests" mapping.dst)
+    + (renderProtoRule "udp" mapping.udp "ip daddr $local_dests" mapping.dst)
+  ) natMappings;
   nftIfaceSet =
     names:
     if names == [ ] then "{ }" else "{ ${lib.concatStringsSep ", " (map (n: "\"${n}\"") names)} }";
@@ -83,10 +74,9 @@ let
   renderVmHairpinSnatRules =
     let
       vmVmMap = builtins.concatStringsSep ", " (map (vm: "${vmIpAddr vm} . ${vmIpAddr vm}") vms);
-      hairpinDests = if pubIps != [ ] then "{ ${hostAddr}, $pubroutefix }" else "{ ${hostAddr} }";
     in
     ''
-      ct original ip daddr ${hairpinDests} ip saddr . ip daddr { ${vmVmMap} } snat to 198.18.255.254
+      ct original ip daddr $local_dests ip saddr . ip daddr { ${vmVmMap} } snat to 198.18.255.254
     '';
 
   renderAccessRule =
@@ -137,9 +127,9 @@ in
     networking.nftables.ruleset = ''
             flush ruleset
             define uplink_ifs = ${nftIfaceSet uplinkIfaceNames}
-        ${lib.optionalString (pubIps != [ ]) ''
-          define pubroutefix = { ${builtins.concatStringsSep ", " pubIps} }
-        ''}
+            define hostaddr = ${hostAddr}
+            define pubroutefix = { ${builtins.concatStringsSep ", " pubIps} }
+            define local_dests = { $hostaddr, $pubroutefix }
             table inet filter {
               chain INPUT {
                 type filter hook input priority filter; policy drop;
@@ -179,8 +169,7 @@ in
             table ip nat {
               chain prerouting {
                 type nat hook prerouting priority dstnat;
-        ${lib.optionalString (pubIps != [ ]) (renderDestRules "$pubroutefix")}
-        ${lib.optionalString (pubIps != [ ]) (renderDestRules "${hostAddr}")}
+        ${renderDestRules}
               }
               chain postrouting {
                 type nat hook postrouting priority srcnat;
