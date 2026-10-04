@@ -49,23 +49,6 @@
       inputs.nixpkgs-kernel.legacyPackages.${pkgs.stdenv.hostPlatform.system}.linuxPackages_latest;
     tmp.cleanOnBoot = true;
     loader.grub.configurationLimit = 5;
-    initrd = {
-      availableKernelModules = [
-        "ata_piix"
-        "uhci_hcd"
-        "xen_blkfront"
-        "vmw_pvscsi"
-        "sd_mod"
-        "usbhid"
-        "usb_storage"
-        "mpt3sas"
-        "ehci_pci"
-      ];
-      kernelModules = [
-        "nvme"
-        "kvm-intel"
-      ];
-    };
   };
   zramSwap.enable = true;
   systemd.oomd.enable = false;

@@ -7,13 +7,15 @@
 let
   deployDomain = "intra.melinoe.xyz";
 
-  nodeNames = builtins.attrNames nixosConfigurations;
+  deployable = lib.filterAttrs (
+    _: cfg: cfg.config.melinoe.node.isRemoteUpdatable
+  ) nixosConfigurations;
+
+  nodeNames = builtins.attrNames deployable;
 
   knownNodesStr = lib.concatStringsSep ", " nodeNames;
 
-  deployNodesJson = builtins.toJSON (
-    lib.mapAttrs (name: _: "${name}.${deployDomain}") nixosConfigurations
-  );
+  deployNodesJson = builtins.toJSON (lib.mapAttrs (name: _: "${name}.${deployDomain}") deployable);
 in
 pkgs.writeShellApplication {
   name = "mel-deploy";
