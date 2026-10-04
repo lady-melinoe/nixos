@@ -1,7 +1,6 @@
 {
   config,
   lib,
-  pkgs,
   ...
 }:
 let
@@ -57,7 +56,7 @@ let
   nodeIntraIP = nodeAddress addr.hostCidr;
 
   meshAddress = nodeIntraIP nodeID;
-  meshAddressUnit = "melinoe-mesh-address.service";
+  meshAddressUnit = "systemd-networkd-wait-online@lo.service";
 in
 {
   config = {
@@ -78,29 +77,12 @@ in
 
     systemd.network = {
       enable = true;
+      wait-online.timeout = 30;
       networks."10-lo" = {
         matchConfig.Name = "lo";
         address = [ "${meshAddress}/32" ];
-        linkConfig.RequiredForOnline = "no";
         networkConfig.KeepConfiguration = "static";
       };
-    };
-
-    systemd.services.melinoe-mesh-address = {
-      description = "Wait for the mesh address on lo";
-      after = [ "systemd-networkd.service" ];
-      wants = [ "systemd-networkd.service" ];
-      path = [ pkgs.iproute2 ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        TimeoutStartSec = 30;
-      };
-      script = ''
-        until [ -n "$(ip -4 -o addr show dev lo to ${meshAddress}/32)" ]; do
-          sleep 0.1
-        done
-      '';
     };
   };
 }
