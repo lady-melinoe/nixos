@@ -41,4 +41,5 @@ in
         substituteInPlace meson.build --replace-fail "1.94.9" "1.94.6"
       '';
     )};
+  };
 }
