@@ -1,4 +1,5 @@
 {
+  config,
   pkgs,
   ...
 }:
@@ -10,18 +11,53 @@
     withUWSM = true;
   };
 
-  # Same as void: greetd runs this as melinoe (no greeter user, no login) ->
-  # Hyprland (locked by hyprlock on start) -> when it exits, agreety asks for a
-  # password and gives a shell -> when that shell ends, greetd restarts this and
-  # we're back in Hyprland.
-  services.greetd = {
-    enable = true;
-    settings.initial_session = {
-      command = pkgs.writeShellScript "start-hypr" ''
-        uwsm start hyprland-uwsm.desktop
-        ${pkgs.greetd}/bin/agreety --cmd ${pkgs.bashInteractive}/bin/bash
-      '';
-      user = "melinoe";
+  systemd.services."getty@tty1".enable = false;
+  systemd.services."autovt@tty1".enable = false;
+
+  systemd.services.hypr-session = {
+    wantedBy = [ "multi-user.target" ];
+    after = [
+      "systemd-user-sessions.service"
+      "systemd-logind.service"
+    ];
+    conflicts = [ "tty-login.service" ];
+    onSuccess = [ "tty-login.service" ];
+    onFailure = [ "tty-login.service" ];
+    startLimitIntervalSec = 0;
+    serviceConfig = {
+      User = "melinoe";
+      PAMName = "login";
+      TTYPath = "/dev/tty1";
+      TTYReset = true;
+      TTYVHangup = true;
+      StandardInput = "tty";
+      StandardOutput = "journal";
+      StandardError = "journal";
+      UtmpIdentifier = "tty1";
+      UtmpMode = "user";
+      ExecStart = "${pkgs.bashInteractive}/bin/bash -l -c 'exec uwsm start hyprland-uwsm.desktop'";
+    };
+  };
+
+  systemd.services.tty-login = {
+    after = [
+      "systemd-user-sessions.service"
+      "systemd-logind.service"
+    ];
+    conflicts = [ "hypr-session.service" ];
+    onSuccess = [ "hypr-session.service" ];
+    onFailure = [ "hypr-session.service" ];
+    startLimitIntervalSec = 0;
+    serviceConfig = {
+      ExecStart = "${pkgs.util-linux.bin}/sbin/agetty --login-program ${config.services.getty.loginProgram} --noclear tty1 linux";
+      TTYPath = "/dev/tty1";
+      TTYReset = true;
+      TTYVHangup = true;
+      TTYVTDisallocate = true;
+      StandardInput = "tty";
+      UtmpIdentifier = "tty1";
+      IgnoreSIGPIPE = false;
+      SendSIGHUP = true;
     };
   };
 
