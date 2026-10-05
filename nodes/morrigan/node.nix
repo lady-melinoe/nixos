@@ -8,11 +8,10 @@
   imports = [
     ./disk-config.nix
     ./desktop.nix
+    ./fingerprint.nix
     ./plymouth.nix
     inputs.lanzaboote.nixosModules.lanzaboote
   ];
-
-  services.fprintd.enable = true;
 
   melinoe.home-manager.melinoe = [ ../../home-manager/morrigan/melinoe ];
 

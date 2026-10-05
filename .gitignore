@@ -1,6 +1,7 @@
 keys
 .ssh-host-ca-work
 *.patch
+!nodes/morrigan/fingerprint/*.patch
 *.txt
 *.md
 !README.md
