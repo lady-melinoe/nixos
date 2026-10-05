@@ -16,12 +16,15 @@
   # we're back in Hyprland.
   services.greetd = {
     enable = true;
-    settings.default_session = {
-      user = "melinoe";
+    settings = rec {
+      initial_session = {
       command = pkgs.writeShellScript "start-hypr" ''
         uwsm start hyprland-uwsm.desktop
         ${pkgs.greetd}/bin/agreety --cmd ${pkgs.bashInteractive}/bin/bash
       '';
+        user = "melinoe";
+      };
+      default_session = initial_session;
     };
   };
 
