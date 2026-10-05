@@ -61,6 +61,8 @@
     };
   };
 
+  programs.dconf.enable = true;
+
   security.pam.services.hyprlock = { };
 
   services.pipewire = {

@@ -5,8 +5,10 @@
     ./hypr.nix
     ./keychain.nix
     ./kitty.nix
+    ./packages.nix
     ./quickshell.nix
     ./shell.nix
+    ./theme.nix
   ];
 
   home.username = "melinoe";

@@ -25,6 +25,7 @@
     pkgs.nfs-utils
     pkgs.sshfs
     pkgs.skopeo
+    pkgs.libqalculate
   ];
 
   nix = {
