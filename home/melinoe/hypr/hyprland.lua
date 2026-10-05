@@ -6,7 +6,7 @@
 -- AUTOSTART
 -- ──────────────────────────────────────────────
 hl.on("hyprland.start", function()
-    hl.exec_cmd("loginctl lock-session")
+    hl.dsp.exec_cmd("loginctl lock-session")
 end)
 
 -- ──────────────────────────────────────────────
