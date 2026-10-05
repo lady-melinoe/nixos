@@ -26,6 +26,8 @@
     pkgs.sshfs
     pkgs.skopeo
     pkgs.libqalculate
+    pkgs.gnupg
+    pkgs.ripgrep
   ];
 
   nix = {
