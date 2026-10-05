@@ -21,7 +21,9 @@
       command = pkgs.writeShellScript "start-hypr" ''
         while true; do
         uwsm start hyprland-uwsm.desktop
+        sleep 1
         ${pkgs.greetd}/bin/agreety --cmd ${pkgs.bashInteractive}/bin/bash
+        sleep 1
         done
       '';
         user = "melinoe";
