@@ -91,13 +91,13 @@ Pill {
                     }
                 }
 
-                MenuItem { text: "Suspend"; action: "loginctl lock-session; sleep 1; loginctl suspend" }
-                MenuItem { text: "Hibernate"; action: "loginctl hibernate" }
-                MenuItem { text: "Shutdown"; action: "loginctl poweroff" }
+                MenuItem { text: "Suspend"; action: "loginctl lock-session; sleep 1; systemctl suspend" }
+                MenuItem { text: "Hibernate"; action: "systemctl hibernate" }
+                MenuItem { text: "Shutdown"; action: "systemctl poweroff" }
                 Rectangle { width: parent.width; height: 1; color: Bar.Colors.lavender }
-                MenuItem { text: "Reboot"; action: "loginctl reboot" }
+                MenuItem { text: "Reboot"; action: "systemctl reboot" }
                 Rectangle { width: parent.width; height: 1; color: Bar.Colors.lavender }
-                MenuItem { text: "Log Out"; action: "hyprctl dispatch exit" }
+                MenuItem { text: "Log Out"; action: "hyprctl dispatch 'hl.dsp.exit()'" }
             }
         }
     }
