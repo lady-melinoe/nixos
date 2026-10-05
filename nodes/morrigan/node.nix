@@ -18,7 +18,8 @@
   melinoe.node.networking.openPorts = {
     tcp = [ 53317 ];
     udp = [ 53317 ];
-  }
+  };
+
   boot.loader.grub.enable = false;
   boot.loader.systemd-boot.enable = false;
   boot.lanzaboote = {
