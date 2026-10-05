@@ -5,7 +5,9 @@
 -- ──────────────────────────────────────────────
 -- AUTOSTART
 -- ──────────────────────────────────────────────
-hl.exec_cmd("hyprlock --immediate --no-fade-in")
+hl.on("hyprland.start", function()
+    hl.exec_cmd("hyprlock --immediate --no-fade-in")
+end)
 
 -- ──────────────────────────────────────────────
 -- MONITORS
