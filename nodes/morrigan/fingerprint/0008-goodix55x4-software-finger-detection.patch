@@ -1,5 +1,5 @@
 diff --git a/libfprint/drivers/goodixtls/goodix55x4.c b/libfprint/drivers/goodixtls/goodix55x4.c
-index 767289b..c45d4f0 100644
+index 042a411..0f9ecdf 100644
 --- a/libfprint/drivers/goodixtls/goodix55x4.c
 +++ b/libfprint/drivers/goodixtls/goodix55x4.c
 @@ -63,6 +63,8 @@ struct _FpiDeviceGoodixTls55X4 {
@@ -11,17 +11,16 @@ index 767289b..c45d4f0 100644
  };
  
  G_DECLARE_FINAL_TYPE(FpiDeviceGoodixTls55X4, fpi_device_goodixtls55x4, FPI,
-@@ -412,6 +414,81 @@ static void check_none_cmd(FpDevice *dev, guint8 *data, guint16 len,
+@@ -401,6 +403,74 @@ static void check_none_cmd(FpDevice *dev, guint8 *data, guint16 len,
    fpi_ssm_next_state(ssm);
  }
  
 +#define FDT_CHANNELS 12
 +#define FDT_READING_OFFSET 4
-+#define FDT_DOWN_THRESHOLD_PERMILLE 40
-+#define FDT_UP_THRESHOLD_PERMILLE 20
-+#define FDT_BASELINE_TRACK_PERMILLE 15
++#define FDT_DOWN_THRESHOLD_PERMILLE 100
++#define FDT_UP_THRESHOLD_PERMILLE 50
++#define FDT_BASELINE_TRACK_PERMILLE 30
 +#define FDT_POLL_INTERVAL_MS 30
-+#define FDT_LOG_MIN_PERMILLE 8
 +
 +static gboolean fdt_read_level(const guint8 *data, guint16 len, guint32 *level) {
 +  if (!data || len < FDT_READING_OFFSET + FDT_CHANNELS * 2) {
@@ -63,12 +62,6 @@ index 767289b..c45d4f0 100644
 +
 +  guint32 dev_pm = fdt_deviation_permille(self->fdt_baseline, level);
 +  gboolean deviated = dev_pm > threshold;
-+  if (dev_pm >= FDT_LOG_MIN_PERMILLE || (wait_for_deviation ? deviated : !deviated)) {
-+    g_print("FDT-POLL %s level=%u baseline=%u deviation=%u permille\n",
-+            wait_for_deviation ? "down" : "up", level, self->fdt_baseline,
-+            dev_pm);
-+  }
-+
 +  if (wait_for_deviation ? deviated : !deviated) {
 +    fpi_ssm_next_state(ssm);
 +    return;
@@ -93,7 +86,7 @@ index 767289b..c45d4f0 100644
  static unsigned char get_pix(struct fpi_frame_asmbl_ctx *ctx,
                               struct fpi_frame *frame, unsigned int x,
                               unsigned int y) {
-@@ -719,10 +796,9 @@ static void scan_run_state(FpiSsm *ssm, FpDevice *dev) {
+@@ -708,10 +778,9 @@ static void scan_run_state(FpiSsm *ssm, FpDevice *dev) {
      break;
  
    case SCAN_STAGE_SWITCH_TO_FDT_DOWN:
@@ -107,7 +100,7 @@ index 767289b..c45d4f0 100644
      break;
    case SCAN_STAGE_GET_IMG:
      g_print("SWITCH TO GET IMAGE\n");
-@@ -742,16 +818,12 @@ static void scan_run_state(FpiSsm *ssm, FpDevice *dev) {
+@@ -731,16 +800,12 @@ static void scan_run_state(FpiSsm *ssm, FpDevice *dev) {
          sizeof(fdt_switch_state_mode2_55X4), NULL, check_none_cmd, ssm);
      break;
    case SCAN_STAGE_SWITCH_TO_FDT_UP_NO_REPLY:
