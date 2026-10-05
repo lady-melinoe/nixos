@@ -95,7 +95,11 @@ in
   programs.hyprlock = {
     enable = true;
     settings = {
-    
+      general = {
+        ignore_empty_input = true;
+        immediate_render = true;
+        fail_timeout = 1000;
+      };
       background = [
         {
           monitor = "";
@@ -147,17 +151,7 @@ in
         }
         {
           monitor = "";
-          text = ''cmd[update:1000] echo "$ATTEMPTS : $FAIL : $FPRINTPROMPT : $FPRINTFAIL"'';
-          color = "rgba(200, 200, 200, 1.0)";
-          font_size = 16;
-          font_family = "Noto Sans";
-          position = "0, 180";
-          halign = "center";
-          valign = "center";
-        }
-        {
-          monitor = "";
-          text = ''cmd[update:10000] echo -n "$(upower -i /org/freedesktop/UPower/devices/battery_BAT0 | grep percentage | grep -Po "\d+\%")           $(date '+%I:%M %p')"'';
+          text = ''cmd[update:10000] echo -n "$(upower -i /org/freedesktop/UPower/devices/battery_BAT0 | grep percentage | grep -Po "\d+\%")           $TIME12"'';
           color = "rgba(10, 10, 10, 1.0)";
           font_size = 16;
           font_family = "Noto Sans";
