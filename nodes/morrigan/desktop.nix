@@ -16,19 +16,20 @@
   # we're back in Hyprland.
   services.greetd = {
     enable = true;
-    settings = rec {
+    settings =
       initial_session = {
-      command = pkgs.writeShellScript "start-hypr" ''
-        while true; do
-        uwsm start hyprland-uwsm.desktop
-        sleep 1
-        ${pkgs.greetd}/bin/agreety --cmd ${pkgs.bashInteractive}/bin/bash
-        sleep 1
-        done
-      '';
-        user = "melinoe";
-      };
-      default_session = initial_session;
+        command = pkgs.writeShellScript "start-hypr" ''
+          uwsm start hyprland-uwsm.desktop
+          ${pkgs.greetd}/bin/agreety --cmd ${pkgs.bashInteractive}/bin/bash
+        '';
+          user = "melinoe";
+        };
+      default_session = {
+        command = pkgs.writeShellScript "ungreet" ''
+        systemd-run bash -c 'systemctl stop greetd; systemctl start greetd'
+        '';
+          user = "root";
+      }
     };
   };
 
