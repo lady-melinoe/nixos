@@ -26,7 +26,7 @@ let
         tests/umockdev-test.py \
         tests/test-generated-hwdb.sh
     '';
-
+    nativeBuildInputs = old.nativeBuildInputs ++ [ (pkgs.python3.withPackages (p: [ p.pygobject3 ])) ];
     buildInputs = old.buildInputs ++ [ pkgs.opencv ];
 
     doInstallCheck = false;
