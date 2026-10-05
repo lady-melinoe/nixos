@@ -1,4 +1,9 @@
-{ pkgs, inputs, ... }:
+{
+  lib,
+  pkgs,
+  inputs,
+  ...
+}:
 {
   imports = [
     ./disk-config.nix
@@ -15,6 +20,8 @@
     pkiBundle = "/var/lib/sbctl";
   };
   environment.systemPackages = [ pkgs.sbctl ];
+
+  nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "spotify" ];
 
   nix.distributedBuilds = true;
   nix.settings.builders-use-substitutes = true;

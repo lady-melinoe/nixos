@@ -6,10 +6,18 @@ let
   loginctl = "${pkgs.systemd}/bin/loginctl";
 in
 {
+  assertions = [
+    {
+      assertion = builtins.all (pkg: builtins.elem pkg config.home.packages) [
+        pkgs.librewolf
+        pkgs.rofi
+      ];
+      message = "hypr.nix: librewolf and rofi are launched by the Hyprland binds and must stay in home.packages (see packages.nix)";
+    }
+  ];
+
   home.packages = with pkgs; [
     # launched/toggled from hyprland binds & autostart
-    librewolf
-    rofi
     gtk3 # gtk-launch
     psmisc # killall
     wl-clipboard
