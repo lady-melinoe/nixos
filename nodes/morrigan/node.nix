@@ -12,6 +12,8 @@
     inputs.lanzaboote.nixosModules.lanzaboote
   ];
 
+  services.fprintd.enable = true;
+
   melinoe.home-manager.melinoe = [ ../../home-manager/morrigan/melinoe ];
 
   boot.loader.grub.enable = false;
