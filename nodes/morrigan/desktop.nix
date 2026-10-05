@@ -19,8 +19,10 @@
     settings = rec {
       initial_session = {
       command = pkgs.writeShellScript "start-hypr" ''
+        while true; do
         uwsm start hyprland-uwsm.desktop
         ${pkgs.greetd}/bin/agreety --cmd ${pkgs.bashInteractive}/bin/bash
+        done
       '';
         user = "melinoe";
       };
