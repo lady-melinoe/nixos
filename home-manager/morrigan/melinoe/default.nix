@@ -7,6 +7,7 @@
     ./kitty.nix
     ./packages.nix
     ./quickshell.nix
+    ./rofi.nix
     ./shell.nix
     ./theme.nix
   ];
