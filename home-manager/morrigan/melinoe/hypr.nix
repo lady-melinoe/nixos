@@ -1,6 +1,6 @@
 { config, lib, pkgs, ... }:
 let
-  splash = ../../assets/splash.png;
+  splash = ../../../common/assets/splash.png;
   playerctlExe = lib.getExe pkgs.playerctl;
   hyprlockExe = lib.getExe pkgs.hyprlock;
   loginctl = "${pkgs.systemd}/bin/loginctl";
