@@ -35,7 +35,7 @@
       StandardError = "journal";
       UtmpIdentifier = "tty1";
       UtmpMode = "user";
-      ExecStart = "${pkgs.bashInteractive}/bin/bash -l -c 'exec uwsm start hyprland-uwsm.desktop'";
+      ExecStart = "${pkgs.bashInteractive}/bin/bash -l -c 'exec uwsm start hyprland-uwsm.desktop -- --locked-cmd hyprlock'";
     };
   };
 
