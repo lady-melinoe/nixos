@@ -23,12 +23,6 @@
       '';
       user = "melinoe";
     };
-    settings.default_session = {
-      command = pkgs.writeShellScript "ungreet" ''
-        systemd-run bash -c 'systemctl stop greetd; systemctl start greetd'
-      '';
-      user = "root";
-    };
   };
 
   security.pam.services.hyprlock = { };
