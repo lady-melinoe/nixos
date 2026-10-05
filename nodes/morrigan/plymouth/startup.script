@@ -1,0 +1,29 @@
+screen_width = Window.GetWidth();
+screen_height = Window.GetHeight();
+
+background = Image("background.png");
+background_sprite = Sprite(background.Scale(screen_width, screen_height));
+background_sprite.SetPosition(0, 0, 0);
+
+frame_count = FRAME_COUNT;
+ticks_per_frame = 50;
+
+for (i = 0; i < frame_count; i++) {
+    raw = Image("frame" + i + ".png");
+    frames[i] = raw.Scale(screen_width, screen_height);
+}
+
+throbber_sprite = Sprite(frames[0]);
+throbber_sprite.SetPosition(0, 0, 1);
+
+tick = 0;
+
+fun refresh() {
+    throbber_sprite.SetImage(frames[Math.Int(tick / ticks_per_frame)]);
+    tick++;
+    if (tick >= frame_count * ticks_per_frame) {
+        tick = 0;
+    }
+}
+
+Plymouth.SetRefreshFunction(refresh);

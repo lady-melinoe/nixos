@@ -8,6 +8,7 @@
   imports = [
     ./disk-config.nix
     ./desktop.nix
+    ./plymouth.nix
     inputs.lanzaboote.nixosModules.lanzaboote
   ];
 

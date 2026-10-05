@@ -1,10 +1,16 @@
-{ lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 {
   xdg.dataFile."themes/Dracula-dark".source = "${pkgs.dracula-theme}/share/themes/Dracula";
 
   gtk = {
     enable = true;
     theme.name = "Dracula-dark";
+    gtk4.theme = config.gtk.theme;
     iconTheme = {
       name = "Dracula";
       package = pkgs.dracula-icon-theme;
