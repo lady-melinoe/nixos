@@ -87,6 +87,8 @@
   services.tlp = {
     enable = true;
     settings = {
+      CPU_SCALING_GOVERNOR_ON_AC = "balanced";
+      CPU_SCALING_GOVERNOR_ON_BAT = "balanced";
       STOP_CHARGE_THRESH_BAT0 = "1"; # Lenovo conservation mode
       DEVICES_TO_ENABLE_ON_STARTUP = "wifi bluetooth";
     };
