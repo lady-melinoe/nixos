@@ -3,13 +3,6 @@
 -- Refer to: https://wiki.hypr.land/Configuring/Start/
 
 -- ──────────────────────────────────────────────
--- AUTOSTART
--- ──────────────────────────────────────────────
-hl.on("hyprland.start", function()
-    hl.dsp.exec_cmd("loginctl lock-session")
-end)
-
--- ──────────────────────────────────────────────
 -- MONITORS
 -- ──────────────────────────────────────────────
 hl.monitor({
