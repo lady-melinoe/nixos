@@ -95,6 +95,7 @@ in
   programs.hyprlock = {
     enable = true;
     settings = {
+    
       background = [
         {
           monitor = "";
@@ -141,6 +142,16 @@ in
           font_size = 25;
           font_family = "Noto Sans";
           position = "0, 80";
+          halign = "center";
+          valign = "center";
+        }
+        {
+          monitor = "";
+          text = "$ATTEMPTS | $FAIL | $FPRINTPROMPT | $FPRINTFAIL";
+          color = "rgba(200, 200, 200, 1.0)";
+          font_size = 16;
+          font_family = "Noto Sans";
+          position = "0, 180";
           halign = "center";
           valign = "center";
         }
