@@ -1,0 +1,130 @@
+diff --git a/libfprint/drivers/goodixtls/goodix55x4.c b/libfprint/drivers/goodixtls/goodix55x4.c
+index 767289b..c45d4f0 100644
+--- a/libfprint/drivers/goodixtls/goodix55x4.c
++++ b/libfprint/drivers/goodixtls/goodix55x4.c
+@@ -63,6 +63,8 @@ struct _FpiDeviceGoodixTls55X4 {
+   GSList *frames;
+ 
+   Goodix55X4Pix empty_img[GOODIX55X4_FRAME_SIZE];
++
++  guint32 fdt_baseline;
+ };
+ 
+ G_DECLARE_FINAL_TYPE(FpiDeviceGoodixTls55X4, fpi_device_goodixtls55x4, FPI,
+@@ -412,6 +414,81 @@ static void check_none_cmd(FpDevice *dev, guint8 *data, guint16 len,
+   fpi_ssm_next_state(ssm);
+ }
+ 
++#define FDT_CHANNELS 12
++#define FDT_READING_OFFSET 4
++#define FDT_DOWN_THRESHOLD_PERMILLE 40
++#define FDT_UP_THRESHOLD_PERMILLE 20
++#define FDT_BASELINE_TRACK_PERMILLE 15
++#define FDT_POLL_INTERVAL_MS 30
++#define FDT_LOG_MIN_PERMILLE 8
++
++static gboolean fdt_read_level(const guint8 *data, guint16 len, guint32 *level) {
++  if (!data || len < FDT_READING_OFFSET + FDT_CHANNELS * 2) {
++    return FALSE;
++  }
++  guint32 sum = 0;
++  for (int i = 0; i < FDT_CHANNELS; i++) {
++    sum += data[FDT_READING_OFFSET + i * 2] |
++           (data[FDT_READING_OFFSET + i * 2 + 1] << 8);
++  }
++  *level = sum;
++  return TRUE;
++}
++
++static guint32 fdt_deviation_permille(guint32 baseline, guint32 level) {
++  guint32 diff = level > baseline ? level - baseline : baseline - level;
++  return baseline ? (guint32)((guint64)diff * 1000 / baseline) : 0;
++}
++
++static void fdt_poll_cb(FpDevice *dev, guint8 *data, guint16 len,
++                        gpointer ssm, GError *err, guint threshold,
++                        gboolean wait_for_deviation) {
++  FpiDeviceGoodixTls55X4 *self = FPI_DEVICE_GOODIXTLS55X4(dev);
++  guint32 level;
++
++  if (err) {
++    fpi_ssm_mark_failed(ssm, err);
++    return;
++  }
++  if (!fdt_read_level(data, len, &level)) {
++    fpi_ssm_mark_failed(
++        ssm, fpi_device_error_new_msg(FP_DEVICE_ERROR_PROTO,
++                                      "Short finger detection reply"));
++    return;
++  }
++  if (!self->fdt_baseline) {
++    self->fdt_baseline = level;
++  }
++
++  guint32 dev_pm = fdt_deviation_permille(self->fdt_baseline, level);
++  gboolean deviated = dev_pm > threshold;
++  if (dev_pm >= FDT_LOG_MIN_PERMILLE || (wait_for_deviation ? deviated : !deviated)) {
++    g_print("FDT-POLL %s level=%u baseline=%u deviation=%u permille\n",
++            wait_for_deviation ? "down" : "up", level, self->fdt_baseline,
++            dev_pm);
++  }
++
++  if (wait_for_deviation ? deviated : !deviated) {
++    fpi_ssm_next_state(ssm);
++    return;
++  }
++  if (!deviated && dev_pm < FDT_BASELINE_TRACK_PERMILLE) {
++    self->fdt_baseline = (self->fdt_baseline * 15 + level) / 16;
++  }
++  fpi_ssm_jump_to_state_delayed(ssm, fpi_ssm_get_cur_state(ssm),
++                                FDT_POLL_INTERVAL_MS);
++}
++
++static void fdt_poll_down_cb(FpDevice *dev, guint8 *data, guint16 len,
++                             gpointer ssm, GError *err) {
++  fdt_poll_cb(dev, data, len, ssm, err, FDT_DOWN_THRESHOLD_PERMILLE, TRUE);
++}
++
++static void fdt_poll_up_cb(FpDevice *dev, guint8 *data, guint16 len,
++                           gpointer ssm, GError *err) {
++  fdt_poll_cb(dev, data, len, ssm, err, FDT_UP_THRESHOLD_PERMILLE, FALSE);
++}
++
+ static unsigned char get_pix(struct fpi_frame_asmbl_ctx *ctx,
+                              struct fpi_frame *frame, unsigned int x,
+                              unsigned int y) {
+@@ -719,10 +796,9 @@ static void scan_run_state(FpiSsm *ssm, FpDevice *dev) {
+     break;
+ 
+   case SCAN_STAGE_SWITCH_TO_FDT_DOWN:
+-    g_print("SWITCH TO FDT DOWN\n");
+-    goodix_send_mcu_switch_to_fdt_down(
+-        dev, (guint8 *)fdt_switch_state_down_55X4,
+-        sizeof(fdt_switch_state_down_55X4), NULL, check_none_cmd, ssm);
++    goodix_send_mcu_switch_to_fdt_mode(
++        dev, (guint8 *)fdt_switch_state_mode_55X4,
++        sizeof(fdt_switch_state_mode_55X4), NULL, fdt_poll_down_cb, ssm);
+     break;
+   case SCAN_STAGE_GET_IMG:
+     g_print("SWITCH TO GET IMAGE\n");
+@@ -742,16 +818,12 @@ static void scan_run_state(FpiSsm *ssm, FpDevice *dev) {
+         sizeof(fdt_switch_state_mode2_55X4), NULL, check_none_cmd, ssm);
+     break;
+   case SCAN_STAGE_SWITCH_TO_FDT_UP_NO_REPLY:
+-    g_print("SWITCH TO FDT UP NO REPLY\n");
+-    goodix_send_mcu_switch_to_fdt_up_no_reply(
+-        dev, (guint8 *)fdt_switch_state_up_55X4,
+-        sizeof(fdt_switch_state_up_55X4), NULL, check_none_cmd, ssm);
++    fpi_ssm_next_state(ssm);
+     break;
+   case SCAN_STAGE_SWITCH_TO_FDT_UP:
+-    g_print("SWITCH TO FDT UP\n");
+-    goodix_send_mcu_switch_to_fdt_up(dev, (guint8 *)fdt_switch_state_up_55X4,
+-                                     sizeof(fdt_switch_state_up_55X4), NULL,
+-                                     check_none_cmd, ssm);
++    goodix_send_mcu_switch_to_fdt_mode(
++        dev, (guint8 *)fdt_switch_state_mode_55X4,
++        sizeof(fdt_switch_state_mode_55X4), NULL, fdt_poll_up_cb, ssm);
+     break;
+   case SCAN_STAGE_SWITCH_TO_FDT_DONE:
+     fpi_image_device_report_finger_status(img_dev, FALSE);
