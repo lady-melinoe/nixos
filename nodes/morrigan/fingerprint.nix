@@ -17,7 +17,6 @@ let
       ./fingerprint/0004-goodixtls-fix-preset-PSK-write-framing.patch
       ./fingerprint/0005-goodixtls-enable-PSK-ciphers-for-the-sensor-TLS-hand.patch
       ./fingerprint/0006-sigfm-tighten-matching-thresholds-to-reduce-false-po.patch
-      ./fingerprint/0007-goodix55x4-log-raw-FDT-replies.patch
       ./fingerprint/0008-goodix55x4-software-finger-detection.patch
     ];
 
