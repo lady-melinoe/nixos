@@ -35,6 +35,10 @@ in
 {
   services.fprintd = {
     enable = true;
-    package = pkgs.fprintd.override { libfprint = libfprint-goodix55b4; };
-  };
+    package = (pkgs.fprintd.override { libfprint = libfprint-goodix55b4; }).overrideAttrs (old: {
+      postPatch = ''
+        ${old.postPatch or ""}
+        substituteInPlace meson.build --replace-fail "1.94.9" "1.94.6"
+      '';
+    )};
 }
