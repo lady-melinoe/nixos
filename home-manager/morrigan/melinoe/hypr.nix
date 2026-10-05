@@ -1,4 +1,9 @@
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   splash = ../../../common/assets/splash.png;
   playerctlExe = lib.getExe pkgs.playerctl;
