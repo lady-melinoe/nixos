@@ -30,6 +30,10 @@ let
     buildInputs = old.buildInputs ++ [ pkgs.opencv ];
 
     doInstallCheck = false;
+
+    postInstall = ''
+      install -Dm644 $src/libfprint/sigfm/sigfm.hpp $out/include/libfprint-2/sigfm/sigfm.hpp
+    '';
   });
 in
 {
