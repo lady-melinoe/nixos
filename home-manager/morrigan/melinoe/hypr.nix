@@ -147,7 +147,7 @@ in
         }
         {
           monitor = "";
-          text = "cmd[update:1000] echo \"$ATTEMPTS : $FAIL : $FPRINTPROMPT : $FPRINTFAIL\"";
+          text = ''cmd[update:1000] echo "$ATTEMPTS : $FAIL : $FPRINTPROMPT : $FPRINTFAIL"'';
           color = "rgba(200, 200, 200, 1.0)";
           font_size = 16;
           font_family = "Noto Sans";
