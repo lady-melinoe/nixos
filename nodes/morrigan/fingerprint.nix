@@ -25,6 +25,8 @@ let
         tests/virtual-image.py \
         tests/umockdev-test.py \
         tests/test-generated-hwdb.sh
+
+      sed -i 's/^} FpDeviceRetry;/FP_DEVICE_RETRY_TOO_FAST,\n} FpDeviceRetry;/' libfprint/fp-device.h
     '';
     nativeBuildInputs = old.nativeBuildInputs ++ [ (pkgs.python3.withPackages (p: [ p.pygobject3 ])) ];
     buildInputs = old.buildInputs ++ [ pkgs.opencv ];
