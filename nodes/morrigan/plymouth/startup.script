@@ -6,7 +6,7 @@ background_sprite = Sprite(background.Scale(screen_width, screen_height));
 background_sprite.SetPosition(0, 0, 0);
 
 frame_count = FRAME_COUNT;
-ticks_per_frame = 10;
+ticks_per_frame = 1;
 
 for (i = 0; i < frame_count; i++) {
     raw = Image("frame" + i + ".png");
