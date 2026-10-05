@@ -2,7 +2,7 @@
 {
   programs.rofi = {
     enable = true;
-    extraConfig = {
+    settings = {
       show-icons = true;
       display-drun = "";
       disable-history = false;
