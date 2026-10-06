@@ -159,11 +159,23 @@ in
           halign = "right";
           valign = "bottom";
         }
+        {
+          monitor = "";
+          text = "Use fingerprint";
+          color = "rgba(200, 200, 200, 1.0)";
+          font_size = 16;
+          font_family = "Noto Sans";
+          position = "0, -100";
+          halign = "center";
+          valign = "center";
+          onclick = "timeout 5 fprintd-verify melinoe && pkill -USR1 hyprlock";
+        }
       ];
       auth.pam = {
         enabled = true;
         module = "hyprlock";
       };
+      auth.fingerprint.enabled = false;
     };
   };
 }
