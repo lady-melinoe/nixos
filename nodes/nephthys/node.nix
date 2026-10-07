@@ -11,7 +11,7 @@
     ./disk-config.nix
   ];
   melinoe.node.id = 10;
-  melinoe.node.legacyBoot = true
+  melinoe.node.legacyBoot = true;
   networking.hostName = "nephthys";
   melinoe.node.networking.uplinks = [
     {
