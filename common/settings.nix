@@ -28,6 +28,7 @@
     pkgs.libqalculate
     pkgs.gnupg
     pkgs.ripgrep
+    pkgs.cowsay
   ];
 
   nix = {
