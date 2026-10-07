@@ -9,6 +9,30 @@ let
   playerctlExe = lib.getExe pkgs.playerctl;
   hyprlockExe = lib.getExe pkgs.hyprlock;
   loginctl = "${pkgs.systemd}/bin/loginctl";
+  fprintState = "$XDG_RUNTIME_DIR/hyprlock-fprint-state";
+  fprintClick = pkgs.writeShellScript "hyprlock-fprint-click" ''
+    state="${fprintState}"
+    [ "$(cat "$state" 2>/dev/null)" = waiting ] && exit 0
+    echo waiting > "$state"
+    pkill -USR2 hyprlock
+    if timeout 5 fprintd-verify melinoe; then
+      pkill -USR1 hyprlock
+      rm -f "$state"
+    else
+      echo failed > "$state"
+      pkill -USR2 hyprlock
+      sleep 1
+      rm -f "$state"
+      pkill -USR2 hyprlock
+    fi
+  '';
+  fprintLabel = pkgs.writeShellScript "hyprlock-fprint-label" ''
+    case "$(cat "${fprintState}" 2>/dev/null)" in
+      waiting) echo '<span foreground="#33ccff">Touch the fingerprint sensor</span>' ;;
+      failed) echo '<span foreground="#ff3355">Fingerprint failed</span>' ;;
+      *) echo 'Use fingerprint' ;;
+    esac
+  '';
 in
 {
   assertions = [
@@ -161,14 +185,14 @@ in
         }
         {
           monitor = "";
-          text = "Use fingerprint";
+          text = "cmd[update:60000] ${fprintLabel}";
           color = "rgba(200, 200, 200, 1.0)";
           font_size = 16;
           font_family = "Noto Sans";
           position = "0, -100";
           halign = "center";
           valign = "center";
-          onclick = "timeout 5 fprintd-verify melinoe && pkill -USR1 hyprlock";
+          onclick = "${fprintClick}";
         }
       ];
       auth.pam = {
