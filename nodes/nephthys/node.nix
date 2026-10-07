@@ -21,17 +21,6 @@
       subnet = "130.95.13.128/25";
       gateway = "130.95.13.129";
     }
-    {
-      ip = "198.19.0.3/32";
-      iface = [
-        "eno3"
-        "eno4"
-      ];
-      bondMode = "lacp";
-      lacpRate = "fast";
-      subnet = "198.19.0.0/24";
-      gateway = null;
-    }
   ];
   melinoe.services.melnode.extraRoutes = [ "130.95.13.0/24" ];
   melinoe.services.melnode.kernelDataplane.enable = true;
