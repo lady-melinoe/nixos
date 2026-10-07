@@ -1,6 +1,6 @@
 {
   melinoe.nodePublicInfo."10" = {
-    wgPubkey = "iHL2RdngHA8Fb+m+WuKmEw2+ASCWHImx+9B/BozXtX4=";
+    wgPubkey = "EXRv3WXr9yjCW8ssGxxopsabi1Ll7brc/Vkj8Uwxvxs=";
     defaultEndpoint = "130.95.13.232";
   };
 }
