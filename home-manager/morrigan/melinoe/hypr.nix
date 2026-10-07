@@ -15,14 +15,14 @@ let
     state="${fprintState}"
     exec 9>"${fprintLock}"
     ${pkgs.util-linux}/bin/flock -n 9 || exit 0
-    trap 'rm -f "$state"; pkill -USR2 hyprlock' EXIT
+    trap 'rm -f "$state"; pkill -x -USR2 hyprlock' EXIT
     echo waiting > "$state"
-    pkill -USR2 hyprlock
+    pkill -x -USR2 hyprlock
     if timeout 5 fprintd-verify melinoe; then
-      pkill -USR1 hyprlock
+      pkill -x -USR1 hyprlock
     else
       echo failed > "$state"
-      pkill -USR2 hyprlock
+      pkill -x -USR2 hyprlock
       sleep 1
     fi
   '';
