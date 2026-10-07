@@ -46,9 +46,9 @@
     {
       id = 4;
     }
-    {
-      id = 9;
-    }
+#    {
+#      id = 9;
+#    }
     {
       id = 3;
     }
@@ -63,10 +63,6 @@
     {
       id = 1;
       prependCount = 1;
-    }
-    {
-      id = 8;
-      prependCount = 4;
     }
   ];
   melinoe.node.isBuildServer = true;
