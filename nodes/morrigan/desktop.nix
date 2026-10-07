@@ -64,7 +64,7 @@
   programs.dconf.enable = true;
 
   security.pam.services.hyprlock = { };
-
+  security.pam.services.hyprlock.fprintAuth = false;
   services.pipewire = {
     enable = true;
     alsa.enable = true;
