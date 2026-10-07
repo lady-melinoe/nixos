@@ -31,6 +31,10 @@ let
         builtins.filter (k: k != null) (map (m: m.sshKey or null) c.melinoe.node.remoteBuildOn)
       );
 
+      remoteBuildKeyUsers = lib.mapAttrs (_: machines: lib.unique (map (m: m.sshUser or "root") machines)) (
+        lib.groupBy (m: m.sshKey) (builtins.filter (m: (m.sshKey or null) != null) c.melinoe.node.remoteBuildOn)
+      );
+
       principals = lib.unique (
         [
           c.networking.hostName

@@ -115,9 +115,15 @@ Host commands:
       Generate host keys if necessary, sign them, and deploy the
       resulting certificate.
 
+      With --remotebuild, also generates each declared remote-build
+      key (if missing) and signs it with the user CA, using the
+      declared sshUser(s) as principals, key ID "remotebuild-<host>",
+      and no extensions or critical options.
+
   rotate <host> [--remotebuild]
       Force regeneration of the target host keys, sign them, and
-      redeploy the certificate.
+      redeploy the certificate. With --remotebuild, the remote-build
+      keys are regenerated and re-signed too.
 
   renew <host> [--remotebuild]
       Resign the existing host key and redeploy the certificate.
@@ -201,11 +207,23 @@ def setup_ca_agent(ca_key: str) -> None:
     CA_AGENT_PIDS.append(pid)
     os.environ["SSH_AUTH_SOCK"] = sock_path
 
-    subprocess.run(
-        ["ssh-add", ca_key],
-        check=True,
-        stdout=subprocess.DEVNULL,
-    )
+    tty = None
+    if not sys.stdin.isatty():
+        try:
+            tty = open("/dev/tty", "rb")
+        except OSError:
+            tty = None
+
+    try:
+        subprocess.run(
+            ["ssh-add", ca_key],
+            check=True,
+            stdin=tty,
+            stdout=subprocess.DEVNULL,
+        )
+    finally:
+        if tty is not None:
+            tty.close()
 
     CA_AGENT_SOCKS[ca_key] = sock_path
 
@@ -685,6 +703,95 @@ fi
     return f"{cert_path}: renewed (serial {serial})"
 
 
+def provision_remotebuild_key(
+    host: str, target: str, key_path: str, users: list[str], force: bool
+) -> str:
+    """Generate `key_path` on `target` if missing (or if `force`), then sign
+    it with the user CA and install "<key_path>-cert.pub". Assumes the user
+    CA is already unlocked via setup_ca_agent(USER_CA_KEY)."""
+    tmpdir = tempfile.mkdtemp()
+    CLEANUP_DIRS.append(tmpdir)
+    pubfile = os.path.join(tmpdir, "remotebuild.pub")
+    new_certfile = os.path.join(tmpdir, "remotebuild-cert.pub")
+
+    remote_script = """set -euo pipefail
+
+key="$1"
+force="$2"
+
+mkdir -p -m 700 "$(dirname "$key")"
+
+if [ "$force" = "true" ] || [ ! -s "$key" ]; then
+  rm -f "$key" "$key.pub" "$key-cert.pub"
+  ssh-keygen -t ed25519 -N "" -C "" -f "$key" -q
+fi
+
+if [ ! -s "$key.pub" ]; then
+  ssh-keygen -y -f "$key" > "$key.pub"
+fi
+
+cat "$key.pub"
+"""
+
+    with open(pubfile, "wb") as f:
+        subprocess.run(
+            [
+                "ssh",
+                *ssh_opts(),
+                f"root@{target}",
+                "bash",
+                "-s",
+                "--",
+                key_path,
+                "true" if force else "false",
+            ],
+            input=remote_script.encode(),
+            stdout=f,
+            check=True,
+        )
+
+    setup_ca_agent(USER_CA_KEY)
+    do_sign_user(
+        f"remotebuild-{host}",
+        ",".join(users),
+        REMOTEBUILD_VALIDITY,
+        new_certfile,
+        "1",
+        ["clear"],
+        Path(pubfile).read_bytes(),
+    )
+
+    with open(new_certfile, "rb") as f:
+        subprocess.run(
+            [
+                "ssh",
+                *ssh_opts(),
+                f"root@{target}",
+                f"cat > '{key_path}-cert.pub'",
+            ],
+            stdin=f,
+            check=True,
+        )
+
+    return f"{key_path}: provisioned (principals {','.join(users)})"
+
+
+def provision_remotebuild_keys(host: str, hosts: dict, force: bool) -> None:
+    key_users = hosts[host].get("remoteBuildKeyUsers", {})
+
+    if not key_users:
+        print(f"{host}: no remote-build keys declared for this host")
+        return
+
+    for key_path, users in sorted(key_users.items()):
+        print(
+            f"{host}: "
+            + provision_remotebuild_key(
+                host, hosts[host]["sshTarget"], key_path, users, force
+            )
+        )
+
+
 def print_remotebuild_statuses(host: str, hosts: dict) -> None:
     key_paths = hosts[host].get("remoteBuildKeys", [])
     for status in sync_remotebuild_certs(host, hosts[host]["sshTarget"], key_paths):
@@ -716,7 +823,12 @@ def host_cmd(args: list[str], hosts: dict) -> None:
 
         if with_remotebuild:
             setup_ca_agent(USER_CA_KEY)
-            print_remotebuild_statuses(target_host, hosts)
+            if cmd == "renew":
+                print_remotebuild_statuses(target_host, hosts)
+            else:
+                provision_remotebuild_keys(
+                    target_host, hosts, force=(cmd == "rotate")
+                )
 
     elif cmd == "renew-all":
         setup_ca_agent(HOST_CA_KEY)
