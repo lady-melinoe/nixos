@@ -11,7 +11,7 @@ let
   loginctl = "${pkgs.systemd}/bin/loginctl";
   fprintState = "\${XDG_RUNTIME_DIR:-/tmp}/hyprlock-fprint-state";
   fprintLock = "\${XDG_RUNTIME_DIR:-/tmp}/hyprlock-fprint-lock";
-  fprintClick = pkgs.writeShellScript "hyprlock-fprint-click" ''
+  fprintBind = pkgs.writeShellScriptBin "hyprlock-fprint-bind" ''
     state="${fprintState}"
     exec 9>"${fprintLock}"
     ${pkgs.util-linux}/bin/flock -n 9 || exit 0
@@ -55,6 +55,7 @@ in
     activate-linux
     iio-hyprland
     wvkbd
+    fprintBind
 
     # theming referenced by hyprland-de-setup.lua
     qt6Packages.qt6ct
@@ -192,7 +193,7 @@ in
           position = "0, -100";
           halign = "center";
           valign = "center";
-          onclick = "${fprintClick}";
+          onclick = lib.getExe fprintBind;
         }
       ];
       auth.pam = {

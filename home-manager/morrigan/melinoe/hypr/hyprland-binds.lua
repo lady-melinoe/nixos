@@ -50,6 +50,13 @@ hl.bind(mainMod .. " + SHIFT + R", hl.dsp.exec_cmd("killall iio-hyprland || iio-
 hl.bind(mainMod .. " + K",       hl.dsp.exec_cmd("killall -s 34 wvkbd-mobintl"))
 hl.bind(mainMod .. " + t",       hl.dsp.exec_cmd("kitten @ --to=unix:${HOME}/.cache/term-panel resize-os-window --action=toggle-visibility"))
 
+hl.bind("Right", hl.dsp.exec_cmd("pgrep -x hyprlock && hyprlock-fprint-bind"), {
+    locked = true,
+    release = true,
+    non_consuming = true,
+    transparent = true,
+})
+
 -- Media & Hardware Controls
 hl.bind("XF86AudioNext",  hl.dsp.exec_cmd("playerctl next"), { locked = true })
 hl.bind("XF86AudioPause", hl.dsp.exec_cmd("playerctl play-pause"), { locked = true })
