@@ -1,4 +1,4 @@
-y{
+{
   disko.devices = {
     disk = {
       main = {
@@ -36,10 +36,7 @@ y{
                     mountpoint = "/home";
                     mountOptions = [ "relatime" ];
                   };
-                  "/@nix" = {
-                    mountpoint = "/nix";
-                    mountOptions = [ "noatime" ];
-                  };
+                  "/@nix" = { };
                   "/@swap" = {
                     mountpoint = "/.swap";
                     swap.swapfile.size = "2G";
@@ -57,6 +54,16 @@ y{
         device = "/dev/disk/by-label/array";
         fsType = "btrfs";
         mountpoint = "/array";
+        mountOptions = [ "subvol=@array" ];
+      };
+      "nix" = {
+        device = "/dev/disk/by-label/array";
+        fsType = "btrfs";
+        mountpoint = "/nix";
+        mountOptions = [
+          "subvol=@nix"
+          "noatime"
+        ];
       };
     };
   };
