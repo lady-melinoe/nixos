@@ -9,21 +9,21 @@ let
   playerctlExe = lib.getExe pkgs.playerctl;
   hyprlockExe = lib.getExe pkgs.hyprlock;
   loginctl = "${pkgs.systemd}/bin/loginctl";
-  fprintState = "$XDG_RUNTIME_DIR/hyprlock-fprint-state";
+  fprintState = "\${XDG_RUNTIME_DIR:-/tmp}/hyprlock-fprint-state";
+  fprintLock = "\${XDG_RUNTIME_DIR:-/tmp}/hyprlock-fprint-lock";
   fprintClick = pkgs.writeShellScript "hyprlock-fprint-click" ''
     state="${fprintState}"
-    [ "$(cat "$state" 2>/dev/null)" = waiting ] && exit 0
+    exec 9>"${fprintLock}"
+    ${pkgs.util-linux}/bin/flock -n 9 || exit 0
+    trap 'rm -f "$state"; pkill -USR2 hyprlock' EXIT
     echo waiting > "$state"
     pkill -USR2 hyprlock
     if timeout 5 fprintd-verify melinoe; then
       pkill -USR1 hyprlock
-      rm -f "$state"
     else
       echo failed > "$state"
       pkill -USR2 hyprlock
       sleep 1
-      rm -f "$state"
-      pkill -USR2 hyprlock
     fi
   '';
   fprintLabel = pkgs.writeShellScript "hyprlock-fprint-label" ''
@@ -185,7 +185,7 @@ in
         }
         {
           monitor = "";
-          text = "cmd[update:60000] ${fprintLabel}";
+          text = "cmd[update:0:true] ${fprintLabel}";
           color = "rgba(200, 200, 200, 1.0)";
           font_size = 16;
           font_family = "Noto Sans";
