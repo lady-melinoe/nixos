@@ -25,9 +25,9 @@ in
         useDefaultShell = true;
       };
       users.groups.remotebuild = { };
-#      nix.settings.trusted-users = [
-#        "remotebuild"
-#      ];
+      nix.settings.trusted-users = [
+        "remotebuild"
+      ];
     })
     (lib.mkIf (config.melinoe.node.remoteBuildOn != [ ]) {
       nix.buildMachines = map (
