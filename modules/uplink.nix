@@ -59,6 +59,10 @@ let
           matchConfig.Name = iface;
           address = lib.optional (!uplink.dhcp) (uplinkAddress uplink);
           gateway = lib.optional isPrimary uplink.gateway;
+          dhcpV4Config = lib.mkIf uplink.dhcp {
+            UseDNS = false;
+            UseDomains = false;
+          };
           linkConfig = {
             Group = uplinkGroup;
             RequiredForOnline = if isPrimary then "yes" else "no";
