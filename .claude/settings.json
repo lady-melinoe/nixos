@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "melinoe-plugins": {
+      "source": { "source": "directory", "path": "." }
+    }
+  },
+  "enabledPlugins": {
+    "gitlab-melinoe@melinoe-plugins": true
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "gitlab": {
+    "type": "http",
+    "url": "https://gitlab.melinoe.net/api/v4/mcp"
+  }
+}

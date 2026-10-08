@@ -1,0 +1,5 @@
+{
+  "name": "gitlab-melinoe",
+  "description": "GitLab integration pointed at gitlab.melinoe.net (personal copy of the directory GitLab plugin).",
+  "author": { "name": "melinoe" }
+}

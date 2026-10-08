@@ -1,0 +1,11 @@
+{
+  "name": "melinoe-plugins",
+  "owner": { "name": "melinoe" },
+  "plugins": [
+    {
+      "name": "gitlab-melinoe",
+      "source": "./plugins/gitlab-melinoe",
+      "description": "GitLab MCP server at gitlab.melinoe.net"
+    }
+  ]
+}
