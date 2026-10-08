@@ -103,11 +103,11 @@
         "rev": "8dcac2dd845e3c4597aea322c79d5c534fc3fbbf",
         "revCount": 1,
         "type": "git",
-        "url": "https://gitlab.melinoe.net/homelab/mel-nix-pkgs/melinoe-vpn-kernelspace.git"
+        "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-kernelspace.git"
       },
       "original": {
         "type": "git",
-        "url": "https://gitlab.melinoe.net/homelab/mel-nix-pkgs/melinoe-vpn-kernelspace.git"
+        "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-kernelspace.git"
       }
     },
     "melinoe-vpn-userspace": {
@@ -119,11 +119,11 @@
         "rev": "01656a6993596235726da5572601d4da172ae62a",
         "revCount": 3,
         "type": "git",
-        "url": "https://gitlab.melinoe.net/homelab/mel-nix-pkgs/melinoe-vpn-userspace.git"
+        "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-userspace.git"
       },
       "original": {
         "type": "git",
-        "url": "https://gitlab.melinoe.net/homelab/mel-nix-pkgs/melinoe-vpn-userspace.git"
+        "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-userspace.git"
       }
     },
     "nixpkgs": {
