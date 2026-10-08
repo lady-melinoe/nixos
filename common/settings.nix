@@ -142,6 +142,7 @@
 
   networking.domain = "infra.melinoe.xyz";
   networking.search = [
+    "infra.melinoe.xyz"
     "intra.melinoe.xyz"
     "ucc.asn.au"
   ];
