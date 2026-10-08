@@ -27,19 +27,17 @@
   melinoe.services.melnode.dataplane = "kernel";
   melinoe.node.networking.peers = [
     {
-      id = 5;
+      id = 1;
+      prependCount = 1;
     }
-#    {
-#      id = 2;
-#    }
+    {
+      id = 3;
+    }
     {
       id = 4;
     }
-#    {
-#      id = 9;
-#    }
     {
-      id = 3;
+      id = 5;
     }
     {
       id = 6;
@@ -48,10 +46,6 @@
     {
       id = 7;
       prependCount = 2;
-    }
-    {
-      id = 1;
-      prependCount = 1;
     }
   ];
   melinoe.node.isBuildServer = true;
