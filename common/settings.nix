@@ -29,6 +29,7 @@
     pkgs.gnupg
     pkgs.ripgrep
     pkgs.cowsay
+    pkgs.dig
   ];
 
   nix = {
