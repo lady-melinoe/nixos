@@ -142,7 +142,7 @@
 
   services.resolved = {
     enable = true;
-    fallbackDns = [ ];
+    settings.Resolve.FallbackDns = [ ];
   };
   networking.nameservers = [
     "9.9.9.11"
