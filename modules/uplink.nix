@@ -152,6 +152,8 @@ in
           ip rule del pref 1 from all lookup local >/dev/null 2>&1 || true
           ip rule add pref 1 from all lookup local
           ip rule del pref 0 from all lookup local >/dev/null 2>&1 || true
+          ip rule del pref 2 fwmark 0xca6c unreachable >/dev/null 2>&1 || true
+          ip rule add pref 2 fwmark 0xca6c unreachable
           ip route replace unreachable ${meshCidr}
         '';
       };
