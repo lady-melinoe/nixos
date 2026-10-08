@@ -140,6 +140,18 @@
     "net.ipv4.conf.default.forwarding" = 1;
   };
 
+  services.resolved = {
+    enable = true;
+    fallbackDns = [ ];
+  };
+  networking.nameservers = [
+    "9.9.9.11"
+    "149.112.112.11"
+    "9.9.9.9"
+    "149.112.112.112"
+    "1.1.1.1"
+    "1.0.0.1"
+  ];
   networking.domain = "infra.melinoe.xyz";
   networking.search = [
     "infra.melinoe.xyz"
