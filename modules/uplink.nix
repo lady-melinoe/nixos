@@ -8,7 +8,11 @@ let
   netCfg = config.melinoe.node.networking;
   meshCidr = config.melinoe.cluster.networking.containerCidr;
   mark = toString netCfg.uplinkFwMark;
-  uplinkGroup = 1;
+  tunPrefix = config.melinoe.services.melnode.tunPrefix;
+  routeMirror = pkgs.writers.writePython3Bin "melinoe-uplink-routes" {
+    libraries = [ pkgs.python3Packages.pyroute2 ];
+    doCheck = false;
+  } (builtins.readFile ./melinoe-vpn-helpers/route-mirror.py);
   uplinksEnabled = netCfg.enabled && netCfg.uplinks != [ ];
   uplinkAddress =
     uplink:
@@ -64,7 +68,6 @@ let
             UseDomains = false;
           };
           linkConfig = {
-            Group = uplinkGroup;
             RequiredForOnline = if isPrimary then "yes" else "no";
           };
           networkConfig = {
@@ -147,8 +150,8 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = pkgs.writeShellScript "melinoe-inet-setup" ''
-          ip rule del pref 0 fwmark ${mark} lookup main suppress_ifgroup default >/dev/null 2>&1 || true
-          ip rule add pref 0 fwmark ${mark} lookup main suppress_ifgroup default
+          ip rule del pref 0 fwmark ${mark} lookup ${mark} >/dev/null 2>&1 || true
+          ip rule add pref 0 fwmark ${mark} lookup ${mark}
           ip rule del pref 1 from all lookup local >/dev/null 2>&1 || true
           ip rule add pref 1 from all lookup local
           ip rule del pref 0 from all lookup local >/dev/null 2>&1 || true
@@ -158,6 +161,21 @@ in
         '';
       };
       path = [ pkgs.iproute2 ];
+    };
+
+    systemd.services.melinoe-uplink-routes = lib.mkIf uplinksEnabled {
+      description = "Mirror non-mesh routes from the main table into the uplink fwmark table";
+      after = [ "network-pre.target" ];
+      wants = [ "network-pre.target" ];
+      before = [ "network-online.target" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        ExecStart = "${routeMirror}/bin/melinoe-uplink-routes --to-table ${mark} --exclude-prefix ${tunPrefix}";
+        Restart = "always";
+        RestartSec = 1;
+        AmbientCapabilities = [ "CAP_NET_ADMIN" ];
+        CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+      };
     };
   };
 }

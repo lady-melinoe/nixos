@@ -133,8 +133,9 @@ in
         description = ''
           fwmark value used to route return traffic for the internet
           uplink(s) back out via the uplink interfaces instead of over the
-          mesh. Marked packets are looked up in the main table with routes
-          via non-uplink interface groups suppressed. Also set as melnode's socket
+          mesh. Also the id of the routing table marked packets are looked up
+          in, which melinoe-uplink-routes keeps as a copy of the main table
+          minus routes via melnode tuns. Also set as melnode's socket
           fwmark so its own UDP traffic stays on the uplink. Consumed by
           melnode.nix, uplink.nix, and nftables.nix; kept as a single
           option so those three stay in sync.

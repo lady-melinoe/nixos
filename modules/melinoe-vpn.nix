@@ -18,7 +18,7 @@ let
 
   hostAddr = netCfg.intraIP;
 
-  tunPrefix = "node-";
+  tunPrefix = mCfg.tunPrefix;
   controlSocket = "/run/melnode/control.sock";
   dpSocket = "/run/melnode-dp/dp.sock";
 
@@ -248,6 +248,16 @@ in
       '';
     };
 
+    tunPrefix = mkOption {
+      type = types.str;
+      default = "node-";
+      readOnly = true;
+      description = ''
+        Name prefix of the per-peer tuns melnode-cp creates (<prefix><id>).
+        Routes via these interfaces are kept out of the uplink fwmark table.
+      '';
+    };
+
     privateKeyFile = mkOption {
       type = types.str;
       default = "/etc/melinoe/wg.privatekey";
@@ -409,12 +419,14 @@ in
       after = [
         "network.target"
         "melinoe-inet-setup.service"
+        "melinoe-uplink-routes.service"
         "nftables.service"
       ]
       ++ lib.optional (mCfg.dataplane == "userspace") "melnode-dp.service";
       wants = [
         "network.target"
         "melinoe-inet-setup.service"
+        "melinoe-uplink-routes.service"
         "nftables.service"
       ];
       requires = lib.optional (mCfg.dataplane == "userspace") "melnode-dp.service";
