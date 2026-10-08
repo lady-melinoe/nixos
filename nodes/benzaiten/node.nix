@@ -40,11 +40,15 @@
   melinoe.services.melnode.dataplane = "kernel";
   melinoe.node.networking.peers = [
     {
+      id = 1;
+      prependCount = 1;
+    }
+    {
+      id = 3;
+    }
+    {
       id = 5;
     }
-#    {
-#      id = 2;
-#    }
     {
       id = 6;
       prependCount = 2;
@@ -53,20 +57,6 @@
       id = 7;
       prependCount = 2;
     }
-    {
-      id = 3;
-    }
-    {
-      id = 1;
-      prependCount = 1;
-    }
-#    {
-#      id = 8;
-#      prependCount = 4;
-#    }
-#    {
-#      id = 9;
-#    }
     {
       id = 10;
     }

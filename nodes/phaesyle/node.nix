@@ -66,21 +66,17 @@
   ];
   melinoe.node.networking.peers = [
     {
-      id = 5;
+      id = 3;
       prependCount = 1;
     }
     {
-      id = 9;
+      id = 4;
       prependCount = 1;
     }
-#    {
-#      id = 10;
-#      prependCount = 1;
-#    }
-#    {
-#      id = 2;
-#      prependCount = 1;
-#    }
+    {
+      id = 5;
+      prependCount = 1;
+    }
     {
       id = 6;
       prependCount = 2;
@@ -90,16 +86,12 @@
       prependCount = 2;
     }
     {
-      id = 3;
-      prependCount = 1;
-    }
-    {
-      id = 4;
-      prependCount = 1;
-    }
-    {
       id = 8;
       prependCount = 4;
+    }
+    {
+      id = 10;
+      prependCount = 1;
     }
   ];
 }
