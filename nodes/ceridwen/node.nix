@@ -35,7 +35,6 @@
       gateway = null;
     }
   ];
-  melinoe.services.melnode.extraRoutes = [ "130.95.13.0/24" ];
   melinoe.services.melnode.kernelDataplane.enable = true;
   melinoe.services.melnode.dataplane = "kernel";
   melinoe.node.networking.peers = [
