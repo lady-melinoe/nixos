@@ -113,11 +113,11 @@
     "melinoe-vpn-userspace": {
       "flake": false,
       "locked": {
-        "lastModified": 1791056301,
-        "narHash": "sha256-tVO4lrEfceFNFYFZbgScyk0OTkfZBSXgRuyTXKOMiJY=",
+        "lastModified": 1791450744,
+        "narHash": "sha256-in/DbmmmGxUiC9ciizsi0raEQE7zATngeCJZCd/n0EM=",
         "ref": "refs/heads/mommy",
-        "rev": "5c33d7e1037b98fd8d888d24625a705cc6f5cd10",
-        "revCount": 2,
+        "rev": "01656a6993596235726da5572601d4da172ae62a",
+        "revCount": 3,
         "type": "git",
         "url": "https://gitlab.melinoe.net/homelab/mel-nix-pkgs/melinoe-vpn-userspace.git"
       },
