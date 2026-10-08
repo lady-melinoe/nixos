@@ -47,6 +47,9 @@
       id = 7;
       prependCount = 2;
     }
+    {
+      id = 9;
+    }
   ];
   melinoe.node.isBuildServer = true;
 }
