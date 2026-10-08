@@ -23,12 +23,12 @@
     nixpkgs-kernel.url = "github:NixOS/nixpkgs/4975466d324710c576dc11ad614684e6bd8cad8e";
 
     melinoe-vpn-userspace = {
-      url = "git+https://gitlab.melinoe.net/homelab/mel-nix-pkgs/melinoe-vpn-userspace.git";
+      url = "git+https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-userspace.git";
       flake = false;
     };
 
     melinoe-vpn-kernelspace = {
-      url = "git+https://gitlab.melinoe.net/homelab/mel-nix-pkgs/melinoe-vpn-kernelspace.git";
+      url = "git+https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-kernelspace.git";
       flake = false;
     };
   };
