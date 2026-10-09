@@ -10,6 +10,7 @@
     ./rofi.nix
     ./shell.nix
     ./theme.nix
+    ./vscode.nix
   ];
 
   home.username = "melinoe";
