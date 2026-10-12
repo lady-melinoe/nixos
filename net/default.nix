@@ -1,0 +1,4 @@
+{ melinoeLib, ... }:
+{
+  imports = melinoeLib.importDir ./.;
+}
