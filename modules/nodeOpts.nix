@@ -8,7 +8,6 @@ let
   inherit (lib) mkOption types;
 
   inherit (melinoeLib) accessRuleType;
-  netCfg = config.melinoe.node.networking;
 in
 {
   options.melinoe.node = {
@@ -102,25 +101,6 @@ in
         description = "This node's own address on melinoe.cluster.networking.hostCidr, derived from melinoe.node.id.";
       };
 
-      uplinkIfaceNames = mkOption {
-        type = types.listOf types.str;
-        readOnly = true;
-        default = lib.imap0 (
-          idx: uplink:
-          if builtins.length uplink.iface > 1 then "bond${toString idx}" else builtins.head uplink.iface
-        ) netCfg.uplinks;
-        defaultText = lib.literalMD "one name per uplink: its interface, or `bond<index>` when it has several";
-        description = "Interface name each entry of uplinks ends up on, in the same order.";
-      };
-
-      pubIps = mkOption {
-        type = types.listOf types.str;
-        readOnly = true;
-        default = lib.filter (ip: ip != null) (map (entry: entry.pub_ip or null) netCfg.uplinks);
-        defaultText = lib.literalMD "every non-null `pub_ip` in uplinks";
-        description = "Public IPs of this node's uplinks.";
-      };
-
       enabled = mkOption {
         type = types.bool;
         default = true;
@@ -137,7 +117,7 @@ in
           in, which melinoe-uplink-routes keeps as a copy of the main table
           minus routes via melnode tuns. Also set as melnode's socket
           fwmark so its own UDP traffic stays on the uplink. Consumed by
-          melnode.nix, uplink.nix, and nftables.nix; kept as a single
+          melnode.nix, net/uplink.nix, and nftables.nix; kept as a single
           option so those three stay in sync.
         '';
       };
@@ -167,56 +147,6 @@ in
       hostInternalPortAllNet = mkOption (
         accessRuleType "TCP/UDP ports or IP protocols to accept from any of the internal subnets, e.g. iperf3."
       );
-
-      uplinks = mkOption {
-        type = types.listOf (
-          types.submodule {
-            options = {
-              dhcp = mkOption {
-                type = types.bool;
-                default = false;
-                description = "Get this uplink's address and default route over DHCPv4 instead of ip/subnet/gateway.";
-              };
-              ip = mkOption {
-                type = types.nullOr types.str;
-                default = null;
-                description = "Primary IP address for this uplink (use /32 notation). Required unless dhcp is set.";
-              };
-              pub_ip = mkOption {
-                type = types.nullOr types.str;
-                default = null;
-                description = "Optional public IP address associated with this uplink.";
-              };
-              iface = mkOption {
-                type = types.listOf types.str;
-                description = "Interface names that carry the internet uplink; if multiple interfaces are specified, they will be LACP bonded.";
-              };
-              bondMode = mkOption {
-                type = types.nullOr types.str;
-                default = null;
-                description = "Bonding mode for a multi-interface uplink (currently only \"lacp\" is supported).";
-              };
-              lacpRate = mkOption {
-                type = types.nullOr types.str;
-                default = null;
-                description = "LACP rate for a bonded uplink (e.g., \"fast\" or \"slow\").";
-              };
-              subnet = mkOption {
-                type = types.nullOr types.str;
-                default = null;
-                description = "Subnet for the uplink if applicable.";
-              };
-              gateway = mkOption {
-                type = types.nullOr types.str;
-                default = null;
-                description = "Gateway address if needed for the uplink.";
-              };
-            };
-          }
-        );
-        default = [ ];
-        description = "Internet uplink definitions; each entry describes an IP, interface, and optional subnet/gateway.";
-      };
 
       peers = mkOption {
         type = types.listOf (

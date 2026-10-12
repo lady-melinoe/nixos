@@ -56,15 +56,18 @@
   networking.hostName = "atropos";
   melinoe.services.melnode.kernelDataplane.enable = true;
   melinoe.services.melnode.dataplane = "kernel";
-  melinoe.node.networking.uplinks = [
-    {
-      ip = "198.19.1.5/32";
-      pub_ip = "161.33.74.225/32";
-      iface = [ "ens3" ];
-      subnet = "198.19.1.0/24";
-      gateway = "198.19.1.1";
-    }
-  ];
+  melinoe.networking.uplinks = {
+    enabled = true;
+    interfaces = [
+      {
+        ip = "198.19.1.5/32";
+        pub_ip = "161.33.74.225/32";
+        iface = [ "ens3" ];
+        subnet = "198.19.1.0/24";
+        gateway = "198.19.1.1";
+      }
+    ];
+  };
   melinoe.node.networking.peers = [
     {
       id = 1;

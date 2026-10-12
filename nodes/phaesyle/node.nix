@@ -55,15 +55,18 @@
   networking.hostName = "phaesyle";
   melinoe.services.melnode.kernelDataplane.enable = true;
   melinoe.services.melnode.dataplane = "kernel";
-  melinoe.node.networking.uplinks = [
-    {
-      ip = "103.249.239.233/32";
-      pub_ip = "103.249.239.233/32";
-      iface = [ "ens3" ];
-      subnet = "103.249.239.0/24";
-      gateway = "103.249.239.1";
-    }
-  ];
+  melinoe.networking.uplinks = {
+    enabled = true;
+    interfaces = [
+      {
+        ip = "103.249.239.233/32";
+        pub_ip = "103.249.239.233/32";
+        iface = [ "ens3" ];
+        subnet = "103.249.239.0/24";
+        gateway = "103.249.239.1";
+      }
+    ];
+  };
   melinoe.node.networking.peers = [
     {
       id = 3;

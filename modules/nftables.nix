@@ -5,13 +5,14 @@
 }:
 let
   netCfg = config.melinoe.node.networking;
+  uplinksCfg = config.melinoe.networking.uplinks;
   addr = config.melinoe.cluster.networking;
   hostAddr = netCfg.intraIP;
-  pubIps = netCfg.pubIps;
+  pubIps = uplinksCfg.pubIps;
   pubRouteElements = lib.optionalString (
     pubIps != [ ]
   ) "elements = { ${builtins.concatStringsSep ", " pubIps} }";
-  uplinkIfaceNames = netCfg.uplinkIfaceNames;
+  uplinkIfaceNames = uplinksCfg.ifaceNames;
   renderUplinkMasqueradeRules = lib.concatStringsSep "\n" (
     map (iface: ''oifname "${iface}" masquerade'') uplinkIfaceNames
   );

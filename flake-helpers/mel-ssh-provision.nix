@@ -16,7 +16,7 @@ let
       internetIps = lib.concatMap (
         uplink:
         lib.optional (uplink.ip != null) uplink.ip ++ lib.optional (uplink.pub_ip != null) uplink.pub_ip
-      ) c.melinoe.node.networking.uplinks;
+      ) c.melinoe.networking.uplinks.interfaces;
     in
     {
       hostname = c.networking.hostName;
