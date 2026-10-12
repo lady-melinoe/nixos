@@ -8,6 +8,7 @@ let
   inherit (lib) mkOption types;
   cfg = config.melinoe.networking.uplinks;
   meshCidr = config.melinoe.cluster.networking.containerCidr;
+  meshAddress = config.melinoe.node.networking.intraIP;
   # Owned by melnode/nftables, not by uplink setup itself; this just has to
   # agree with them on which mark return traffic gets routed by.
   mark = toString config.melinoe.node.networking.uplinkFwMark;
@@ -222,15 +223,27 @@ in
       };
     };
 
-    systemd.network = lib.mkIf cfg.enabled {
-      enable = true;
-      config.networkConfig = {
-        ManageForeignRoutes = false;
-        ManageForeignRoutingPolicyRules = false;
-      };
-      netdevs = lib.mkMerge (map (units: units.netdevs) uplinkUnits);
-      networks = lib.mkMerge (map (units: units.networks) uplinkUnits);
-    };
+    networking.useDHCP = lib.mkIf cfg.enabled false;
+
+    systemd.network = lib.mkMerge [
+      {
+        networks."10-lo" = {
+          matchConfig.Name = "lo";
+          address = [ "${meshAddress}/32" ];
+          networkConfig.KeepConfiguration = "static";
+        };
+      }
+      (lib.mkIf cfg.enabled {
+        enable = true;
+        wait-online.timeout = 30;
+        config.networkConfig = {
+          ManageForeignRoutes = false;
+          ManageForeignRoutingPolicyRules = false;
+        };
+        netdevs = lib.mkMerge (map (units: units.netdevs) uplinkUnits);
+        networks = lib.mkMerge (map (units: units.networks) uplinkUnits);
+      })
+    ];
 
     boot.kernel.sysctl = lib.mkIf cfg.enabled {
       "net.ipv4.conf.all.rp_filter" = 0;

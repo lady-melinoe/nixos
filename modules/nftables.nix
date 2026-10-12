@@ -137,8 +137,6 @@ in
             table inet filter {
               chain INPUT {
                 type filter hook input priority filter; policy drop;
-                iifname "node-*" udp dport 60198 drop
-                iifname "node-*" udp sport 60198 drop
                 ct state invalid drop
                 ct state { established, related } accept
                 icmp type { echo-request, echo-reply } accept
@@ -160,8 +158,6 @@ in
               }
               chain OUTPUT {
                 type filter hook output priority filter; policy accept;
-                oifname "node-*" udp dport 60198 drop
-                oifname "node-*" udp sport 60198 drop
               }
             }
             table inet raw {
