@@ -9,6 +9,10 @@
   system.stateVersion = "25.05";
 
   programs.nix-ld.enable = true;
+  programs.appimage = {
+    enable = true;
+    binfmt = true;
+  };
   environment.systemPackages = [
     pkgs.git
     pkgs.tcpdump
