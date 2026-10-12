@@ -59,6 +59,7 @@
             inputs.disko.nixosModules.disko
             { nixpkgs.hostPlatform = system; }
             ./common
+            ./net
             ./modules
             module
           ];
