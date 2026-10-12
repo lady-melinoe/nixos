@@ -13,5 +13,6 @@
     calibre
     mpv
     spotify
+    jdk21
   ];
 }
