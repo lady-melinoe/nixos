@@ -94,19 +94,16 @@
     };
   };
 
-  networking.wireless.iwd = {
-    enable = true;
-    settings = {
-      General.EnableNetworkConfiguration = false;
-      DriverQuirks.DefaultInterface = "*";
-    };
+  melinoe.networking.uplinks = {
+    enabled = true;
+    interfaces = [
+      {
+        dhcp = true;
+        wifi = true;
+        iface = [ "wlan0" ];
+      }
+    ];
   };
-  melinoe.node.networking.uplinks = [
-    {
-      dhcp = true;
-      iface = [ "wlan0" ];
-    }
-  ];
   melinoe.services.melnode.kernelDataplane.enable = true;
   melinoe.services.melnode.dataplane = "kernel";
   melinoe.node.networking.peers = [

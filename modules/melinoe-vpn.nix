@@ -14,6 +14,7 @@ let
     inputs.melinoe-vpn-kernelspace + "/package.nix"
   ) { };
   netCfg = cfg.node.networking;
+  uplinksCfg = cfg.networking.uplinks;
   nodeID = cfg.node.id;
 
   hostAddr = netCfg.intraIP;
@@ -58,11 +59,16 @@ let
     }
     // lib.optionalAttrs (host != null) { endpoint = formatEndpoint host; };
 
-  pubIps = netCfg.pubIps;
+  pubIps = uplinksCfg.pubIps;
 
   helper = pkgs.writers.writePython3Bin "melnode-helper" {
     doCheck = false;
   } (builtins.readFile ./melinoe-vpn-helpers/melnode-helper.py);
+
+  routeMirror = pkgs.writers.writePython3Bin "melinoe-uplink-routes" {
+    libraries = [ pkgs.python3Packages.pyroute2 ];
+    doCheck = false;
+  } (builtins.readFile ./melinoe-vpn-helpers/route-mirror.py);
 
   mnctl = pkgs.runCommand "mnctl" { } ''
     install -Dm755 ${mCfg.package}/bin/mnctl $out/bin/mnctl
@@ -343,7 +349,7 @@ in
       }
       {
         assertion = !mCfg.enabled || netCfg.enabled;
-        message = "melinoe.node.networking.enabled must be true when melinoe.services.melnode.enabled is true (melinoe.node.networking.uplinks is an uplink property and pub_ips are derived from it).";
+        message = "melinoe.node.networking.enabled must be true when melinoe.services.melnode.enabled is true (melinoe.networking.uplinks.interfaces is an uplink property and pub_ips are derived from it).";
       }
       {
         assertion =
@@ -407,6 +413,21 @@ in
         Restart = "always";
         RestartSec = 1;
         RuntimeDirectory = "melnode-dp";
+        AmbientCapabilities = [ "CAP_NET_ADMIN" ];
+        CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+      };
+    };
+
+    systemd.services.melinoe-uplink-routes = lib.mkIf mCfg.enabled {
+      description = "Mirror non-mesh routes from the main table into the uplink fwmark table";
+      after = [ "network-pre.target" ];
+      wants = [ "network-pre.target" ];
+      before = [ "network-online.target" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        ExecStart = "${routeMirror}/bin/melinoe-uplink-routes --to-table ${toString netCfg.uplinkFwMark} --exclude-prefix ${tunPrefix}";
+        Restart = "always";
+        RestartSec = 1;
         AmbientCapabilities = [ "CAP_NET_ADMIN" ];
         CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
       };

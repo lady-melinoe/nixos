@@ -15,15 +15,18 @@
     1
   ];
   networking.hostName = "ceridwen";
-  melinoe.node.networking.uplinks = [
-    {
-      ip = "130.95.13.235/32";
-      pub_ip = "130.95.13.235/32";
-      iface = [ "eno1" ];
-      subnet = "130.95.13.128/25";
-      gateway = "130.95.13.129";
-    }
-  ];
+  melinoe.networking.uplinks = {
+    enabled = true;
+    interfaces = [
+      {
+        ip = "130.95.13.235/32";
+        pub_ip = "130.95.13.235/32";
+        iface = [ "eno1" ];
+        subnet = "130.95.13.128/25";
+        gateway = "130.95.13.129";
+      }
+    ];
+  };
   melinoe.services.melnode.extraRoutes = [ "130.95.13.0/24" ];
   melinoe.services.melnode.kernelDataplane.enable = true;
   melinoe.services.melnode.dataplane = "kernel";
