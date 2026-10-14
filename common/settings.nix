@@ -8,6 +8,11 @@
 {
   system.stateVersion = "25.05";
 
+  programs.gnupg.agent = {
+    enable = true;
+    pinentryPackage = pkgs.pinentry-curses;
+  };
+
   programs.nix-ld.enable = true;
   programs.appimage = {
     enable = true;
