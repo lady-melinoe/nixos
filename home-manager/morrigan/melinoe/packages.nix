@@ -14,5 +14,6 @@
     mpv
     spotify
     jdk21
+    vesktop
   ];
 }
