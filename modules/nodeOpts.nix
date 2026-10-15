@@ -31,18 +31,6 @@ in
       '';
     };
 
-    isRemoteUpdatable = mkOption {
-      type = types.bool;
-      default = true;
-      description = "Whether to create the gitlab-deploy user and allow it to trigger update-safe; also what mel-deploy uses to pick its targets.";
-    };
-
-    hasUpdateScripts = mkOption {
-      type = types.bool;
-      default = true;
-      description = "Whether to install the update and update-safe scripts.";
-    };
-
     networking = {
       intraIP = mkOption {
         type = types.str;

@@ -137,18 +137,32 @@ let
   };
 in
 {
+  options.melinoe.other.update = {
+    isRemoteUpdatable = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Whether to create the gitlab-deploy user and allow it to trigger update-safe; also what mel-deploy uses to pick its targets.";
+    };
+
+    hasUpdateScripts = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Whether to install the update and update-safe scripts.";
+    };
+  };
+
   config = lib.mkMerge [
-    (mkIf config.melinoe.node.hasUpdateScripts {
+    (mkIf config.melinoe.other.update.hasUpdateScripts {
       environment.systemPackages = [
         update
         update-safe
       ];
     })
-    (mkIf config.melinoe.node.isRemoteUpdatable {
+    (mkIf config.melinoe.other.update.isRemoteUpdatable {
       assertions = [
         {
-          assertion = config.melinoe.node.hasUpdateScripts;
-          message = "melinoe.node.isRemoteUpdatable requires melinoe.node.hasUpdateScripts (gitlab-deploy runs update-safe).";
+          assertion = config.melinoe.other.update.hasUpdateScripts;
+          message = "melinoe.other.update.isRemoteUpdatable requires melinoe.other.update.hasUpdateScripts (gitlab-deploy runs update-safe).";
         }
       ];
 
