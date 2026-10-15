@@ -1,5 +1,5 @@
 {
-  melinoe.nodePublicInfo."3" = {
+  melinoe.other.nodePublicInfo."3" = {
     wgPubkey = "J1BWw4e4/jwXqYoajGiQZwHqsQxBM+Y079gy46PYzGs=";
     defaultEndpoint = "130.95.13.235";
     buildServer = {

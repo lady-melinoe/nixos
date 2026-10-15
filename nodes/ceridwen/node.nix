@@ -11,6 +11,21 @@
     ./disk-config.nix
   ];
   melinoe.node.id = 3;
+  boot.initrd.availableKernelModules = [
+    "ata_piix"
+    "uhci_hcd"
+    "xen_blkfront"
+    "vmw_pvscsi"
+    "sd_mod"
+    "usbhid"
+    "usb_storage"
+    "mpt3sas"
+    "ehci_pci"
+  ];
+  boot.initrd.kernelModules = [
+    "nvme"
+    "kvm-intel"
+  ];
   boot.loader.grub = {
     efiSupport = true;
     efiInstallAsRemovable = true;
@@ -72,5 +87,5 @@
       id = 10;
     }
   ];
-  melinoe.node.isBuildServer = true;
+  melinoe.other.distributedBuild.isBuildServer = true;
 }

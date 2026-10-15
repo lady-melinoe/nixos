@@ -5,7 +5,7 @@ in
 {
   imports = builtins.attrValues (melinoeLib.nodesWith ../nodes "public.nix");
 
-  options.melinoe.nodePublicInfo = mkOption {
+  options.melinoe.other.nodePublicInfo = mkOption {
     type = types.attrsOf (
       types.submodule {
         options = {
@@ -50,7 +50,7 @@ in
               }
             );
             default = null;
-            description = "Optional remote-build-server details this node publishes, so other nodes can reference it from melinoe.node.remoteBuildOn by id instead of repeating hostName/CA/system/etc. Leave null for nodes that don't offer remote builds.";
+            description = "Optional remote-build-server details this node publishes, so other nodes can reference it from melinoe.other.distributedBuild.remoteBuildOn by id instead of repeating hostName/CA/system/etc. Leave null for nodes that don't offer remote builds.";
           };
         };
       }

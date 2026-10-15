@@ -17,20 +17,6 @@ in
       description = "Unique node ID used for addressing and routing.";
     };
 
-    type = mkOption {
-      type = types.enum [
-        "server"
-        "workstation"
-      ];
-      default = "server";
-      description = ''
-        What kind of machine this is. "server" is a rack/VM cluster node with
-        the old shared initrd module set. "workstation" defaults isVMHost,
-        isRemoteUpdatable and melinoe.services.haproxy.enable to false and
-        brings its own hardware config.
-      '';
-    };
-
     isVMHost = mkOption {
       type = types.bool;
       default = true;
@@ -43,46 +29,6 @@ in
         themselves - melnode.nix doesn't bother scanning for local vm-
         interfaces in that case, since they will never exist.
       '';
-    };
-
-    isBuildServer = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Whether this node is allowed to act as a build server.";
-    };
-
-    remoteBuildOn = mkOption {
-      type = types.listOf (
-        types.submodule {
-          freeformType = types.attrs;
-          options = {
-            id = mkOption {
-              type = types.nullOr types.int;
-              default = null;
-              description = ''
-                Node id to use as a remote builder. When set, hostName,
-                publicHostCA, sshUser, system and supportedFeatures default to
-                whatever that node publishes via
-                melinoe.nodePublicInfo.<id>.buildServer (see nodes/*/public.nix);
-                set any of those fields explicitly on this entry to override
-                the published value. sshKey is never published and must still
-                be set here.
-              '';
-            };
-            sshKey = mkOption {
-              type = types.str;
-              description = "Local path to the SSH private key used to authenticate to this build machine.";
-            };
-            publicHostCA = mkOption {
-              type = types.nullOr types.str;
-              default = null;
-              description = "The exact @cert-authority line to inject into the machine's publicHostKey.";
-            };
-          };
-        }
-      );
-      default = [ ];
-      description = "Wrapper around nix.buildMachines with SSH CA support.";
     };
 
     isRemoteUpdatable = mkOption {
@@ -159,12 +105,12 @@ in
             options = {
               id = mkOption {
                 type = types.int;
-                description = "Peer node ID (must have a melinoe.nodePublicInfo entry).";
+                description = "Peer node ID (must have a melinoe.other.nodePublicInfo entry).";
               };
               endpoint = mkOption {
                 type = types.nullOr types.str;
                 default = null;
-                description = "Override endpoint IP for this peer (melnode takes an IP literal, no hostnames); if null, nodePublicInfo.<id>.defaultEndpoint is used. If that is null too, the link is listen-only: this node never dials the peer and waits for it to connect in.";
+                description = "Override endpoint IP for this peer (melnode takes an IP literal, no hostnames); if null, melinoe.other.nodePublicInfo.<id>.defaultEndpoint is used. If that is null too, the link is listen-only: this node never dials the peer and waits for it to connect in.";
               };
               prependCount = mkOption {
                 type = types.ints.unsigned;

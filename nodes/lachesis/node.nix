@@ -12,6 +12,21 @@
     ./disk-config.nix
   ];
   melinoe.node.id = 6;
+  boot.initrd.availableKernelModules = [
+    "ata_piix"
+    "uhci_hcd"
+    "xen_blkfront"
+    "vmw_pvscsi"
+    "sd_mod"
+    "usbhid"
+    "usb_storage"
+    "mpt3sas"
+    "ehci_pci"
+  ];
+  boot.initrd.kernelModules = [
+    "nvme"
+    "kvm-intel"
+  ];
   networking.hostName = "lachesis";
   boot.loader.grub = {
     efiSupport = true;
@@ -41,7 +56,7 @@
   nix.settings.builders-use-substitutes = true;
   melinoe.services.melnode.kernelDataplane.enable = true;
   melinoe.services.melnode.dataplane = "kernel";
-  melinoe.node.remoteBuildOn = [
+  melinoe.other.distributedBuild.remoteBuildOn = [
     {
       id = 10; # nephthys
       sshKey = "/root/.ssh/id_remotebuild";

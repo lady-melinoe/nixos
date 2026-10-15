@@ -35,7 +35,7 @@ let
     if peer.endpoint != null then
       peer.endpoint
     else
-      (cfg.nodePublicInfo.${peerIdStr peer} or { defaultEndpoint = null; }).defaultEndpoint;
+      (cfg.other.nodePublicInfo.${peerIdStr peer} or { defaultEndpoint = null; }).defaultEndpoint;
 
   formatEndpoint =
     host:
@@ -54,7 +54,7 @@ let
     in
     {
       peerid = peer.id;
-      peerPubkey = cfg.nodePublicInfo.${peerIdStr peer}.wgPubkey;
+      peerPubkey = cfg.other.nodePublicInfo.${peerIdStr peer}.wgPubkey;
       prependCount = peer.prependCount;
     }
     // lib.optionalAttrs (host != null) { endpoint = formatEndpoint host; };
@@ -369,7 +369,7 @@ in
         peer:
         let
           id = peerIdStr peer;
-          info = cfg.nodePublicInfo.${id} or null;
+          info = cfg.other.nodePublicInfo.${id} or null;
           host = if info == null then null else resolveEndpointHost peer;
         in
         [
@@ -379,7 +379,7 @@ in
           }
           {
             assertion = info != null;
-            message = "melinoe.node.networking.peers: peer ${id} has no melinoe.nodePublicInfo entry (its public key is needed).";
+            message = "melinoe.node.networking.peers: peer ${id} has no melinoe.other.nodePublicInfo entry (its public key is needed).";
           }
           {
             assertion = host == null || isIpLiteral host;

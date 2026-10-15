@@ -13,7 +13,7 @@
   ];
   nix.distributedBuilds = true;
   nix.settings.builders-use-substitutes = true;
-  melinoe.node.remoteBuildOn = [
+  melinoe.other.distributedBuild.remoteBuildOn = [
     {
       id = 10; # nephthys
       sshKey = "/root/.ssh/id_remotebuild";
@@ -28,6 +28,21 @@
     }
   ];
   melinoe.node.id = 1;
+  boot.initrd.availableKernelModules = [
+    "ata_piix"
+    "uhci_hcd"
+    "xen_blkfront"
+    "vmw_pvscsi"
+    "sd_mod"
+    "usbhid"
+    "usb_storage"
+    "mpt3sas"
+    "ehci_pci"
+  ];
+  boot.initrd.kernelModules = [
+    "nvme"
+    "kvm-intel"
+  ];
   boot.loader.grub = {
     efiSupport = true;
     efiInstallAsRemovable = true;
