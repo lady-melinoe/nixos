@@ -11,9 +11,21 @@
     ./disk-config.nix
   ];
   melinoe.node.id = 4;
-  melinoe.extraSerial = [
-    1
-  ];
+  boot.loader.grub = {
+    efiSupport = true;
+    efiInstallAsRemovable = true;
+    device = "nodev";
+  };
+  boot.loader.efi.efiSysMountPoint = "/boot/efi";
+  systemd.services."serial-getty@ttyS1" = {
+    enable = true;
+    wantedBy = [ "getty.target" ];
+    overrideStrategy = "asDropin";
+    serviceConfig.ExecStart = lib.mkForce [
+      ""
+      "${pkgs.util-linux}/bin/agetty --login-program ${pkgs.shadow}/bin/login --noclear -L ttyS1 115200 vt220"
+    ];
+  };
   networking.hostName = "benzaiten";
   melinoe.networking.uplinks = {
     enabled = true;

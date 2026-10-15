@@ -11,7 +11,7 @@
     ./disk-config.nix
   ];
   melinoe.node.id = 10;
-  melinoe.node.legacyBoot = true;
+  boot.loader.grub.enable = true;
   networking.hostName = "nephthys";
   melinoe.networking.uplinks = {
     enabled = true;

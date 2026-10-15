@@ -56,6 +56,23 @@ in
         types.submodule {
           freeformType = types.attrs;
           options = {
+            id = mkOption {
+              type = types.nullOr types.int;
+              default = null;
+              description = ''
+                Node id to use as a remote builder. When set, hostName,
+                publicHostCA, sshUser, system and supportedFeatures default to
+                whatever that node publishes via
+                melinoe.nodePublicInfo.<id>.buildServer (see nodes/*/public.nix);
+                set any of those fields explicitly on this entry to override
+                the published value. sshKey is never published and must still
+                be set here.
+              '';
+            };
+            sshKey = mkOption {
+              type = types.str;
+              description = "Local path to the SSH private key used to authenticate to this build machine.";
+            };
             publicHostCA = mkOption {
               type = types.nullOr types.str;
               default = null;
@@ -78,18 +95,6 @@ in
       type = types.bool;
       default = true;
       description = "Whether to install the update and update-safe scripts.";
-    };
-
-    serialConsoleMode = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Enable serial console support for EFI/GRUB on this node.";
-    };
-
-    legacyBoot = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Enable legacy GRUB boot settings for this node.";
     };
 
     networking = {
