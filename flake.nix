@@ -61,6 +61,7 @@
             ./common
             ./net
             ./modules
+            ./other
             module
           ];
         };

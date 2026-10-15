@@ -28,7 +28,7 @@
 
   nix.distributedBuilds = true;
   nix.settings.builders-use-substitutes = true;
-  melinoe.node.remoteBuildOn = [
+  melinoe.other.distributedBuild.remoteBuildOn = [
     {
       id = 10; # nephthys
       sshKey = "/root/.ssh/id_remotebuild";
@@ -42,7 +42,9 @@
       sshKey = "/root/.ssh/id_remotebuild";
     }
   ];
-  melinoe.node.type = "workstation";
+  melinoe.node.isVMHost = lib.mkDefault false;
+  melinoe.node.isRemoteUpdatable = lib.mkDefault false;
+  melinoe.services.haproxy.enable = lib.mkDefault false;
   melinoe.node.id = 8;
   networking.hostName = "morrigan";
 

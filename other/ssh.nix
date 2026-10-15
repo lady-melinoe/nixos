@@ -5,18 +5,18 @@
 }:
 let
   inherit (lib) mkOption mkIf types;
-  cfg = config.melinoe.services.ssh;
+  cfg = config.melinoe.other.ssh;
 
   knownHostLine =
     entry:
     "${lib.optionalString entry.certAuthority "@cert-authority "}${lib.concatStringsSep "," entry.hosts} ${entry.publicKey}";
 in
 {
-  options.melinoe.services.ssh = {
+  options.melinoe.other.ssh = {
     enabled = mkOption {
       type = types.bool;
       default = false;
-      description = "Whether to enable and configure sshd on this host. All other melinoe.services.ssh.* options are no-ops unless this is true.";
+      description = "Whether to enable and configure sshd on this host. All other melinoe.other.ssh.* options are no-ops unless this is true.";
     };
 
     ports = mkOption {

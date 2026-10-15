@@ -96,7 +96,7 @@
     ];
   };
 
-  melinoe.services.ssh = {
+  melinoe.other.ssh = {
     enabled = true;
     fwOpenPorts = true;
     acceptEnv = [ "PROFILEUSER" ];

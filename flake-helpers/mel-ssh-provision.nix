@@ -23,19 +23,19 @@ let
       sshTarget = "${name}.infra.melinoe.xyz";
 
       # Paths (on this host) of any keys it uses to ssh out to build
-      # servers, per `melinoe.node.remoteBuildOn`. These are declared in
-      # nix per-node rather than assumed, since the key name/path isn't
-      # fixed across nodes. `sshKey` is a freeform field on the
-      # remoteBuildOn submodule, so it may be absent.
+      # servers. Read off the resolved c.nix.buildMachines (rather than
+      # melinoe.other.distributedBuild.remoteBuildOn directly) so entries
+      # that use the `id` shorthand still report their published sshUser
+      # instead of falling back to "root".
       remoteBuildKeys = lib.unique (
-        builtins.filter (k: k != null) (map (m: m.sshKey or null) c.melinoe.node.remoteBuildOn)
+        builtins.filter (k: k != null) (map (m: m.sshKey or null) c.nix.buildMachines)
       );
 
       remoteBuildKeyUsers =
         lib.mapAttrs (_: machines: lib.unique (map (m: m.sshUser or "root") machines))
           (
             lib.groupBy (m: m.sshKey) (
-              builtins.filter (m: (m.sshKey or null) != null) c.melinoe.node.remoteBuildOn
+              builtins.filter (m: (m.sshKey or null) != null) c.nix.buildMachines
             )
           );
 
