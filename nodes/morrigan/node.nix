@@ -43,7 +43,7 @@
     }
   ];
   melinoe.node.isVMHost = lib.mkDefault false;
-  melinoe.node.isRemoteUpdatable = lib.mkDefault false;
+  melinoe.other.update.isRemoteUpdatable = lib.mkDefault false;
   melinoe.services.haproxy.enable = lib.mkDefault false;
   melinoe.node.id = 8;
   networking.hostName = "morrigan";

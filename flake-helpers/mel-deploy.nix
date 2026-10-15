@@ -8,7 +8,7 @@ let
   deployDomain = "intra.melinoe.xyz";
 
   deployable = lib.filterAttrs (
-    _: cfg: cfg.config.melinoe.node.isRemoteUpdatable
+    _: cfg: cfg.config.melinoe.other.update.isRemoteUpdatable
   ) nixosConfigurations;
 
   nodeNames = builtins.attrNames deployable;
