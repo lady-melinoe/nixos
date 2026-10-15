@@ -15,6 +15,24 @@ let
       '';
     in
     builtins.readFile drv;
+
+  resolveBuildMachine =
+    machine:
+    let
+      published =
+        if machine.id == null then
+          { }
+        else
+          let
+            nodeInfo =
+              config.melinoe.nodePublicInfo.${toString machine.id}
+              or (throw "melinoe.node.remoteBuildOn: no melinoe.nodePublicInfo entry for node id ${toString machine.id}");
+          in
+          nodeInfo.buildServer
+            or (throw "melinoe.node.remoteBuildOn: node id ${toString machine.id} does not publish buildServer info in its public.nix");
+      overrides = lib.filterAttrs (_: v: v != null) (builtins.removeAttrs machine [ "id" ]);
+    in
+    published // overrides;
 in
 {
   config = lib.mkMerge [
@@ -32,14 +50,17 @@ in
     (lib.mkIf (config.melinoe.node.remoteBuildOn != [ ]) {
       nix.buildMachines = map (
         machine:
-        if machine.publicHostCA != null then
+        let
+          resolved = resolveBuildMachine machine;
+        in
+        if (resolved.publicHostCA or null) != null then
           let
-            rawPayload = "${dummyKey}\n${machine.publicHostCA}";
+            rawPayload = "${dummyKey}\n${resolved.publicHostCA}";
             encodedKey = shellBase64 rawPayload;
           in
-          (builtins.removeAttrs machine [ "publicHostCA" ]) // { publicHostKey = encodedKey; }
+          (builtins.removeAttrs resolved [ "publicHostCA" ]) // { publicHostKey = encodedKey; }
         else
-          builtins.removeAttrs machine [ "publicHostCA" ]
+          builtins.removeAttrs resolved [ "publicHostCA" ]
       ) config.melinoe.node.remoteBuildOn;
     })
   ];

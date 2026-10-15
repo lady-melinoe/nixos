@@ -11,7 +11,7 @@
     ./disk-config.nix
   ];
   melinoe.node.id = 9;
-  melinoe.node.legacyBoot = true;
+  boot.loader.grub.enable = true;
   networking.hostName = "satet";
   melinoe.networking.uplinks = {
     enabled = true;

@@ -174,46 +174,47 @@ in
   };
 
   config = {
-    assertions = lib.concatMap (
-      entry:
-      let
-        isBonded = builtins.length entry.iface > 1;
-        hasBondMode = entry.bondMode != null;
-        hasLacpRate = entry.lacpRate != null;
-      in
-      [
+    assertions =
+      lib.concatMap (
+        entry:
+        let
+          isBonded = builtins.length entry.iface > 1;
+          hasBondMode = entry.bondMode != null;
+          hasLacpRate = entry.lacpRate != null;
+        in
+        [
+          {
+            assertion = !(isBonded && !hasBondMode);
+            message = "melinoe.networking.uplinks.interfaces: bondMode must be set when multiple interfaces are specified.";
+          }
+          {
+            assertion = !(hasBondMode && entry.bondMode != "lacp");
+            message = "melinoe.networking.uplinks.interfaces: only bondMode = \"lacp\" is supported.";
+          }
+          {
+            assertion = entry.dhcp || entry.ip != null;
+            message = "melinoe.networking.uplinks.interfaces: ip must be set unless dhcp = true.";
+          }
+          {
+            assertion = !entry.dhcp || (entry.ip == null && entry.subnet == null && entry.gateway == null);
+            message = "melinoe.networking.uplinks.interfaces: ip, subnet and gateway come from DHCP when dhcp = true; leave them unset.";
+          }
+          {
+            assertion = !(hasLacpRate && !isBonded);
+            message = "melinoe.networking.uplinks.interfaces: lacpRate is only valid when multiple interfaces are specified.";
+          }
+          {
+            assertion = !(entry.wifi && isBonded);
+            message = "melinoe.networking.uplinks.interfaces: wifi uplinks don't support bonding.";
+          }
+        ]
+      ) cfg.interfaces
+      ++ [
         {
-          assertion = !(isBonded && !hasBondMode);
-          message = "melinoe.networking.uplinks.interfaces: bondMode must be set when multiple interfaces are specified.";
+          assertion = !cfg.enabled || config.melinoe.node.networking.enabled;
+          message = "melinoe.node.networking.enabled must be true when melinoe.networking.uplinks.enabled is true.";
         }
-        {
-          assertion = !(hasBondMode && entry.bondMode != "lacp");
-          message = "melinoe.networking.uplinks.interfaces: only bondMode = \"lacp\" is supported.";
-        }
-        {
-          assertion = entry.dhcp || entry.ip != null;
-          message = "melinoe.networking.uplinks.interfaces: ip must be set unless dhcp = true.";
-        }
-        {
-          assertion = !entry.dhcp || (entry.ip == null && entry.subnet == null && entry.gateway == null);
-          message = "melinoe.networking.uplinks.interfaces: ip, subnet and gateway come from DHCP when dhcp = true; leave them unset.";
-        }
-        {
-          assertion = !(hasLacpRate && !isBonded);
-          message = "melinoe.networking.uplinks.interfaces: lacpRate is only valid when multiple interfaces are specified.";
-        }
-        {
-          assertion = !(entry.wifi && isBonded);
-          message = "melinoe.networking.uplinks.interfaces: wifi uplinks don't support bonding.";
-        }
-      ]
-    ) cfg.interfaces
-    ++ [
-      {
-        assertion = !cfg.enabled || config.melinoe.node.networking.enabled;
-        message = "melinoe.node.networking.enabled must be true when melinoe.networking.uplinks.enabled is true.";
-      }
-    ];
+      ];
 
     networking.wireless.iwd = lib.mkIf hasWifiUplink {
       enable = true;
