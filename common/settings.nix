@@ -218,8 +218,6 @@
     {
       iface = "vm-homepage";
       ip = "198.18.1.5";
-      tcp = [ 8080 ];
-      udp = [ 8080 ];
       specialHostAccess.tcp = [ 61208 ]; # glances for monitoring
     }
     {
@@ -292,6 +290,8 @@
     {
       iface = "vm-play";
       ip = "198.18.1.20";
+      tcp = [ 8080 ];
+      udp = [ 8080 ];
       outbound-via-node = 1;
     }
     {
