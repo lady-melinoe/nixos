@@ -7,7 +7,7 @@
 let
   inherit (lib) mkOption types;
   mel = config.melinoe;
-  cfg = mel.services.haproxy;
+  cfg = mel.networking.haproxy;
   hostAddr = mel.node.networking.intraIP;
 
   serverLine =
@@ -62,7 +62,7 @@ let
     lib.concatStringsSep "\n" lines + "\n";
 in
 {
-  options.melinoe.services.haproxy = {
+  options.melinoe.networking.haproxy = {
     enable = mkOption {
       type = types.bool;
       default = true;
@@ -140,7 +140,7 @@ in
     ports = mkOption {
       type = types.listOf types.port;
       readOnly = true;
-      default = lib.attrValues config.melinoe.services.haproxy.frontendPorts;
+      default = lib.attrValues config.melinoe.networking.haproxy.frontendPorts;
       description = "TCP ports bound by the haproxy frontends; consumed by melinoe.node.networking.openPorts.";
     };
   };
