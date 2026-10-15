@@ -82,7 +82,7 @@ let
       control_socket = controlSocket;
       pub_ips = pubIps;
       extra_routes = mCfg.extraRoutes;
-      vm_ifaces = lib.optionals cfg.node.isVMHost (map (vm: vm.iface) cfg.cluster.virtualMachines);
+      vm_ifaces = lib.optionals cfg.other.incus.isVMHost (map (vm: vm.iface) cfg.cluster.virtualMachines);
     }
   );
 

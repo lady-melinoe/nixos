@@ -168,7 +168,7 @@
     "ucc.asn.au"
   ];
   melinoe.services.melnode.enabled = true;
-  melinoe.services.haproxy = {
+  melinoe.networking.haproxy = {
     backendNodes = [
       {
         name = "nginx1";

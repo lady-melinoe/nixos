@@ -42,9 +42,9 @@
       sshKey = "/root/.ssh/id_remotebuild";
     }
   ];
-  melinoe.node.isVMHost = lib.mkDefault false;
+  melinoe.other.incus.isVMHost = lib.mkDefault false;
   melinoe.other.update.isRemoteUpdatable = lib.mkDefault false;
-  melinoe.services.haproxy.enable = lib.mkDefault false;
+  melinoe.networking.haproxy.enable = lib.mkDefault false;
   melinoe.node.id = 8;
   networking.hostName = "morrigan";
 

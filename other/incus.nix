@@ -6,10 +6,26 @@
   ...
 }:
 let
-  inherit (lib) mkIf;
-  cfg = config.melinoe.node;
+  inherit (lib) mkIf mkOption types;
+  cfg = config.melinoe.other.incus;
 in
 {
+  options.melinoe.other.incus = {
+    isVMHost = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Whether this node runs Incus and hosts local containers/VMs.
+
+        Disable for cluster nodes that should still be full mesh members
+        (still receive routes to other nodes' VMs, still advertise their own
+        pub_ips/extraRoutes via melnode) but never run any containers
+        themselves - melnode.nix doesn't bother scanning for local vm-
+        interfaces in that case, since they will never exist.
+      '';
+    };
+  };
+
   config = lib.mkMerge [
     {
       programs.bash.shellAliases = {
