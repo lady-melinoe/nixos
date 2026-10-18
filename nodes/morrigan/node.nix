@@ -24,7 +24,7 @@
   };
   environment.systemPackages = [ pkgs.sbctl ];
 
-  nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "spotify" ];
+  nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "spotify" "steam" "steam-unwrapped" ];
 
   nix.distributedBuilds = true;
   nix.settings.builders-use-substitutes = true;

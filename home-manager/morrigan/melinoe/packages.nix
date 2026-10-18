@@ -16,5 +16,6 @@
     jdk21
     vesktop
     heroic
+    steam
   ];
 }
