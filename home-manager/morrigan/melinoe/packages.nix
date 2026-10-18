@@ -15,5 +15,6 @@
     spotify
     jdk21
     vesktop
+    heroic
   ];
 }
