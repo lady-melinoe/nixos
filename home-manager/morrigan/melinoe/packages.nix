@@ -16,6 +16,5 @@
     jdk21
     vesktop
     heroic
-    lutris
   ];
 }
