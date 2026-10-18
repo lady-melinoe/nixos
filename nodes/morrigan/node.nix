@@ -16,6 +16,8 @@
   melinoe.home-manager.melinoe = [ ../../home-manager/morrigan/melinoe ];
   hardware.graphics.enable = true;
   hardware.graphics.enable32Bit = true;
+  users.extraGroups.input.members = [ "melinoe" ];
+
   boot.loader.grub.enable = false;
   boot.loader.systemd-boot.enable = false;
   boot.loader.efi.efiSysMountPoint = "/boot/efi";
@@ -68,6 +70,8 @@
   boot.kernelModules = [
     "kvm-amd"
     "i2c-dev"
+    "hid-sony"
+    "hid-playstation"
   ];
 
   services.tlp = {
