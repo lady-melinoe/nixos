@@ -31,13 +31,9 @@ let
         builtins.filter (k: k != null) (map (m: m.sshKey or null) c.nix.buildMachines)
       );
 
-      remoteBuildKeyUsers =
-        lib.mapAttrs (_: machines: lib.unique (map (m: m.sshUser or "root") machines))
-          (
-            lib.groupBy (m: m.sshKey) (
-              builtins.filter (m: (m.sshKey or null) != null) c.nix.buildMachines
-            )
-          );
+      remoteBuildKeyUsers = lib.mapAttrs (
+        _: machines: lib.unique (map (m: m.sshUser or "root") machines)
+      ) (lib.groupBy (m: m.sshKey) (builtins.filter (m: (m.sshKey or null) != null) c.nix.buildMachines));
 
       principals = lib.unique (
         [

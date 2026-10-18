@@ -47,7 +47,13 @@
   melinoe.networking.haproxy.enable = lib.mkDefault false;
   melinoe.node.id = 8;
   networking.hostName = "morrigan";
-
+  networking.hosts = {
+    "0.0.0.0" = [
+      "paradise-s1.battleye.com"
+      "test-s1.battleye.com"
+      "paradiseenhanced-s1.battleye.com"
+    ];
+  };
   hardware.enableRedistributableFirmware = true;
   hardware.cpu.amd.updateMicrocode = true;
   boot.initrd.availableKernelModules = [
