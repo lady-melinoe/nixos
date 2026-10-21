@@ -1,0 +1,337 @@
+{
+  config,
+  lib,
+  pkgs,
+  inputs,
+  ...
+}:
+let
+  inherit (lib) mkOption types;
+  cfg = config.melinoe.melnode;
+  net = config.melinoe.net;
+  cluster = config.melinoe.cluster;
+  kernel = cfg.dataplane == "kernel";
+
+  tunPrefix = "node-";
+  controlSocket = "/run/melnode/control.sock";
+  dataplaneSocket = "/run/melnode-dp/dp.sock";
+
+  package = pkgs.callPackage (inputs.melinoe-vpn-userspace + "/package.nix") { };
+  kernelModule = config.boot.kernelPackages.callPackage (
+    inputs.melinoe-vpn-kernelspace + "/package.nix"
+  ) { };
+
+  toolPath = [
+    pkgs.iproute2
+    pkgs.nftables
+  ];
+
+  isIpLiteral =
+    host: lib.hasInfix ":" host || builtins.match "[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+" host != null;
+
+  endpointOf =
+    name: peer: if peer.endpoint != null then peer.endpoint else cluster.nodes.${name}.endpoint;
+
+  formatEndpoint =
+    host:
+    if lib.hasInfix ":" host then "[${host}]:${toString cfg.port}" else "${host}:${toString cfg.port}";
+
+  links = lib.sort (a: b: a.peerid < b.peerid) (
+    lib.mapAttrsToList (
+      name: peer:
+      let
+        endpoint = endpointOf name peer;
+      in
+      {
+        peerid = cluster.nodes.${name}.id;
+        peerPubkey = cluster.nodes.${name}.pubkey;
+        inherit (peer) prependCount;
+      }
+      // lib.optionalAttrs (endpoint != null) { endpoint = formatEndpoint endpoint; }
+    ) cfg.peers
+  );
+
+  helper = pkgs.writers.writePython3Bin "melnode-helper" { doCheck = false; } (
+    builtins.readFile ./melnode/helper.py
+  );
+
+  routeMirror = pkgs.writers.writePython3Bin "melinoe-uplink-routes" {
+    libraries = [ pkgs.python3Packages.pyroute2 ];
+    doCheck = false;
+  } (builtins.readFile ./melnode/route-mirror.py);
+
+  kmodSwap = pkgs.writeShellApplication {
+    name = "melnode-kmod-swap";
+    runtimeInputs = [
+      pkgs.kmod
+      pkgs.coreutils
+      pkgs.gnused
+      pkgs.findutils
+    ];
+    bashOptions = [ "nounset" ];
+    text = builtins.readFile ./melnode/kmod-swap.sh;
+  };
+
+  helperConfig = pkgs.writeText "melnode-helper.json" (
+    builtins.toJSON {
+      node_id = config.melinoe.node.id;
+      table_base = net.outboundMarkBase;
+      tun_prefix = tunPrefix;
+      control_socket = controlSocket;
+      pub_ips = net.publicPrefixes;
+      extra_routes = cfg.extraRoutes;
+      vm_ifaces = lib.optionals config.melinoe.incus.enable (
+        map (vm: vm.iface) (lib.attrValues cluster.vms)
+      );
+    }
+  );
+
+  helperCmd = "${helper}/bin/melnode-helper --config ${helperConfig}";
+
+  hook =
+    kind:
+    pkgs.writeShellScript "melnode-tun-${kind}-hook" ''
+      exec ${helperCmd} hook-${kind} "$@"
+    '';
+
+  controlPlaneConfig = (pkgs.formats.toml { }).generate "melnode-cp.toml" (
+    {
+      localID = config.melinoe.node.id;
+      localPort = cfg.port;
+      localPrivkeyPath = cfg.privateKeyFile;
+      inherit (cfg) mtu introspectIntervalMs;
+      inherit tunPrefix;
+      fwmark = net.uplinkMark;
+      identityPrefix = "${config.melinoe.node.address}/32";
+      inherit controlSocket;
+      introspectListen = ":${toString cfg.introspectPort}";
+      tunCreateHookBin = "${hook "create"}";
+      tunDestroyHookBin = "${hook "destroy"}";
+      link = links;
+    }
+    // (if kernel then { kernelDataplane = true; } else { inherit dataplaneSocket; })
+  );
+
+  service = {
+    before = [ "network-online.target" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Restart = "always";
+      RestartSec = 1;
+      AmbientCapabilities = [ "CAP_NET_ADMIN" ];
+      CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+    };
+  };
+
+  afterInetSetup = {
+    after = [
+      "network.target"
+      "melinoe-inet-setup.service"
+    ];
+    wants = [
+      "network.target"
+      "melinoe-inet-setup.service"
+    ];
+  };
+in
+{
+  options.melinoe.melnode = {
+    enable = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Run the melnode mesh VPN (Noise tunnels, path-vector routing).";
+    };
+
+    port = mkOption {
+      type = types.port;
+      default = 60198;
+      description = "UDP port every node listens on and every link dials.";
+    };
+
+    introspectPort = mkOption {
+      type = types.port;
+      default = 60198;
+      description = "TCP port of the read-only introspection API, reachable from the other nodes.";
+    };
+
+    introspectIntervalMs = mkOption {
+      type = types.ints.between 100 60000;
+      default = 1000;
+      description = "How often the introspection API's snapshot is rebuilt.";
+    };
+
+    mtu = mkOption {
+      type = types.ints.between 576 65000;
+      default = 1416;
+      description = "WireGuard's 1420 minus melnode's 4-byte routing header, so a full-size packet fits a 1500-byte underlay.";
+    };
+
+    privateKeyFile = mkOption {
+      type = types.str;
+      default = "/etc/melinoe/wg.privatekey";
+    };
+
+    extraRoutes = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      description = "Additional prefixes this node advertises into the mesh.";
+    };
+
+    dataplane = mkOption {
+      type = types.enum [
+        "kernel"
+        "userspace"
+      ];
+      default = "kernel";
+      description = ''
+        "kernel" attaches to the melnode kernel module, GPLv2 and built out of
+        tree against this host's kernel. "userspace" runs melnode-dp as its own
+        process, keeping the kernel module's licence out of the rest of the stack.
+      '';
+    };
+
+    peers = mkOption {
+      default = { };
+      description = "Links to dial, by node name. A bare number is the prependCount.";
+      type = types.attrsOf (
+        types.coercedTo types.ints.unsigned (prependCount: { inherit prependCount; }) (
+          types.submodule {
+            options = {
+              endpoint = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "Overrides the node's own endpoint. If neither is set the link is listen-only.";
+              };
+              prependCount = mkOption {
+                type = types.ints.unsigned;
+                default = 0;
+                description = "AS-path prepending on routes relayed over this link; raises its path length to make it less preferred.";
+              };
+            };
+          }
+        )
+      );
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    boot = lib.mkIf kernel {
+      extraModulePackages = [ kernelModule ];
+      kernelModules = [ "melnode" ];
+    };
+
+    assertions = [
+      {
+        assertion =
+          !kernel
+          ||
+            builtins.readFile (inputs.melinoe-vpn-userspace + "/src/dpproto/melnode_genl.h")
+            == builtins.readFile (inputs.melinoe-vpn-kernelspace + "/src/melnode_genl.h");
+        message = "melinoe-vpn-kernelspace src/melnode_genl.h and melinoe-vpn-userspace src/dpproto/melnode_genl.h are incompatible.";
+      }
+    ]
+    ++ lib.concatLists (
+      lib.mapAttrsToList (
+        name: peer:
+        let
+          known = cluster.nodes ? ${name};
+          endpoint = if known then endpointOf name peer else null;
+        in
+        [
+          {
+            assertion = known;
+            message = "melinoe.melnode.peers: ${name} is not in melinoe.cluster.nodes.";
+          }
+          {
+            assertion = name != config.networking.hostName;
+            message = "melinoe.melnode.peers: ${name} lists itself as a peer.";
+          }
+          {
+            assertion = endpoint == null || isIpLiteral endpoint;
+            message = "melinoe.melnode.peers: the endpoint for ${name} (${toString endpoint}) must be an IP literal, melnode does not resolve hostnames.";
+          }
+        ]
+      ) cfg.peers
+    );
+
+    melinoe.firewall = {
+      openPorts.udp = [ cfg.port ];
+      nodePorts.tcp = [ cfg.introspectPort ];
+    };
+
+    environment.systemPackages = [
+      (pkgs.runCommand "mnctl" { } ''
+        install -Dm755 ${package}/bin/mnctl $out/bin/mnctl
+      '')
+    ];
+
+    systemd.services = {
+      melnode-dp = lib.mkIf (!kernel) (
+        lib.mkMerge [
+          service
+          afterInetSetup
+          {
+            description = "melnode data plane (Noise tunnels, tuns, forwarding)";
+            stopIfChanged = false;
+            serviceConfig = {
+              ExecStartPre = "-+${pkgs.kmod}/bin/rmmod melnode";
+              ExecStart = "${package}/bin/melnode-dp -socket ${dataplaneSocket}";
+              RuntimeDirectory = "melnode-dp";
+            };
+          }
+        ]
+      );
+
+      melinoe-uplink-routes = lib.mkMerge [
+        service
+        {
+          description = "Mirror non-mesh routes from the main table into the uplink fwmark table";
+          after = [ "network-pre.target" ];
+          wants = [ "network-pre.target" ];
+          serviceConfig.ExecStart = "${routeMirror}/bin/melinoe-uplink-routes --to-table ${toString net.uplinkMark} --exclude-prefix ${tunPrefix}";
+        }
+      ];
+
+      melnode-cp = lib.mkMerge [
+        service
+        afterInetSetup
+        {
+          description = "melnode control plane (liveness, path-vector routing, host integration)";
+          after = [
+            "melinoe-uplink-routes.service"
+            "nftables.service"
+          ]
+          ++ lib.optional (!kernel) "melnode-dp.service";
+          wants = [
+            "melinoe-uplink-routes.service"
+            "nftables.service"
+          ];
+          requires = lib.optional (!kernel) "melnode-dp.service";
+          stopIfChanged = false;
+          restartTriggers = [ (builtins.hashString "sha256" config.networking.nftables.ruleset) ];
+          path = toolPath;
+          serviceConfig = {
+            ExecStartPre = lib.optional kernel "+${lib.getExe kmodSwap} ${kernelModule}";
+            ExecStart = "${package}/bin/melnode-cp -config ${controlPlaneConfig}";
+            RuntimeDirectory = "melnode";
+          };
+        }
+      ];
+
+      melnode-helper = lib.mkMerge [
+        service
+        {
+          description = "melnode helper (route advertisement, per-tun policy routing)";
+          after = [
+            "melnode-cp.service"
+            "nftables.service"
+          ];
+          wants = [ "melnode-cp.service" ];
+          stopIfChanged = false;
+          path = toolPath;
+          serviceConfig.ExecStart = "${helperCmd} daemon";
+        }
+      ];
+    };
+  };
+}

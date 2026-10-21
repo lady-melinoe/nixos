@@ -1,7 +1,10 @@
 keys
 .ssh-host-ca-work
 *.patch
-!nodes/morrigan/fingerprint/*.patch
+!hosts/morrigan/fingerprint/*.patch
 *.txt
 *.md
 !README.md
+__pycache__/
+.ruff_cache/
+result

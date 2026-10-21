@@ -1,0 +1,3 @@
+{
+  programs.vscodium.enable = true;
+}

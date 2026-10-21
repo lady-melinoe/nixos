@@ -1,4 +1,4 @@
 { melinoeLib, ... }:
 {
-  imports = melinoeLib.importDir ./.;
+  imports = melinoeLib.nixFilesIn ./.;
 }

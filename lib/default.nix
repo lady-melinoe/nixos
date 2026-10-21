@@ -1,26 +1,45 @@
 { lib }:
+let
+  inherit (lib) mkOption types;
+in
 {
-  importDir =
-    dir:
-    map (name: dir + "/${name}") (
-      builtins.attrNames (
-        lib.filterAttrs (
-          name: type: type == "regular" && lib.hasSuffix ".nix" name && name != "default.nix"
-        ) (builtins.readDir dir)
-      )
-    );
-
-  nodesWith =
-    dir: file:
-    lib.mapAttrs (name: _: dir + "/${name}/${file}") (
-      lib.filterAttrs (
-        name: type: type == "directory" && builtins.pathExists (dir + "/${name}/${file}")
-      ) (builtins.readDir dir)
-    );
-
   ip = import ./ip.nix { inherit lib; };
 
-  inherit (import ./types.nix { inherit lib; }) accessRuleType;
+  nixFilesIn =
+    dir:
+    lib.filter (file: lib.hasSuffix ".nix" file && file != dir + "/default.nix") (
+      lib.filesystem.listFilesRecursive dir
+    );
+
+  namedFilesIn =
+    dir:
+    lib.mapAttrs' (file: _: lib.nameValuePair (lib.removeSuffix ".nix" file) (dir + "/${file}")) (
+      lib.filterAttrs (file: type: type == "regular" && lib.hasSuffix ".nix" file) (builtins.readDir dir)
+    );
+
+  mkAccessRuleOption =
+    description:
+    mkOption {
+      inherit description;
+      default = { };
+      type = types.submodule {
+        options = {
+          tcp = mkOption {
+            type = types.listOf types.port;
+            default = [ ];
+          };
+          udp = mkOption {
+            type = types.listOf types.port;
+            default = [ ];
+          };
+          ipProtocols = mkOption {
+            type = types.listOf types.ints.u8;
+            default = [ ];
+            description = "IP protocol numbers, e.g. 4 for IPIP.";
+          };
+        };
+      };
+    };
 
   afterMeshAddress =
     let

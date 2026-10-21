@@ -1,46 +1,25 @@
 { lib }:
-rec {
-  pow2 = n: if n == 0 then 1 else 2 * pow2 (n - 1);
-  mod = a: b: a - (a / b) * b;
+let
+  toInt = ip: lib.foldl' (acc: octet: acc * 256 + lib.toInt octet) 0 (lib.splitString "." ip);
 
-  ip4ToInt = ip: lib.foldl' (acc: octet: acc * 256 + lib.toInt octet) 0 (lib.splitString "." ip);
-
-  int4ToIp =
+  fromInt =
     n:
-    lib.concatStringsSep "." (
-      map (shift: toString (mod (n / pow2 shift) 256)) [
-        24
-        16
-        8
-        0
-      ]
-    );
-
-  parseCidr =
-    cidr:
-    let
-      parts = lib.splitString "/" cidr;
-      ipInt = ip4ToInt (lib.elemAt parts 0);
-      prefixLength = lib.toInt (lib.elemAt parts 1);
-      hostBits = 32 - prefixLength;
-      blockSize = pow2 hostBits;
-      networkInt = ipInt - (mod ipInt blockSize);
-    in
-    if networkInt != ipInt then
-      throw "melinoe.cluster.networking: ${cidr} is not aligned to its /${toString prefixLength} network base (did you mean ${int4ToIp networkInt}/${toString prefixLength}?)"
-    else
-      {
-        inherit prefixLength hostBits blockSize;
-        network = networkInt;
-      };
-
+    lib.concatMapStringsSep "." (unit: toString (lib.mod (n / unit) 256)) [
+      16777216
+      65536
+      256
+      1
+    ];
+in
+{
   nodeAddress =
     cidr: id:
     let
-      net = parseCidr cidr;
+      parts = lib.splitString "/" cidr;
+      size = lib.foldl' (n: _: n * 2) 1 (lib.range 1 (32 - lib.toInt (lib.last parts)));
     in
-    if id < 0 || id >= net.blockSize then
-      throw "melinoe.cluster.networking: node id ${toString id} is out of range for ${cidr} (holds ${toString net.blockSize} addresses, 0-${toString (net.blockSize - 1)})"
+    if id < 0 || id >= size then
+      throw "node id ${toString id} does not fit in ${cidr} (${toString size} addresses)"
     else
-      int4ToIp (net.network + id);
+      fromInt (toInt (lib.head parts) + id);
 }

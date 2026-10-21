@@ -1,4 +1,0 @@
-{ melinoeLib, ... }:
-{
-  imports = melinoeLib.importDir ./.;
-}

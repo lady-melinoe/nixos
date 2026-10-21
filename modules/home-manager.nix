@@ -5,23 +5,22 @@
   ...
 }:
 let
-  inherit (lib) mkIf mkOption types;
-  cfg = config.melinoe.home-manager;
+  cfg = config.melinoe.home;
 in
 {
   imports = [ inputs.home-manager.nixosModules.home-manager ];
 
-  options.melinoe.home-manager.melinoe = mkOption {
-    type = types.listOf types.deferredModule;
+  options.melinoe.home = lib.mkOption {
+    type = lib.types.listOf lib.types.deferredModule;
     default = [ ];
-    description = "Home Manager modules to apply to the melinoe user.";
+    description = "Home Manager modules for the melinoe user.";
   };
 
-  config = mkIf (cfg.melinoe != [ ]) {
+  config = lib.mkIf (cfg != [ ]) {
     home-manager = {
       useGlobalPkgs = true;
       useUserPackages = true;
-      users.melinoe.imports = cfg.melinoe;
+      users.melinoe.imports = cfg;
     };
   };
 }
