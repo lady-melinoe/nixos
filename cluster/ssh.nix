@@ -11,6 +11,7 @@
     ];
     builderHostPatterns = [
       "*.infra.melinoe.xyz"
+      "*.intra.melinoe.xyz"
       "198.18.0.*"
       "198.19.0.*"
       "198.19.1.*"
