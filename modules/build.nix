@@ -65,7 +65,7 @@ in
     (lib.mkIf (cfg.remote != [ ]) {
       assertions = map (name: {
         assertion = nodes.${name}.buildServer.enable;
-        message = "melinoe.build.remote: ${name} does not offer builds (set buildServer.enable in hosts/${name}/public.nix).";
+        message = "melinoe.build.remote: ${name} does not offer builds (set buildServer.enable in nodes/${name}/public.nix).";
       }) cfg.remote;
 
       nix.distributedBuilds = true;

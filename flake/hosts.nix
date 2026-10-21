@@ -4,7 +4,7 @@ let
   melinoeLib = import ../lib { inherit lib; };
 
   hostNames = lib.attrNames (
-    lib.filterAttrs (_: type: type == "directory") (builtins.readDir ../hosts)
+    lib.filterAttrs (_: type: type == "directory") (builtins.readDir ../nodes)
   );
 in
 lib.genAttrs hostNames (
@@ -22,9 +22,9 @@ lib.genAttrs hostNames (
         networking.hostName = name;
       }
       ../cluster
-      { melinoe.cluster.nodes = lib.genAttrs hostNames (host: import ../hosts/${host}/public.nix); }
+      { melinoe.cluster.nodes = lib.genAttrs hostNames (host: import ../nodes/${host}/public.nix); }
       ../modules
-      ../hosts/${name}
+      ../nodes/${name}
     ];
   }
 )
