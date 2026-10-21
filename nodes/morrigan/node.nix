@@ -60,6 +60,10 @@
       sshKey = "/root/.ssh/id_remotebuild";
     }
     {
+      id = 9; # satet
+      sshKey = "/root/.ssh/id_remotebuild";
+    }
+    {
       id = 3; # ceridwen
       sshKey = "/root/.ssh/id_remotebuild";
     }
