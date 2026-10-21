@@ -29,9 +29,14 @@
 
   nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "spotify" "steam" "steam-unwrapped" ];
 
-  # TODO: drop once NixOS/nixpkgs#576062 reaches nixos-unstable
+  # TODO: drop once NixOS/nixpkgs#576062 and NixOS/nixpkgs#576063 reach nixos-unstable
   nixpkgs.overlays = [
     (final: prev: {
+      calibre = prev.calibre.override {
+        speechd-minimal = prev.speechd-minimal.overrideAttrs (old: {
+          nativeBuildInputs = old.nativeBuildInputs ++ [ final.python3 ];
+        });
+      };
       pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
         (_: pyprev: {
           pyopenjtalk-plus = pyprev.pyopenjtalk-plus.overridePythonAttrs (old: {
