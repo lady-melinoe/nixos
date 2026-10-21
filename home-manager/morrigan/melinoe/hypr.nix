@@ -26,6 +26,17 @@ let
       sleep 1
     fi
   '';
+  # nixpkgs still pins the pre-Lua rev (1dec300); this is the first master that
+  # speaks `hyprctl eval` / hl.* for Hyprland's Lua config. Drop once nixpkgs catches up.
+  iio-hyprland = pkgs.iio-hyprland.overrideAttrs (_: {
+    version = "0-unstable-2026-09-07";
+    src = pkgs.fetchFromGitHub {
+      owner = "JeanSchoeller";
+      repo = "iio-hyprland";
+      rev = "8f562190a057c0b2b18dc703041da1a4a447a2a6";
+      hash = "sha256-RrknSGqeQH5vGnOnhoj13/tQ1AD07oz+xGMcvAnPkvc=";
+    };
+  });
   fprintLabel = pkgs.writeShellScript "hyprlock-fprint-label" ''
     case "$(cat "${fprintState}" 2>/dev/null)" in
       waiting) echo '<span foreground="#33ccff">Touch the fingerprint sensor</span>' ;;
