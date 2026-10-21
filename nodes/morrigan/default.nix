@@ -2,7 +2,7 @@
 {
   imports = [
     inputs.lanzaboote.nixosModules.lanzaboote
-    ./desktop.nix
+    ./gui.nix
     ./fingerprint.nix
     ./hardware.nix
     ./overlays.nix
