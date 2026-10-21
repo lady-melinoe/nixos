@@ -1,55 +1,8 @@
-Licensing of this Repository
-============================
+# Licensing of this Repository
 
 Required Notice: Copyright Freya Andromeda / Melinoe, [TWA], (https://melinoe.net)
 
 This repository is licensed under the PolyForm Noncommercial License 1.0.0.
-Section 1 sets out that license and what it covers. Section 2 identifies the
-separate projects that this repository uses but does not contain.
-
-
-Summary
--------
-
-| Path                       | License (SPDX identifier)                              |
-| -------------------------- | ------------------------------------------------------ |
-| Everything in this repo    | `PolyForm-Noncommercial-1.0.0` (Section 1, Appendix A) |
-
-This summary is for convenience only. Where it differs from Sections 1 and 2,
-those Sections govern.
-
-
-==============================================================================
-1. License
-==============================================================================
-
-All files in this repository are licensed under the PolyForm Noncommercial
-License 1.0.0, reproduced in Appendix A.
-
-This includes the NixOS modules, the helper programs, integration and
-configuration, the per-node configurations, and the deployment and
-provisioning tooling.
-
-
-==============================================================================
-2. Separate Projects
-==============================================================================
-
-The melnode data planes, melinoe-vpn-userspace and melinoe-vpn-kernelspace,
-are separate projects that live in their own repositories and are pulled in
-as flake inputs. They are not part of this project, are not licensed under
-this file, and are governed solely by the license contained in each of those
-repositories.
-
-This project uses them only as separately built programs and as a separately
-built Linux kernel module, communicating with them through the kernel's
-system call interface. Neither project is licensed under the other's terms by
-reason of being used together.
-
-
-==============================================================================
-Appendix A: PolyForm Noncommercial License 1.0.0
-==============================================================================
 
 # PolyForm Noncommercial License 1.0.0
 
