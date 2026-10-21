@@ -1,8 +1,5 @@
 { config, melinoeLib, ... }:
 {
-  services.qemuGuest.enable = true;
-  systemd.services.qemu-guest-agent.unitConfig.ConditionVirtualization = "vm";
-
   services.chrony = {
     enable = true;
     servers = map (n: "${toString n}.au.pool.ntp.org") [

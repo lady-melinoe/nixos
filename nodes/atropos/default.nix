@@ -1,8 +1,7 @@
-{ modulesPath, profiles, ... }:
+{ profiles, ... }:
 {
   imports = [
-    (modulesPath + "/profiles/qemu-guest.nix")
-    profiles.server-hardware
+    profiles.hw-oracle-vm
     profiles.efi-grub
     profiles.serial-grub
   ];

@@ -1,7 +1,7 @@
 { profiles, ... }:
 {
   imports = [
-    profiles.server-hardware
+    profiles.hw-supermicro
     profiles.bios-grub
     profiles.site-ucc
   ];

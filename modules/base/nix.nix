@@ -1,3 +1,4 @@
+{ pkgs, ... }:
 {
   nix = {
     settings = {
@@ -9,10 +10,27 @@
       max-free = 5368709120;
       require-sigs = true;
     };
-    gc = {
-      automatic = true;
-      dates = "daily";
-      options = "--delete-older-than 14d";
+    # nix.gc only supports age-based cutoffs, which nukes everything if a
+    # machine sits untouched for a while. Keep the last 5 system generations
+    # regardless of age instead, then collect whatever's left unreferenced.
+    gc.automatic = false;
+  };
+
+  systemd.services.nix-gc-keep-last = {
+    description = "Trim old Nix system generations and collect garbage";
+    serviceConfig.Type = "oneshot";
+    path = [ pkgs.nix ];
+    script = ''
+      nix-env -p /nix/var/nix/profiles/system --delete-generations +5
+      nix-collect-garbage
+    '';
+  };
+
+  systemd.timers.nix-gc-keep-last = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnCalendar = "daily";
+      Persistent = true;
     };
   };
 

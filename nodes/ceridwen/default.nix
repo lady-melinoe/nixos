@@ -1,7 +1,7 @@
 { profiles, ... }:
 {
   imports = [
-    profiles.server-hardware
+    profiles.hw-ibm-x3550-m4
     profiles.efi-grub
     profiles.serial-getty
     profiles.site-ucc
