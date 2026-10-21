@@ -9,7 +9,7 @@
 
   melinoe = {
     disk = {
-      device = "/dev/sda";
+      device = "/dev/disk/by-id/wwn-0x500a075113b96dc6";
       externalMounts = {
         "/array" = {
           name = "array-2";

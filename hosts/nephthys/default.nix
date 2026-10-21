@@ -8,7 +8,7 @@
 
   melinoe = {
     disk = {
-      device = "/dev/sdd";
+      device = "/dev/disk/by-id/usb-SanDisk_Cruzer_Blade_04020127091523090309-0:0";
       boot = "bios";
       externalMounts = {
         "/array" = {

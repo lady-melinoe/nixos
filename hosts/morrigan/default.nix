@@ -13,7 +13,7 @@
     home = [ ../../home/melinoe ];
 
     disk = {
-      device = "/dev/nvme0n1";
+      device = "/dev/disk/by-id/nvme-CT2000P3PSSD8_2345E88426AC";
       efiSize = "4G";
       rootName = "nixroot";
       rootSize = "900G";

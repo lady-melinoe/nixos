@@ -15,7 +15,7 @@
       "satet"
     ];
 
-    disk.device = "/dev/sda";
+    disk.device = "/dev/disk/by-id/scsi-360dc7821ee1648ddb1ce69083424f7af";
 
     uplinks = [
       {
