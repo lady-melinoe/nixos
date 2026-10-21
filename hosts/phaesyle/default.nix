@@ -11,6 +11,7 @@
       "nephthys"
       "ceridwen"
       "benzaiten"
+      "satet"
     ];
 
     disk.device = "/dev/vda";
