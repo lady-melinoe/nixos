@@ -5,8 +5,8 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     # Pinned by rev so `nix flake update` never bumps the kernel (and thus
-    # never forces a melnode module rebuild). To update: change the rev.
-    nixpkgs-kernel.url = "github:NixOS/nixpkgs/4975466d324710c576dc11ad614684e6bd8cad8e";
+    # never forces a kernel or bpfx module rebuild). To update: change the rev.
+    nixpkgs-kernel.url = "github:NixOS/nixpkgs/02c087f3fe673c9e317f206a627cb6b910336dbe";
 
     disko = {
       url = "github:nix-community/disko";

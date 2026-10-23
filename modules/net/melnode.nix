@@ -10,16 +10,26 @@ let
   cfg = config.melinoe.melnode;
   net = config.melinoe.net;
   cluster = config.melinoe.cluster;
-  kernel = cfg.dataplane == "kernel";
 
   tunPrefix = "node-";
   controlSocket = "/run/melnode/control.sock";
-  dataplaneSocket = "/run/melnode-dp/dp.sock";
 
+  # The control plane (userspace), and the data plane: bpfx, a small generic kernel module, and the
+  # melnode eBPF object compiled against the types of the running kernel. Routing and protocol
+  # logic is in the object, so changing it never needs a new module.
   package = pkgs.callPackage (inputs.melinoe-vpn-userspace + "/package.nix") { };
-  kernelModule = config.boot.kernelPackages.callPackage (
-    inputs.melinoe-vpn-kernelspace + "/package.nix"
-  ) { };
+  bpfx = config.boot.kernelPackages.callPackage (inputs.melinoe-vpn-kernelspace + "/package.nix") { };
+  dataplane = pkgs.callPackage (inputs.melinoe-vpn-kernelspace + "/bpf.nix") {
+    kernel = config.boot.kernelPackages.kernel;
+  };
+
+  # What the control plane needs to load and run the data plane (on top of CAP_NET_ADMIN).
+  dataplaneCaps = [
+    "CAP_BPF"
+    "CAP_PERFMON"
+    "CAP_SYS_ADMIN"
+    "CAP_SYS_RESOURCE"
+  ];
 
   toolPath = [
     pkgs.iproute2
@@ -60,18 +70,6 @@ let
     doCheck = false;
   } (builtins.readFile ./melnode/route-mirror.py);
 
-  kmodSwap = pkgs.writeShellApplication {
-    name = "melnode-kmod-swap";
-    runtimeInputs = [
-      pkgs.kmod
-      pkgs.coreutils
-      pkgs.gnused
-      pkgs.findutils
-    ];
-    bashOptions = [ "nounset" ];
-    text = builtins.readFile ./melnode/kmod-swap.sh;
-  };
-
   helperConfig = pkgs.writeText "melnode-helper.json" (
     builtins.toJSON {
       node_id = config.melinoe.node.id;
@@ -109,7 +107,9 @@ let
       tunDestroyHookBin = "${hook "destroy"}";
       link = links;
     }
-    // (if kernel then { kernelDataplane = true; } else { inherit dataplaneSocket; })
+    // {
+      ebpfObject = "${dataplane}/lib/bpf/melnode.bpf.o";
+    }
   );
 
   service = {
@@ -177,19 +177,6 @@ in
       description = "Additional prefixes this node advertises into the mesh.";
     };
 
-    dataplane = mkOption {
-      type = types.enum [
-        "kernel"
-        "userspace"
-      ];
-      default = "kernel";
-      description = ''
-        "kernel" attaches to the melnode kernel module, GPLv2 and built out of
-        tree against this host's kernel. "userspace" runs melnode-dp as its own
-        process, keeping the kernel module's licence out of the rest of the stack.
-      '';
-    };
-
     peers = mkOption {
       default = { };
       description = "Links to dial, by node name. A bare number is the prependCount.";
@@ -215,22 +202,12 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    boot = lib.mkIf kernel {
-      extraModulePackages = [ kernelModule ];
-      kernelModules = [ "melnode" ];
+    boot = {
+      extraModulePackages = [ bpfx ];
+      kernelModules = [ "bpfx" ];
     };
 
-    assertions = [
-      {
-        assertion =
-          !kernel
-          ||
-            builtins.readFile (inputs.melinoe-vpn-userspace + "/src/dpproto/melnode_genl.h")
-            == builtins.readFile (inputs.melinoe-vpn-kernelspace + "/src/melnode_genl.h");
-        message = "melinoe-vpn-kernelspace src/melnode_genl.h and melinoe-vpn-userspace src/dpproto/melnode_genl.h are incompatible.";
-      }
-    ]
-    ++ lib.concatLists (
+    assertions = lib.concatLists (
       lib.mapAttrsToList (
         name: peer:
         let
@@ -266,22 +243,6 @@ in
     ];
 
     systemd.services = {
-      melnode-dp = lib.mkIf (!kernel) (
-        lib.mkMerge [
-          service
-          afterInetSetup
-          {
-            description = "melnode data plane (Noise tunnels, tuns, forwarding)";
-            stopIfChanged = false;
-            serviceConfig = {
-              ExecStartPre = "-+${pkgs.kmod}/bin/rmmod melnode";
-              ExecStart = "${package}/bin/melnode-dp -socket ${dataplaneSocket}";
-              RuntimeDirectory = "melnode-dp";
-            };
-          }
-        ]
-      );
-
       melinoe-uplink-routes = lib.mkMerge [
         service
         {
@@ -300,20 +261,19 @@ in
           after = [
             "melinoe-uplink-routes.service"
             "nftables.service"
-          ]
-          ++ lib.optional (!kernel) "melnode-dp.service";
+          ];
           wants = [
             "melinoe-uplink-routes.service"
             "nftables.service"
           ];
-          requires = lib.optional (!kernel) "melnode-dp.service";
           stopIfChanged = false;
           restartTriggers = [ (builtins.hashString "sha256" config.networking.nftables.ruleset) ];
           path = toolPath;
           serviceConfig = {
-            ExecStartPre = lib.optional kernel "+${lib.getExe kmodSwap} ${kernelModule}";
             ExecStart = "${package}/bin/melnode-cp -config ${controlPlaneConfig}";
             RuntimeDirectory = "melnode";
+            AmbientCapabilities = dataplaneCaps;
+            CapabilityBoundingSet = dataplaneCaps;
           };
         }
       ];
