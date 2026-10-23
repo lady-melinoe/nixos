@@ -97,11 +97,11 @@
     "melinoe-vpn-kernelspace": {
       "flake": false,
       "locked": {
-        "lastModified": 1791054943,
-        "narHash": "sha256-1ZjFsF5oLfMt59YDu9xQ80W/LaCj9FgSSACdIBvD4ig=",
+        "lastModified": 1792754301,
+        "narHash": "sha256-L5SDqIX2hGNN5W2Ch4bBeCT6oNRFz5m+FsGUMYzJGgk=",
         "ref": "refs/heads/mommy",
-        "rev": "8dcac2dd845e3c4597aea322c79d5c534fc3fbbf",
-        "revCount": 1,
+        "rev": "f3c214a7c1f4e0fd6f93802cf0bd3e1843fd4f3e",
+        "revCount": 2,
         "type": "git",
         "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-kernelspace.git"
       },
@@ -113,11 +113,11 @@
     "melinoe-vpn-userspace": {
       "flake": false,
       "locked": {
-        "lastModified": 1791450744,
-        "narHash": "sha256-in/DbmmmGxUiC9ciizsi0raEQE7zATngeCJZCd/n0EM=",
+        "lastModified": 1792754269,
+        "narHash": "sha256-h9K8frJMwMfqf2JRLAdHggmk/raODbPr5SudKschaCY=",
         "ref": "refs/heads/mommy",
-        "rev": "01656a6993596235726da5572601d4da172ae62a",
-        "revCount": 3,
+        "rev": "d8233d6959b023642ba9ab7a10d72d2614b0e492",
+        "revCount": 4,
         "type": "git",
         "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-userspace.git"
       },
