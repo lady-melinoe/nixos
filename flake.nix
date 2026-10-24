@@ -23,8 +23,8 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    melinoe-vpn-kernelspace = {
-      url = "git+https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-kernelspace.git";
+    bpfx-kernel = {
+      url = "git+https://gitlab.ucc.asn.au/melinoe/bpfx-kernel.git";
       flake = false;
     };
   };

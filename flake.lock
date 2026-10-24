@@ -94,7 +94,7 @@
         "type": "github"
       }
     },
-    "melinoe-vpn-kernelspace": {
+    "bpfx-kernel": {
       "flake": false,
       "locked": {
         "lastModified": 1792754301,
@@ -103,11 +103,11 @@
         "rev": "f3c214a7c1f4e0fd6f93802cf0bd3e1843fd4f3e",
         "revCount": 2,
         "type": "git",
-        "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-kernelspace.git"
+        "url": "https://gitlab.ucc.asn.au/melinoe/bpfx-kernel.git"
       },
       "original": {
         "type": "git",
-        "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-kernelspace.git"
+        "url": "https://gitlab.ucc.asn.au/melinoe/bpfx-kernel.git"
       }
     },
     "nixpkgs": {
@@ -169,7 +169,7 @@
         "disko": "disko",
         "home-manager": "home-manager",
         "lanzaboote": "lanzaboote",
-        "melinoe-vpn-kernelspace": "melinoe-vpn-kernelspace",
+        "bpfx-kernel": "bpfx-kernel",
         "nixpkgs": "nixpkgs",
         "nixpkgs-kernel": "nixpkgs-kernel"
       }

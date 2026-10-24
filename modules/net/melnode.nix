@@ -29,8 +29,8 @@ let
     env.CGO_ENABLED = "0";
     meta.mainProgram = "melnode-cp";
   };
-  bpfx = config.boot.kernelPackages.callPackage (inputs.melinoe-vpn-kernelspace + "/package.nix") { };
-  dataplane = pkgs.callPackage (inputs.melinoe-vpn-kernelspace + "/bpf.nix") {
+  bpfx = config.boot.kernelPackages.callPackage (inputs.bpfx-kernel + "/package.nix") { };
+  dataplane = pkgs.callPackage (inputs.bpfx-kernel + "/bpf.nix") {
     kernel = config.boot.kernelPackages.kernel;
   };
 
