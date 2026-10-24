@@ -30,8 +30,14 @@ let
     meta.mainProgram = "melnode-cp";
   };
   bpfx = config.boot.kernelPackages.callPackage (inputs.bpfx-kernel + "/package.nix") { };
-  dataplane = pkgs.callPackage (inputs.bpfx-kernel + "/bpf.nix") {
+  bpfxObject = pkgs.callPackage (inputs.bpfx-kernel + "/build-object.nix") {
     kernel = config.boot.kernelPackages.kernel;
+  };
+  dataplane = bpfxObject {
+    pname = "melnode-bpf";
+    objectName = "melnode.bpf.o";
+    cFile = inputs.melinoe-vpn-ebpf + "/melnode.bpf.c";
+    extraIncludes = [ inputs.melinoe-vpn-ebpf ];
   };
 
   # What the control plane needs to load and run the data plane (on top of CAP_NET_ADMIN).

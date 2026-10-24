@@ -27,6 +27,11 @@
       url = "git+https://gitlab.ucc.asn.au/melinoe/bpfx-kernel.git";
       flake = false;
     };
+
+    melinoe-vpn-ebpf = {
+      url = "git+https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-ebpf.git";
+      flake = false;
+    };
   };
 
   outputs = inputs: import ./flake inputs;
