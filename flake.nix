@@ -23,11 +23,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    melinoe-vpn-userspace = {
-      url = "git+https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-userspace.git";
-      flake = false;
-    };
-
     melinoe-vpn-kernelspace = {
       url = "git+https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-kernelspace.git";
       flake = false;

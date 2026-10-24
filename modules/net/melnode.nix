@@ -17,7 +17,18 @@ let
   # The control plane (userspace), and the data plane: bpfx, a small generic kernel module, and the
   # melnode eBPF object compiled against the types of the running kernel. Routing and protocol
   # logic is in the object, so changing it never needs a new module.
-  package = pkgs.callPackage (inputs.melinoe-vpn-userspace + "/package.nix") { };
+  package = pkgs.buildGoModule {
+    pname = "melnode-cp";
+    version = "0.1.0";
+    src = ./melnode/src;
+    subPackages = [
+      "cmd/melnode-cp"
+      "cmd/melnode-dpctl"
+    ];
+    vendorHash = "sha256-mu6nUf4cD59wxkxdEy+RjgDJVYJGjB9XhBeypAZHn0I=";
+    env.CGO_ENABLED = "0";
+    meta.mainProgram = "melnode-cp";
+  };
   bpfx = config.boot.kernelPackages.callPackage (inputs.melinoe-vpn-kernelspace + "/package.nix") { };
   dataplane = pkgs.callPackage (inputs.melinoe-vpn-kernelspace + "/bpf.nix") {
     kernel = config.boot.kernelPackages.kernel;
@@ -69,6 +80,10 @@ let
     libraries = [ pkgs.python3Packages.pyroute2 ];
     doCheck = false;
   } (builtins.readFile ./melnode/route-mirror.py);
+
+  mnctl = pkgs.writers.writePython3Bin "mnctl" { doCheck = false; } (
+    builtins.readFile ./melnode/mnctl.py
+  );
 
   helperConfig = pkgs.writeText "melnode-helper.json" (
     builtins.toJSON {
@@ -236,11 +251,7 @@ in
       nodePorts.tcp = [ cfg.introspectPort ];
     };
 
-    environment.systemPackages = [
-      (pkgs.runCommand "mnctl" { } ''
-        install -Dm755 ${package}/bin/mnctl $out/bin/mnctl
-      '')
-    ];
+    environment.systemPackages = [ mnctl ];
 
     systemd.services = {
       melinoe-uplink-routes = lib.mkMerge [
