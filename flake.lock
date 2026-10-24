@@ -3,11 +3,11 @@
     "bpfx-kernel": {
       "flake": false,
       "locked": {
-        "lastModified": 1792754301,
-        "narHash": "sha256-L5SDqIX2hGNN5W2Ch4bBeCT6oNRFz5m+FsGUMYzJGgk=",
+        "lastModified": 1792868548,
+        "narHash": "sha256-CnSCR3YjXDA62Jgeat5qyvfv38seAlEAE+w2jrF1n4U=",
         "ref": "refs/heads/mommy",
-        "rev": "f3c214a7c1f4e0fd6f93802cf0bd3e1843fd4f3e",
-        "revCount": 2,
+        "rev": "47046bf361380fbae6f1f436d7b54b34be911b18",
+        "revCount": 3,
         "type": "git",
         "url": "https://gitlab.ucc.asn.au/melinoe/bpfx-kernel.git"
       },
