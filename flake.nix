@@ -25,9 +25,10 @@
 
     bpfx-kernel = {
       url = "git+https://gitlab.ucc.asn.au/melinoe/bpfx-kernel.git";
-      flake = false;
+      inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    # Just C sources and a package.nix, built by bpfx-kernel: not a flake.
     melinoe-vpn-ebpf = {
       url = "git+https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-ebpf.git";
       flake = false;

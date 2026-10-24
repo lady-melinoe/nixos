@@ -29,15 +29,9 @@ let
     env.CGO_ENABLED = "0";
     meta.mainProgram = "melnode-cp";
   };
-  bpfx = config.boot.kernelPackages.callPackage (inputs.bpfx-kernel + "/package.nix") { };
-  bpfxObject = pkgs.callPackage (inputs.bpfx-kernel + "/build-object.nix") {
-    kernel = config.boot.kernelPackages.kernel;
-  };
-  dataplane = bpfxObject {
-    pname = "melnode-bpf";
-    objectName = "melnode.bpf.o";
-    cFile = inputs.melinoe-vpn-ebpf + "/melnode.bpf.c";
-    extraIncludes = [ inputs.melinoe-vpn-ebpf ];
+  dataplane = pkgs.callPackage (inputs.melinoe-vpn-ebpf + "/package.nix") {
+    bpfx-kernel = inputs.bpfx-kernel.outPath;
+    inherit (config.boot.kernelPackages) kernel;
   };
 
   # What the control plane needs to load and run the data plane (on top of CAP_NET_ADMIN).
@@ -156,6 +150,8 @@ let
   };
 in
 {
+  imports = [ inputs.bpfx-kernel.nixosModules.bpfx ];
+
   options.melinoe.melnode = {
     enable = mkOption {
       type = types.bool;
@@ -223,10 +219,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    boot = {
-      extraModulePackages = [ bpfx ];
-      kernelModules = [ "bpfx" ];
-    };
+    boot.bpfx.enable = true;
 
     assertions = lib.concatLists (
       lib.mapAttrsToList (
