@@ -113,11 +113,11 @@
     "melinoe-vpn-ebpf": {
       "flake": false,
       "locked": {
-        "lastModified": 1792868517,
-        "narHash": "sha256-CL9GMqE8AuKYOzqebd6MPomkoq+Enix2TiP1VTyZq9c=",
+        "lastModified": 1792875971,
+        "narHash": "sha256-QZljv2OmpGX31TaPopwwmpsuAAlSO5iTxlBYc0i+6zQ=",
         "ref": "refs/heads/mommy",
-        "rev": "35a7ff4abd5f7bfb1217ff3ec0f0365012a2c892",
-        "revCount": 2,
+        "rev": "a4d5b769cb09c6859ac3b69b47c918cf20c60952",
+        "revCount": 4,
         "type": "git",
         "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-ebpf.git"
       },
