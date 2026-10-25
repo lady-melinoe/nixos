@@ -14,6 +14,8 @@ const (
 	puntQueueSize = 1024
 
 	livenessPuntQueueSize = 64
+
+	handshakePollInterval = time.Second
 )
 
 type dpSession struct {
@@ -52,6 +54,29 @@ func (s *dpSession) worker(n *Node) {
 			return
 		case p := <-s.punts:
 			n.handlePunt(p)
+		}
+	}
+}
+
+// watchHandshakes passes the data plane's handshake times to the link monitors, for passive mode.
+func (s *dpSession) watchHandshakes(n *Node) {
+	tick := time.NewTicker(handshakePollInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-tick.C:
+		}
+		list, err := s.cl.LinkList()
+		if err != nil {
+			n.log.Verbosef("reading handshake times: %v", err)
+			continue
+		}
+		for _, li := range list {
+			if l := n.links[li.PeerID]; l != nil && li.LastHandshakeUnixNano > 0 {
+				l.monitor.noteHandshake(time.Unix(0, li.LastHandshakeUnixNano))
+			}
 		}
 	}
 }
@@ -131,6 +156,7 @@ func (n *Node) attach() (*dpSession, error) {
 	for _, l := range n.sortedLinks() {
 		l.monitor.Start()
 	}
+	go sess.watchHandshakes(n)
 	n.log.Verbosef("attached to data plane (node %d, mtu %d, udp port %d)", n.device.LocalID, n.device.MTU, n.device.ListenPort)
 	return sess, nil
 }

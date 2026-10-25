@@ -67,6 +67,7 @@ type linkInfo struct {
 	PublicKey             string   `json:"public_key"`
 	State                 string   `json:"state"`
 	StateForSeconds       float64  `json:"state_for_seconds"`
+	Passive               bool     `json:"passive,omitempty"`
 	Diag                  string   `json:"diag"`
 	LocalDiscriminator    uint32   `json:"local_discriminator"`
 	RemoteDiscriminator   uint32   `json:"remote_discriminator"`
@@ -86,6 +87,7 @@ func (l *Link) linkInfo(dp *dpproto.LinkInfo) linkInfo {
 	info := linkInfo{
 		State:                 m.state.String(),
 		StateForSeconds:       time.Since(m.stateSince).Seconds(),
+		Passive:               m.passiveLocked(time.Now()),
 		Diag:                  m.diag.String(),
 		LocalDiscriminator:    m.localDiscriminator,
 		RemoteDiscriminator:   m.remoteDiscriminator,

@@ -68,6 +68,16 @@ const (
 	defaultDesiredMinTX  = 200 * time.Millisecond
 	defaultRequiredMinRX = 200 * time.Millisecond
 	defaultDetectMult    = 3
+
+	// A listen-only link (no configured endpoint) only knows where its peer is from the peer's own
+	// packets. Once its session has been expired this long it goes passive (RFC 5880 6.1): it stops
+	// sending, which also stops the data plane's handshakes, until the peer, which dials us, makes
+	// a new session, rather than probing an address the peer may have left.
+	passiveAfter = 30 * time.Second
+
+	// How long a handshake's keys are usable: WireGuard's REJECT_AFTER_TIME, the data plane's
+	// t_reject_after (before TimeScale).
+	sessionLifetime = 180 * time.Second
 )
 
 type livenessPacket struct {
@@ -122,6 +132,7 @@ type LinkMonitor struct {
 	remoteDiscriminator uint32
 	remoteDesiredMinTX  time.Duration
 	remoteRequiredMinRX time.Duration
+	sessionExpiry       time.Time
 
 	detectTimer *time.Timer
 	stopCh      chan struct{}
@@ -157,6 +168,42 @@ func (m *LinkMonitor) State() linkState {
 	return m.state
 }
 
+// Passive reports whether the monitor has stopped sending to wait for the peer.
+func (m *LinkMonitor) Passive() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.passiveLocked(time.Now())
+}
+
+func (m *LinkMonitor) passiveLocked(now time.Time) bool {
+	return m.link.endpoint == "" && m.state == linkStateDown && now.Sub(m.sessionExpiry) >= passiveAfter
+}
+
+// noteSession records that the link has a session until @expiry, and answers at once if that ends
+// passive mode rather than on the next tick, so the peer is not left waiting on us.
+func (m *LinkMonitor) noteSession(expiry time.Time) {
+	m.mu.Lock()
+	if m.stopCh == nil || !expiry.After(m.sessionExpiry) {
+		m.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	wasPassive := m.passiveLocked(now)
+	m.sessionExpiry = expiry
+	wake := wasPassive && !m.passiveLocked(now)
+	m.mu.Unlock()
+
+	if wake {
+		m.link.node.log.Verbosef("%v - liveness: peer has a new session, leaving passive mode", m.link)
+		m.sendPacket()
+	}
+}
+
+// noteHandshake records a handshake the data plane completed at @at.
+func (m *LinkMonitor) noteHandshake(at time.Time) {
+	m.noteSession(at.Add(m.link.node.sessionLifetime))
+}
+
 func (m *LinkMonitor) SetOnStateChange(fn func(link *Link, next linkState)) {
 	m.mu.Lock()
 	m.onStateChange = fn
@@ -167,6 +214,9 @@ func (m *LinkMonitor) Start() {
 	m.transitionTo(linkStateDown, diagNone)
 	m.mu.Lock()
 	m.remoteDiscriminator = 0
+	// Until the data plane says otherwise, count the session as expiring now: a peer that never
+	// reaches us is given up on after passiveAfter.
+	m.sessionExpiry = time.Now()
 	stop := make(chan struct{})
 	timer := time.NewTimer(defaultRequiredMinRX * defaultDetectMult)
 	m.stopCh = stop
@@ -205,7 +255,12 @@ func (m *LinkMonitor) sendLoop(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			m.sendPacket()
+			m.mu.Lock()
+			passive := m.passiveLocked(time.Now())
+			m.mu.Unlock()
+			if !passive {
+				m.sendPacket()
+			}
 		}
 	}
 }
@@ -293,6 +348,10 @@ func (m *LinkMonitor) handlePacket(payload []byte) {
 		}
 		return 0, 0, false
 	})
+
+	// The packet came over a session, so there is one now, whatever the next poll of the data
+	// plane says.
+	m.noteSession(time.Now())
 }
 
 func (m *LinkMonitor) transitionTo(next linkState, d diag) {
