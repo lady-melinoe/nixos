@@ -73,4 +73,9 @@
     "test-s1.battleye.com"
     "paradiseenhanced-s1.battleye.com"
   ];
+  networking.hosts."198.18.1.21" = [
+    "smtp.melinoe.net"
+    "mail.melinoe.net"
+    "imap.melinoe.net"
+  ];
 }
