@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"melnode/dpproto"
 )
 
 type pvNet struct {
@@ -544,5 +546,44 @@ func TestLastUpdateIsCurrent(t *testing.T) {
 	}
 	if got := heard[9].reachable; got != want9 {
 		t.Errorf("neighbor 2 last heard dest 9 reachable=%v, currently %v", got, want9)
+	}
+}
+
+func TestSegmentsStayWithinDataPlaneLimit(t *testing.T) {
+	ids := []uint32{1, 2, 3, 4, 5, 6}
+	n := newPVNet(t, ids...)
+	for _, pv := range n.nodes {
+		pv.node.mtu.Store(65000)
+	}
+	// Four nodes behind node 2, each announcing the most prefixes an entry holds: node 1 is sent
+	// more than the data plane carries in one control packet.
+	for _, id := range ids[2:] {
+		for i := 0; i < 255; i++ {
+			n.nodes[id].AdvertisePrefix(pvPrefix{addr: id<<16 | uint32(i), len: 32})
+		}
+	}
+	for _, id := range ids[2:] {
+		n.linkUp(2, id)
+	}
+	packets, biggest := 0, 0
+	orig := n.nodes[2].sendHook
+	n.nodes[2].sendHook = func(p *Link, wire []byte) {
+		if p.id == 1 {
+			packets++
+			biggest = max(biggest, len(wire))
+		}
+		orig(p, wire)
+	}
+	n.linkUp(1, 2)
+	n.settle()
+
+	if biggest > dpproto.MaxControlPayload {
+		t.Fatalf("sent a %d byte packet, the data plane carries %d", biggest, dpproto.MaxControlPayload)
+	}
+	if packets < 2 {
+		t.Fatalf("expected the table to be split over several packets, saw %d", packets)
+	}
+	if got := len(n.nodes[1].prefixClaims); got != 4*255 {
+		t.Fatalf("node 1 learned %d prefixes, want %d", got, 4*255)
 	}
 }

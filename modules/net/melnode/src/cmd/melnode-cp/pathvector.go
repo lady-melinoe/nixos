@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"melnode/dpproto"
 )
 
 const (
@@ -786,10 +788,11 @@ func (pv *PathVector) flushAll(neighbors []*Link) {
 }
 
 func (pv *PathVector) pvMaxPayload() int {
-	if mtu := int(pv.node.mtu.Load()); mtu > 0 {
-		return mtu
+	mtu := defaultMTU
+	if m := int(pv.node.mtu.Load()); m > 0 {
+		mtu = m
 	}
-	return defaultMTU
+	return min(mtu, dpproto.MaxControlPayload)
 }
 
 func pvEntrySize(a pvAnnouncement) int { return 2 + len(a.path) + 1 + len(a.prefixes)*5 }

@@ -34,6 +34,11 @@ func IsCode(err error, code uint16) bool {
 	return errors.As(err, &e) && e.Code == code
 }
 
+// MaxControlPayload is the largest Inject payload a data plane carries to the other end's control
+// plane. The eBPF data plane punts at most 4096 bytes of a packet after its 4-byte routing header,
+// zero-padded to a multiple of 16, so a payload any longer can be sent but never arrives.
+const MaxControlPayload = 4092
+
 type DeviceSet struct {
 	LocalID    uint32
 	PrivateKey [32]byte
