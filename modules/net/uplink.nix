@@ -114,7 +114,7 @@ in
   options.melinoe = {
     uplinks = mkOption {
       default = [ ];
-      description = "Internet uplinks. The first one with a gateway is the primary.";
+      description = "Internet uplinks. The first one is the primary, if it has a gateway.";
       type = types.listOf (
         types.submodule {
           options = {

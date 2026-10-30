@@ -14,9 +14,6 @@
       ip = "198.18.1.5";
       hostAccess.tcp = [ 61208 ];
     };
-    mailserver = {
-      ip = "198.18.1.6";
-    };
     radicale.ip = "198.18.1.7";
     "1710pack" = {
       ip = "198.18.1.8";
@@ -36,9 +33,6 @@
       outboundDropIP = [ "35.190.167.255" ];
     };
     snappymail.ip = "198.18.1.14";
-    dovecot = {
-      ip = "198.18.1.15";
-    };
     stash = {
       ip = "198.18.1.16";
       outboundVia = "phaesyle";
