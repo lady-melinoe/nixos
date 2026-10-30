@@ -36,7 +36,7 @@ func die(format string, args ...any) {
 func usage() {
 	fmt.Fprint(os.Stderr, `usage: melnode-dpctl [-object FILE] [-pin DIR] COMMAND [ARGS]
 
-  up -id N -port P -key FILE [-mtu M] [-fwmark F] [-hub NAME] [-timescale S] [-underload N]
+  up -id N -port P -key FILE [-mtu M] [-fwmark F] [-timescale S] [-underload N]
                                  create the data plane and leave it running
   down                           tear it down
   links                          list links
@@ -86,7 +86,6 @@ func main() {
 	}
 	cmd, args := args[0], args[1:]
 
-	var hub string
 	var scale uint64
 	var upFlags *flag.FlagSet
 	var id, port, mtu, fwmark, underload uint
@@ -98,7 +97,6 @@ func main() {
 		upFlags.UintVar(&mtu, "mtu", 1416, "MTU of the per-peer devices")
 		upFlags.UintVar(&fwmark, "fwmark", 0, "fwmark for the UDP sockets")
 		upFlags.StringVar(&keyFile, "key", "", "file with the base64 private key")
-		upFlags.StringVar(&hub, "hub", "node-hub", "name of the hub device")
 		upFlags.Uint64Var(&scale, "timescale", 1, "divide the protocol timers (tests)")
 		upFlags.UintVar(&underload, "underload", 0, "handshake messages per second that mean 'under load' (tests)")
 		_ = upFlags.Parse(args)
@@ -110,7 +108,7 @@ func main() {
 	puntsDone := make(chan struct{})
 	var puntsOnce sync.Once
 	dp, err := ebpfdp.Open(ebpfdp.Config{
-		ObjectPath: *object, PinDir: *pin, HubName: hub, TimeScale: scale, UnderLoadThreshold: uint32(underload),
+		ObjectPath: *object, PinDir: *pin, TimeScale: scale, UnderLoadThreshold: uint32(underload),
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
 		OnPunt: func(p dpproto.Punt) {
 			b, _ := json.Marshal(map[string]any{

@@ -21,12 +21,10 @@ type Config struct {
 	LocalID int `toml:"localID"`
 
 	// EbpfObject is the melnode eBPF object (melnode.bpf.o). PinDir is where the data plane's
-	// state is pinned (default /sys/fs/bpf/melnode); HubInterface names the device that owns
-	// the UDP sockets (default <tunPrefix>hub). TimeScale divides the protocol timers (tests).
-	EbpfObject   string `toml:"ebpfObject"`
-	PinDir       string `toml:"pinDir"`
-	HubInterface string `toml:"hubInterface"`
-	TimeScale    int    `toml:"timeScale"`
+	// state is pinned (default /sys/fs/bpf/melnode). TimeScale divides the protocol timers (tests).
+	EbpfObject string `toml:"ebpfObject"`
+	PinDir     string `toml:"pinDir"`
+	TimeScale  int    `toml:"timeScale"`
 	// EbpfVariables sets named tunables of the data plane object (its `const volatile` globals).
 	EbpfVariables map[string]uint64 `toml:"ebpfVariables"`
 
@@ -99,9 +97,6 @@ func (c *Config) validate() error {
 	}
 	if c.TimeScale < 0 {
 		return fmt.Errorf("timeScale must be >= 0, got %d", c.TimeScale)
-	}
-	if len(c.HubInterface) > 15 {
-		return fmt.Errorf("hubInterface %q is longer than 15 characters", c.HubInterface)
 	}
 	if c.LocalPort <= 0 || c.LocalPort > 65535 {
 		return fmt.Errorf("localPort must be a valid port, got %d", c.LocalPort)

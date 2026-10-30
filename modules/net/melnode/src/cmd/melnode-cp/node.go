@@ -100,14 +100,10 @@ func newNode(cfg *Config, verbose bool) (*Node, error) {
 		dpConfig: ebpfdp.Config{
 			ObjectPath: cfg.EbpfObject,
 			PinDir:     cfg.PinDir,
-			HubName:    cfg.HubInterface,
 			TimeScale:  uint64(cfg.TimeScale),
 			Variables:  cfg.EbpfVariables,
 		},
 		verbose: verbose,
-	}
-	if n.dpConfig.HubName == "" {
-		n.dpConfig.HubName = cfg.TunPrefix + "hub"
 	}
 	if verbose {
 		n.log = NewLogger(LogLevelVerbose, "")

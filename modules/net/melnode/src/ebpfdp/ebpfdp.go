@@ -45,7 +45,6 @@ const (
 type Config struct {
 	ObjectPath string // melnode.bpf.o
 	PinDir     string // default DefaultPinDir
-	HubName    string // the device that owns the UDP sockets
 	// TimeScale divides the protocol timers (tests only); 0 or 1 is real time.
 	TimeScale uint64
 	// UnderLoadThreshold is how many handshake messages a second make the node demand cookies;
@@ -119,9 +118,6 @@ func Open(cfg Config) (*DP, error) {
 	if cfg.PinDir == "" {
 		cfg.PinDir = DefaultPinDir
 	}
-	if cfg.HubName == "" {
-		cfg.HubName = "node-hub"
-	}
 	if cfg.TimeScale == 0 {
 		cfg.TimeScale = timeScale1
 	}
@@ -166,9 +162,9 @@ func (d *DP) checkSpec() error {
 		return l
 	}
 	d.lay.ep = mk("bpfx_endpoint", map[string]int{"family": 2, "port": 2, "src_ifindex": 4, "addr": 16, "src": 16, "tos": 1})
-	d.lay.dev = mk("mn_dev", map[string]int{"hub_ifindex": 4, "port": 2, "local_id": 2, "mtu": 4, "fwmark": 4, "spriv": 32, "spub": 32})
+	d.lay.dev = mk("mn_dev", map[string]int{"port": 2, "local_id": 2, "mtu": 4, "fwmark": 4, "spriv": 32, "spub": 32})
 	d.lay.peer = mk("mn_peer", map[string]int{"present": 4, "pub": 32, "ep": 0, "last_hs_boot_ns": 8})
-	d.lay.setup = mk("mn_setup_args", map[string]int{"hub_name": 16, "xmit_fd": 4, "rx_fd": 4, "mtu": 4, "port": 2, "local_id": 2, "fwmark": 4, "hub_ifindex": 4, "stage": 4, "err": 4})
+	d.lay.setup = mk("mn_setup_args", map[string]int{"xmit_fd": 4, "rx_fd": 4, "mtu": 4, "port": 2, "local_id": 2, "fwmark": 4, "stage": 4, "err": 4})
 	d.lay.peerCtl = mk("mn_peer_ctl", map[string]int{"slot": 4, "err": 4})
 	d.lay.tun = mk("mn_tun_args", map[string]int{"name": 16, "peer": 4, "xmit_fd": 4, "ifindex": 4, "err": 4})
 	d.lay.inject = mk("mn_inject_args", map[string]int{"link": 4, "len": 4, "proto": 1, "dst": 1, "ttl": 1, "err": 4})
@@ -212,14 +208,6 @@ func (d *DP) fail(err error) {
 		d.err = err
 		close(d.done)
 	})
-}
-
-func (d *DP) hubAlive(ifindex uint32) bool {
-	if ifindex == 0 {
-		return false
-	}
-	_, err := net.InterfaceByIndex(int(ifindex))
-	return err == nil
 }
 
 // DeviceSet creates the data plane's devices and sockets, after tearing down any an earlier run
@@ -345,7 +333,6 @@ func (d *DP) create(m dpproto.DeviceSet) error {
 		}
 		d.lay.setup.setU32(ctx, opt.field, uint32(fd))
 	}
-	copy(d.lay.setup.bytes(ctx, "hub_name"), d.cfg.HubName)
 	d.lay.setup.setU32(ctx, "xmit_fd", uint32(d.progs["mn_xmit"].FD()))
 	d.lay.setup.setU32(ctx, "rx_fd", uint32(d.progs["mn_rx"].FD()))
 	d.lay.setup.setU32(ctx, "mtu", m.MTU)
@@ -359,7 +346,7 @@ func (d *DP) create(m dpproto.DeviceSet) error {
 	if ret != 0 {
 		stage := int32(d.lay.setup.getU32(out, "stage"))
 		errno := int32(d.lay.setup.getU32(out, "err"))
-		return cleanup(setupError(stage, errno, d.cfg.HubName, m.ListenPort))
+		return cleanup(setupError(stage, errno, m.ListenPort))
 	}
 
 	if err := d.maps["dev_map"].Lookup(uint32(0), dev); err != nil {
@@ -383,10 +370,9 @@ func (d *DP) create(m dpproto.DeviceSet) error {
 	return nil
 }
 
-func setupError(stage, errno int32, hub string, port uint16) error {
+func setupError(stage, errno int32, port uint16) error {
 	what := map[int32]string{
-		1: "deriving the device keys", 2: "creating device " + hub,
-		3: fmt.Sprintf("opening UDP port %d", port), 4: "opening the IPv6 socket",
+		1: "deriving the device keys", 2: fmt.Sprintf("opening UDP port %d", port), 3: "opening the IPv6 socket",
 	}[stage]
 	if what == "" {
 		what = fmt.Sprintf("stage %d", stage)
@@ -404,7 +390,7 @@ func setupError(stage, errno int32, hub string, port uint16) error {
 }
 
 // loadPinned opens the pinned maps and programs and reads the node's configuration from them.
-// ok is false if there is no usable state (nothing pinned, or its hub device is gone).
+// ok is false if there is no usable state (nothing pinned, or not all of it).
 func (d *DP) loadPinned() (cfg dpproto.DeviceSet, pub [32]byte, ok bool) {
 	maps := make(map[string]*ebpf.Map, len(mapNames))
 	progs := make(map[string]*ebpf.Program, len(progNames))
@@ -433,7 +419,7 @@ func (d *DP) loadPinned() (cfg dpproto.DeviceSet, pub [32]byte, ok bool) {
 		progs[n] = p
 	}
 	dev := d.lay.dev.new()
-	if err := maps["dev_map"].Lookup(uint32(0), dev); err != nil || !d.hubAlive(d.lay.dev.getU32(dev, "hub_ifindex")) {
+	if err := maps["dev_map"].Lookup(uint32(0), dev); err != nil {
 		closeAll()
 		return cfg, pub, false
 	}
@@ -450,7 +436,7 @@ func (d *DP) loadPinned() (cfg dpproto.DeviceSet, pub [32]byte, ok bool) {
 }
 
 // discardPinned removes the state an earlier run left pinned: through its own teardown program if
-// its hub device is still there, otherwise just the pins.
+// the pins still load, otherwise just the pins.
 func (d *DP) discardPinned() {
 	if _, _, ok := d.loadPinned(); ok {
 		d.teardownLocked()
