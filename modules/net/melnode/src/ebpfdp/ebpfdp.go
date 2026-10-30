@@ -6,8 +6,9 @@
 // from its BTF at start-up (see layout.go).
 //
 // The state lives in the kernel and is pinned under PinDir (the maps keep the protocol timers
-// alive). If the helper dies, the next DeviceSet with the same configuration picks the state up
-// again; a clean Close tears everything down.
+// alive), so it outlives a helper that dies. A new helper does not pick it up: DeviceSet tears it
+// down and builds a fresh data plane, with its own keys, peers and routes, so nothing an earlier
+// run authorised survives it. A clean Close tears everything down.
 package ebpfdp
 
 import (
@@ -223,8 +224,9 @@ func (d *DP) hubAlive(ifindex uint32) bool {
 	return err == nil
 }
 
-// DeviceSet creates the data plane's devices and sockets, or finds them already there. Called
-// again with the same configuration it returns the public key; with another it fails.
+// DeviceSet creates the data plane's devices and sockets, after tearing down any an earlier run
+// left pinned. Called again with the same configuration it returns the public key; with another
+// it fails.
 func (d *DP) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -244,15 +246,8 @@ func (d *DP) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) {
 		return d.sameConfig(m)
 	}
 	if d.pinnedExists() {
-		ok, err := d.attach(m)
-		if err != nil {
-			return dpproto.DeviceSetReply{}, err
-		}
-		if ok {
-			return dpproto.DeviceSetReply{PubKey: d.pub}, nil
-		}
-		d.cfg.Logf("ebpfdp: stale state in %s (no device any more), starting afresh", d.cfg.PinDir)
-		d.unpinAll()
+		d.cfg.Logf("ebpfdp: removing the state an earlier run left in %s", d.cfg.PinDir)
+		d.discardPinned()
 	}
 	if err := d.create(m); err != nil {
 		return dpproto.DeviceSetReply{}, err
@@ -456,25 +451,14 @@ func (d *DP) loadPinned() (cfg dpproto.DeviceSet, pub [32]byte, ok bool) {
 	return cfg, pub, true
 }
 
-// attach picks up pinned state left by an earlier helper. It reports false if the state is stale
-// (its hub device is gone).
-func (d *DP) attach(m dpproto.DeviceSet) (bool, error) {
-	have, pub, ok := d.loadPinned()
-	if !ok {
-		return false, nil
+// discardPinned removes the state an earlier run left pinned: through its own teardown program if
+// its hub device is still there, otherwise just the pins.
+func (d *DP) discardPinned() {
+	if _, _, ok := d.loadPinned(); ok {
+		d.teardownLocked()
+		return
 	}
-	if have != m {
-		d.closeHandles()
-		return false, dpproto.Errorf(dpproto.CodeExists, "data plane state in %s was made with another configuration; remove it or fix the configuration", d.cfg.PinDir)
-	}
-	d.pub = pub
-	if err := d.startPunts(); err != nil {
-		d.closeHandles()
-		return false, err
-	}
-	d.isSet, d.devCfg = true, m
-	d.cfg.Logf("ebpfdp: attached to existing state in %s", d.cfg.PinDir)
-	return true, nil
+	d.unpinAll()
 }
 
 // Attach opens the state a running data plane left pinned, whatever its configuration, for
