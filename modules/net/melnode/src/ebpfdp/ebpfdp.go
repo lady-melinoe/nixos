@@ -81,8 +81,6 @@ type DP struct {
 	coll   *ebpf.Collection // nil when attached to pinned state
 	rd     *ringbuf.Reader
 
-	injMu sync.Mutex // one inject at a time: mn_inject shares a scratch buffer
-
 	done    chan struct{}
 	errOnce sync.Once
 	err     error
@@ -968,12 +966,6 @@ func (d *DP) Inject(m dpproto.Inject) error {
 	if len(m.Payload) > injectMax {
 		return dpproto.Errorf(dpproto.CodeInvalid, "payload of %d bytes is too long", len(m.Payload))
 	}
-	d.mu.Lock()
-	err := d.ready()
-	d.mu.Unlock()
-	if err != nil {
-		return err
-	}
 	l := d.lay.inject
 	dataOff := l.f("data").off
 	ctx := make([]byte, dataOff+len(m.Payload))
@@ -983,9 +975,15 @@ func (d *DP) Inject(m dpproto.Inject) error {
 	l.setU8(ctx, "dst", m.Dst)
 	l.setU8(ctx, "ttl", m.TTL)
 	copy(ctx[dataOff:], m.Payload)
-	d.injMu.Lock()
+	// The lock is held through the run: Close drops the programs, and mn_inject shares a scratch
+	// buffer, so only one runs at a time.
+	d.mu.Lock()
+	if err := d.ready(); err != nil {
+		d.mu.Unlock()
+		return err
+	}
 	ret, out, err := d.runSyscall("mn_inject", ctx)
-	d.injMu.Unlock()
+	d.mu.Unlock()
 	if err != nil {
 		return dpproto.Errorf(dpproto.CodeInternal, "inject: %v", err)
 	}
