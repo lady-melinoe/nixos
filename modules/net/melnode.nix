@@ -47,8 +47,13 @@ let
     pkgs.nftables
   ];
 
+  # What melnode dials: an address, without the port (that is cfg.port) or an IPv6 zone. The IPv6
+  # pattern only checks the shape, the control plane checks the address itself.
+  ipv4Octet = "(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])";
   isIpLiteral =
-    host: lib.hasInfix ":" host || builtins.match "[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+" host != null;
+    host:
+    builtins.match "${ipv4Octet}\\.${ipv4Octet}\\.${ipv4Octet}\\.${ipv4Octet}" host != null
+    || builtins.match "[0-9a-fA-F]*(:[0-9a-fA-F]*){2,7}" host != null;
 
   endpointOf =
     name: peer: if peer.endpoint != null then peer.endpoint else cluster.nodes.${name}.endpoint;
@@ -207,9 +212,9 @@ in
                 description = "Overrides the node's own endpoint. If neither is set the link is listen-only.";
               };
               prependCount = mkOption {
-                type = types.ints.unsigned;
+                type = types.ints.between 0 254;
                 default = 0;
-                description = "AS-path prepending on routes relayed over this link; raises its path length to make it less preferred.";
+                description = "AS-path prepending on routes relayed over this link; raises its path length to make it less preferred. Paths hold 255 nodes, so 254 is the most that still leaves room for this node itself.";
               };
             };
           }
@@ -239,7 +244,7 @@ in
           }
           {
             assertion = endpoint == null || isIpLiteral endpoint;
-            message = "melinoe.melnode.peers: the endpoint for ${name} (${toString endpoint}) must be an IP literal, melnode does not resolve hostnames.";
+            message = "melinoe.melnode.peers: the endpoint for ${name} (${toString endpoint}) must be an IPv4 or IPv6 address, without a port or zone: melnode does not resolve hostnames, and always dials ${toString cfg.port}.";
           }
         ]
       ) cfg.peers

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 
@@ -129,6 +130,7 @@ func (c *Config) validate() error {
 		}
 	}
 	seenLinks := map[int]bool{}
+	seenKeys := map[[32]byte]int{}
 	for _, l := range c.Links {
 		if l.PeerID < 0 || l.PeerID > 255 {
 			return fmt.Errorf("[[link]] peerid must be 0-255, got %d", l.PeerID)
@@ -143,14 +145,35 @@ func (c *Config) validate() error {
 		if l.PeerPubkey == "" {
 			return fmt.Errorf("[[link]] peerid %d missing peerPubkey", l.PeerID)
 		}
-		if _, err := parsePubKeyBase64(l.PeerPubkey); err != nil {
+		key, err := parsePubKeyBase64(l.PeerPubkey)
+		if err != nil {
 			return fmt.Errorf("[[link]] peerid %d: invalid peerPubkey: %w", l.PeerID, err)
+		}
+		if key == ([32]byte{}) {
+			return fmt.Errorf("[[link]] peerid %d: peerPubkey is all zeros", l.PeerID)
+		}
+		if other, dup := seenKeys[key]; dup {
+			return fmt.Errorf("[[link]] peerids %d and %d have the same peerPubkey", other, l.PeerID)
+		}
+		seenKeys[key] = l.PeerID
+		if l.Endpoint != "" {
+			ap, err := netip.ParseAddrPort(l.Endpoint)
+			if err != nil {
+				return fmt.Errorf("[[link]] peerid %d: endpoint %q is not an ip:port literal (IPv6 as [addr]:port): %w", l.PeerID, l.Endpoint, err)
+			}
+			if ap.Addr().Zone() != "" {
+				return fmt.Errorf("[[link]] peerid %d: endpoint %q has a zone, which is not supported", l.PeerID, l.Endpoint)
+			}
+			if ap.Port() == 0 {
+				return fmt.Errorf("[[link]] peerid %d: endpoint %q has port 0", l.PeerID, l.Endpoint)
+			}
 		}
 		if l.PrependCount < 0 {
 			return fmt.Errorf("[[link]] peerid %d prependCount must be >= 0, got %d", l.PeerID, l.PrependCount)
 		}
-		if l.PrependCount > pvMaxPathLen {
-			return fmt.Errorf("[[link]] peerid %d prependCount must be <= %d, got %d", l.PeerID, pvMaxPathLen, l.PrependCount)
+		// forwardPath adds 1+prependCount copies of this node to a path, which holds pvMaxPathLen.
+		if l.PrependCount > pvMaxPathLen-1 {
+			return fmt.Errorf("[[link]] peerid %d prependCount must be <= %d, got %d", l.PeerID, pvMaxPathLen-1, l.PrependCount)
 		}
 	}
 	return nil
