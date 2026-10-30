@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -10,9 +11,9 @@ import (
 
 const hookTimeout = 10 * time.Second
 
-func (r *Router) runTunHook(kind, bin string, peerID uint32, ifname string) {
+func (r *Router) runTunHook(kind, bin string, peerID uint32, ifname string) error {
 	if bin == "" {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hookTimeout)
 	defer cancel()
@@ -23,8 +24,8 @@ func (r *Router) runTunHook(kind, bin string, peerID uint32, ifname string) {
 		r.node.log.Verbosef("router: tun %s hook %q (peerid %d, %s) output: %s", kind, bin, peerID, ifname, o)
 	}
 	if err != nil {
-		r.node.log.Errorf("router: tun %s hook %q (peerid %d, %s) failed: %v", kind, bin, peerID, ifname, err)
-		return
+		return fmt.Errorf("tun %s hook %q: %w", kind, bin, err)
 	}
 	r.node.log.Verbosef("router: tun %s hook %q (peerid %d, %s) ok", kind, bin, peerID, ifname)
+	return nil
 }

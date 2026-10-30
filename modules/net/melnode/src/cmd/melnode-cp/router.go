@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/vishvananda/netlink"
@@ -47,25 +49,28 @@ func (r *Router) LookupRoute(dstPeerID uint32) (nhid uint32, ok bool) {
 	return
 }
 
-func (r *Router) configureTun(peerID uint32, name string) {
+// configureTun gives a new tun its identity address, runs the create hook and brings it up. It
+// does everything it can whatever fails, and returns what did: the reconciler logs that, and tries
+// again.
+func (r *Router) configureTun(peerID uint32, name string) error {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
-		r.node.log.Errorf("router: netlink lookup for tun %q failed: %v", name, err)
-		r.runTunHook("create", r.tunCreateHookBin, peerID, name)
-		return
+		return errors.Join(fmt.Errorf("looking up %s: %w", name, err), r.runTunHook("create", r.tunCreateHookBin, peerID, name))
 	}
+	var errs []error
 	if r.identityPrefix != nil {
 		addr := &netlink.Addr{IPNet: r.identityPrefix.ipNet()}
 		if err := netlink.AddrReplace(link, addr); err != nil {
-			r.node.log.Errorf("router: failed to assign identity %v to tun %q: %v", *r.identityPrefix, name, err)
+			errs = append(errs, fmt.Errorf("assigning identity %v to %s: %w", *r.identityPrefix, name, err))
 		} else {
 			r.node.log.Verbosef("router: assigned identity %v to tun %q", *r.identityPrefix, name)
 		}
 	}
-	r.runTunHook("create", r.tunCreateHookBin, peerID, name)
+	errs = append(errs, r.runTunHook("create", r.tunCreateHookBin, peerID, name))
 	if err := netlink.LinkSetUp(link); err != nil {
-		r.node.log.Errorf("router: failed to bring up tun %q: %v", name, err)
+		errs = append(errs, fmt.Errorf("bringing up %s: %w", name, err))
 	}
+	return errors.Join(errs...)
 }
 
 func (r *Router) attach() {
@@ -88,7 +93,9 @@ func (r *Router) detach() {
 	r.hostMu.Unlock()
 	for id, name := range done {
 		if name != "" {
-			r.runTunHook("destroy", r.tunDestroyHookBin, id, name)
+			if err := r.runTunHook("destroy", r.tunDestroyHookBin, id, name); err != nil {
+				r.node.log.Errorf("router: %v (peerid %d, %s)", err, id, name)
+			}
 		}
 	}
 }

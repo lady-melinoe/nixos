@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -345,4 +346,45 @@ func TestSessionSurvivesDataPlaneLoss(t *testing.T) {
 
 	fd.setDown(false)
 	waitFor(t, "re-attach", func() bool { c := n.dp(); return c != nil && c != first })
+}
+
+func TestTunSetupFailureIsRetriedAndLoggedOnce(t *testing.T) {
+	n := newPVNet(t, 1, 2)
+	node := n.nodes[1].node
+	var errs []string
+	node.log = &Logger{DiscardLogf, func(format string, args ...any) { errs = append(errs, fmt.Sprintf(format, args...)) }}
+	r := node.router
+	h := n.host(1)
+
+	h.failCreate[2] = 1000
+	n.linkUp(1, 2)
+	retries := 0
+	for i := 0; i < 5; i++ {
+		if r.reconcileOnce() {
+			retries++
+		}
+	}
+	if retries != 5 {
+		t.Fatalf("a tun that fails to set up asked for a retry %d times out of 5", retries)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("the same failure was logged %d times, want once: %q", len(errs), errs)
+	}
+
+	h.failCreate[2] = 0
+	if r.reconcileOnce() {
+		t.Fatal("still retrying after the tun was set up")
+	}
+	if !h.tuns[2] {
+		t.Fatal("tun not set up once it could be")
+	}
+
+	// A later failure is news again.
+	h.failCreate[3] = 1000
+	r.SetRoutes(map[uint32]uint32{2: 2, 3: 2})
+	r.reconcileOnce()
+	r.reconcileOnce()
+	if len(errs) != 2 {
+		t.Fatalf("errors logged = %d, want 2 (one per failing tun): %q", len(errs), errs)
+	}
 }

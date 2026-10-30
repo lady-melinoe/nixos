@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,7 @@ type reconcilerState struct {
 	kickCh          chan struct{}
 	reconMu         sync.Mutex
 	holdUntil       atomic.Int64
+	tunErr          map[uint32]string // why each tun last failed to set up, under reconMu
 }
 
 func (s *reconcilerState) holding() bool { return time.Now().UnixNano() < s.holdUntil.Load() }
@@ -52,6 +54,7 @@ func (r *Router) startHold() {
 func (s *reconcilerState) init(r *Router) {
 	s.host = &realHost{r: r}
 	s.kickCh = make(chan struct{}, 1)
+	s.tunErr = make(map[uint32]string)
 }
 
 func (r *Router) Kick() {
@@ -141,8 +144,15 @@ func (r *Router) reconcileOnce() (retry bool) {
 	}
 	for _, d := range wantDests {
 		if err := h.EnsureTun(d); err != nil {
-			r.node.log.Errorf("router: can't create tun for peerid %d (will retry): %v", d, err)
+			// Retried with a growing backoff; a cause that keeps failing is logged once.
+			if msg := err.Error(); r.tunErr[d] != msg {
+				r.tunErr[d] = msg
+				r.node.log.Errorf("router: can't set up the tun for peerid %d (will retry): %v", d, err)
+			}
 			retry = true
+		} else if _, failed := r.tunErr[d]; failed {
+			delete(r.tunErr, d)
+			r.node.log.Verbosef("router: the tun for peerid %d is set up now", d)
 		}
 	}
 
@@ -276,7 +286,9 @@ func (h *realHost) EnsureTun(peerID uint32) error {
 	h.r.tunNames[peerID] = info.Name
 	h.r.hostMu.Unlock()
 
-	h.r.configureTun(peerID, info.Name)
+	if err := h.r.configureTun(peerID, info.Name); err != nil {
+		return fmt.Errorf("configuring tun %s: %w", info.Name, err)
+	}
 	h.r.hostMu.Lock()
 	h.r.hooked[peerID] = true
 	h.r.hostMu.Unlock()
@@ -297,7 +309,9 @@ func (h *realHost) DestroyTun(peerID uint32) {
 		}
 	}
 	if hadName {
-		h.r.runTunHook("destroy", h.r.tunDestroyHookBin, peerID, name)
+		if err := h.r.runTunHook("destroy", h.r.tunDestroyHookBin, peerID, name); err != nil {
+			h.r.node.log.Errorf("router: %v (peerid %d, %s)", err, peerID, name)
+		}
 	}
 }
 
