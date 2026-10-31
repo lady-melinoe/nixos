@@ -41,8 +41,6 @@ in
       themePackages = [ startupTheme ];
     };
     initrd = {
-      systemd.enable = true;
-      verbose = false;
       kernelModules = [ "amdgpu" ];
     };
     consoleLogLevel = 0;

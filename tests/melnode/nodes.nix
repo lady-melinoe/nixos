@@ -90,4 +90,6 @@ let
       };
     };
 in
-{ inherit nodes node; }
+{
+  inherit nodes node;
+}

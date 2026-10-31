@@ -82,7 +82,10 @@ let
       got = failures peers;
       ok = if fails == null then got == [ ] else lib.length got == 1 && lib.hasInfix fails (lib.head got);
     in
-    lib.optional (!ok) "${name}: expected ${if fails == null then "no failure" else "'${fails}'"}, got ${builtins.toJSON got}";
+    lib.optional (!ok)
+      "${name}: expected ${
+        if fails == null then "no failure" else "'${fails}'"
+      }, got ${builtins.toJSON got}";
 
   # prependCount is a module option type: 254 evaluates, 255 does not.
   prependAccepted =

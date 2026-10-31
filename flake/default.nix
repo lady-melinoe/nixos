@@ -12,8 +12,22 @@ in
   inherit nixosConfigurations;
 
   checks.${system} = {
-    melnode = import ../tests/melnode { inherit inputs pkgs lib melinoeLib; };
-    melnode-assertions = import ../tests/melnode/assertions.nix { inherit inputs pkgs lib melinoeLib; };
+    melnode = import ../tests/melnode {
+      inherit
+        inputs
+        pkgs
+        lib
+        melinoeLib
+        ;
+    };
+    melnode-assertions = import ../tests/melnode/assertions.nix {
+      inherit
+        inputs
+        pkgs
+        lib
+        melinoeLib
+        ;
+    };
   };
 
   formatter.${system} = pkgs.nixfmt-tree;
