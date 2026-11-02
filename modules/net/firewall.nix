@@ -50,6 +50,7 @@ let
   }") (lib.filter (vm: vm.outboundVia != null) vms);
 
   uplinkMark = toString net.uplinkMark;
+  localOutboundMark = toString (net.outboundMarkBase + config.melinoe.node.id);
 in
 {
   options.melinoe.firewall = {
@@ -164,7 +165,7 @@ in
             "type route hook output priority mangle;"
             "ct direction reply ct mark ${toString ctMarkUplink} meta mark set ${uplinkMark}"
             "ct direction reply ct mark @melinoe_peer_marks meta mark set ct mark"
-            "ct mark ${toString ctMarkVia} ip ttl set ${toString hiddenHopTtl}"
+            "ct mark ${toString ctMarkVia} meta mark != ${localOutboundMark} ip ttl set ${toString hiddenHopTtl}"
           ])
         ])
       ];
