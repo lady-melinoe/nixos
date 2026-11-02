@@ -52,19 +52,9 @@ let
       ) "ip daddr ${destination} udp dport ${portSet vm.udp} dnat to ${vm.address}"
     ) forwarded;
 
-  hairpinRules =
-    let
-      pairs = set (map (vm: "${vm.address} . ${vm.address}") vms);
-    in
-    map
-      (
-        destination:
-        "ct original ip daddr ${destination} ip saddr . ip daddr ${pairs} snat to ${hairpinSnatAddress}"
-      )
-      [
-        "$hostaddr"
-        "@pubroutefix"
-      ];
+  hairpinRules = [
+    "ct status dnat ip saddr 198.18.1.0-198.18.255.253 snat ip to ip saddr ^ ip daddr map { 0.0.0.0 : ${hairpinSnatAddress} }"
+  ];
 
   outboundRules = lib.concatMap (vm: [
     "iifname ${quote vm.iface} ct direction original meta mark set ${
