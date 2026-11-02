@@ -45,12 +45,9 @@ let
     ++ map (port: "udp . ${toString port} : ${vm.address}") vm.udp
   ) vms;
 
-  outboundRules = lib.concatMap (vm: [
-    "iifname ${quote vm.iface} ct direction original meta mark set ${
-      toString (net.outboundMarkBase + cluster.nodes.${vm.outboundVia}.id)
-    }"
-    "iifname ${quote vm.iface} ct direction original ct mark set ${toString ctMarkVia}"
-  ]) (lib.filter (vm: vm.outboundVia != null) vms);
+  outboundElements = map (vm: "${quote vm.iface} : ${
+    toString (net.outboundMarkBase + cluster.nodes.${vm.outboundVia}.id)
+  }") (lib.filter (vm: vm.outboundVia != null) vms);
 
   uplinkMark = toString net.uplinkMark;
 in
@@ -149,10 +146,14 @@ in
         (block "table inet mangle" [
           (block "set melinoe_peer_marks" [ "type mark" ])
           (block "map melinoe_peer_ifaces" [ "type ifname : mark" ])
+          (block "map outbound_via" (
+            [ "type ifname : mark" ]
+            ++ lib.optional (outboundElements != [ ]) "elements = ${set outboundElements}"
+          ))
           (block "chain prerouting" (
             [ "type filter hook prerouting priority mangle;" ]
-            ++ outboundRules
             ++ [
+              "ct direction original meta mark set iifname map @outbound_via ct mark set ${toString ctMarkVia}"
               "iifname != $uplink_ifs ct direction reply ct mark ${toString ctMarkUplink} meta mark set ${uplinkMark}"
               "iifname $uplink_ifs ct direction original ct mark != ${toString ctMarkUplink} ct mark set ${toString ctMarkUplink}"
               "ct direction reply ct mark @melinoe_peer_marks meta mark set ct mark"
