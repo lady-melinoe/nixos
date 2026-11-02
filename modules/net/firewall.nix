@@ -39,22 +39,11 @@ let
     ++ lib.optional (access.udp != [ ]) (rule "udp dport ${portSet access.udp}")
     ++ lib.optional (access.ipProtocols != [ ]) (rule "ip protocol ${portSet access.ipProtocols}");
 
-  forwarded = lib.filter (vm: vm.tcp != [ ] || vm.udp != [ ]) vms;
-  dnatRules =
-    destination:
-    lib.concatMap (
-      vm:
-      lib.optional (
-        vm.tcp != [ ]
-      ) "ip daddr ${destination} tcp dport ${portSet vm.tcp} dnat to ${vm.address}"
-      ++ lib.optional (
-        vm.udp != [ ]
-      ) "ip daddr ${destination} udp dport ${portSet vm.udp} dnat to ${vm.address}"
-    ) forwarded;
-
-  hairpinRules = [
-    "ct status dnat ip saddr 198.18.1.0-198.18.255.253 snat ip to ip saddr ^ ip daddr map { 0.0.0.0 : ${hairpinSnatAddress} }"
-  ];
+  portfwdElements = lib.concatMap (
+    vm:
+    map (port: "tcp . ${toString port} : ${vm.address}") vm.tcp
+    ++ map (port: "udp . ${toString port} : ${vm.address}") vm.udp
+  ) vms;
 
   outboundRules = lib.concatMap (vm: [
     "iifname ${quote vm.iface} ct direction original meta mark set ${
@@ -136,12 +125,22 @@ in
             ]
             ++ lib.optional (net.publicPrefixes != [ ]) "elements = ${set net.publicPrefixes}"
           ))
+          (block "map portfwd" (
+            [ "typeof meta l4proto . th dport : ip daddr" ]
+            ++ lib.optional (portfwdElements != [ ]) "elements = ${set portfwdElements}"
+          ))
           (block "chain prerouting" (
-            [ "type nat hook prerouting priority dstnat;" ] ++ dnatRules "$hostaddr" ++ dnatRules "@pubroutefix"
+            [
+              "type nat hook prerouting priority dstnat;"
+              "ip daddr $hostaddr dnat to meta l4proto . th dport map @portfwd"
+              "ip daddr @pubroutefix dnat to meta l4proto . th dport map @portfwd"
+            ]
           ))
           (block "chain postrouting" (
-            [ "type nat hook postrouting priority srcnat;" ]
-            ++ hairpinRules
+            [
+              "type nat hook postrouting priority srcnat;"
+              "ct status dnat ip saddr 198.18.1.0-198.18.255.253 snat ip to ip saddr ^ ip daddr map { 0.0.0.0 : ${hairpinSnatAddress} }"
+            ]
             ++ map (name: "oifname ${quote name} masquerade") net.uplinkNames
           ))
           (block "chain output" [ "type nat hook output priority dstnat; policy accept;" ])
