@@ -76,6 +76,7 @@ in
     networking = {
       firewall.enable = false;
       nftables.enable = true;
+      nftables.checkRuleset = false;
       nftables.ruleset = lib.concatStringsSep "\n" [
         "flush ruleset"
         "define uplink_ifs = ${set (map quote net.uplinkNames)}"
