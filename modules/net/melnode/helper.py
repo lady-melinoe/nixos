@@ -242,6 +242,12 @@ def setup_peer(cfg: Config, peer_id: int, ifname: str) -> None:
     ensure_blackhole(table)
     ensure_rule(table)
     nft_add(cfg, {peer_id: ifname})
+    # Traffic is policy-routed per tun, so the reverse path rarely matches.
+    try:
+        with open(f"/proc/sys/net/ipv4/conf/{ifname}/rp_filter", "w") as f:
+            f.write("0")
+    except OSError as e:
+        log.warning("could not disable rp_filter on %s: %s", ifname, e)
     run_ok(["ip", "link", "set", "dev", ifname, "up"], f"bring up {ifname}")
     ensure_route(table, ifname)
     log.info("set up peer %d (%s): table/mark %d", peer_id, ifname, table)

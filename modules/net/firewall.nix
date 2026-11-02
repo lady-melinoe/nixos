@@ -134,7 +134,6 @@ in
               "type filter hook prerouting priority raw; policy accept;"
               "iifname $uplink_ifs ip saddr ${cluster.networks.mesh} drop"
             ]
-            ++ map (vm: "iifname ${quote vm.iface} ip saddr != ${vm.source} drop") vms
           ))
         ])
 

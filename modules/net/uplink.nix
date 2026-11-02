@@ -53,6 +53,7 @@ let
           linkConfig.RequiredForOnline = if primary then "yes" else "no";
           networkConfig = {
             IPv6AcceptRA = false;
+            IPv4ReversePathFilter = "no";
           }
           // (
             if uplink.dhcp then
@@ -71,7 +72,10 @@ let
             member:
             lib.nameValuePair "10-${member}" {
               matchConfig.Name = member;
-              networkConfig.Bond = name;
+              networkConfig = {
+                Bond = name;
+                IPv4ReversePathFilter = "no";
+              };
               linkConfig.RequiredForOnline = "no";
             }
           ) uplink.interfaces
@@ -206,11 +210,17 @@ in
       })
     ];
 
+    # The kernel uses max(all, <iface>), so "all" stays 0 and each interface
+    # decides: new interfaces default to loose (2), uplinks and melnode tuns
+    # are switched off (networkd / melnode hook), vm-* are strict (udev).
     boot.kernel.sysctl = lib.mkIf enabled {
       "net.ipv4.conf.all.rp_filter" = 0;
-      "net.ipv4.conf.default.rp_filter" = 0;
-      "net.ipv4.conf.*.rp_filter" = 0;
+      "net.ipv4.conf.default.rp_filter" = 2;
     };
+
+    services.udev.extraRules = lib.mkIf enabled ''
+      ACTION=="add", SUBSYSTEM=="net", KERNEL=="vm-*", RUN+="${pkgs.procps}/bin/sysctl -qw net.ipv4.conf.%k.rp_filter=1"
+    '';
 
     systemd.services.melinoe-inet-setup = lib.mkIf enabled {
       description = "Configure policy routing around the uplink interfaces";
