@@ -98,9 +98,7 @@ let
       control_socket = controlSocket;
       pub_ips = net.publicPrefixes;
       extra_routes = cfg.extraRoutes;
-      vm_ifaces = lib.optionals config.melinoe.incus.enable (
-        map (vm: vm.iface) (lib.attrValues cluster.vms)
-      );
+      vm_iface_prefix = "vm-";
     }
   );
 

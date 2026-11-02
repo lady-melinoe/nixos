@@ -58,7 +58,7 @@ class Config:
     control_socket: str
     pub_ips: list[str]
     extra_routes: list[str]
-    vm_ifaces: list[str]
+    vm_iface_prefix: str
     nft_family: str = "inet"
     nft_table: str = "mangle"
     nft_mark_set: str = "melinoe_peer_marks"
@@ -330,16 +330,14 @@ def normalize_prefix(val: str) -> str | None:
 
 
 def vm_routes(cfg: Config) -> set[str] | None:
-    if not cfg.vm_ifaces:
-        return set()
     routes = run_json(["ip", "-4", "-j", "route", "show"])
     if routes is None:
         return None
     out: set[str] = set()
-    vm = set(cfg.vm_ifaces)
     for r in routes:
         dst = r.get("dst")
-        if not dst or dst == "default" or r.get("dev") not in vm:
+        dev = r.get("dev") or ""
+        if not dst or dst == "default" or not dev.startswith(cfg.vm_iface_prefix):
             continue
         norm = normalize_prefix(dst)
         if norm:

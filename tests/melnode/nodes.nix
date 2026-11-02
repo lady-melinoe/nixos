@@ -44,12 +44,6 @@ let
         ../../modules/net/melnode.nix
       ];
 
-      # melnode.nix only asks whether Incus runs.
-      options.melinoe.incus.enable = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-      };
-
       config = {
         nixpkgs.hostPlatform = "x86_64-linux";
 
