@@ -146,7 +146,8 @@ in
 
         (block "table inet mangle" [
           (block "set melinoe_peer_marks" [ "type mark" ])
-          (block "map melinoe_peer_ifaces" [ "type ifname : mark" ])
+          # Sender node id (the link-layer source address on the mesh device) -> its mark.
+          (block "map melinoe_peer_ids" [ "typeof @ll,8,8 : mark" ])
           (block "map outbound_via" (
             [ "type ifname : mark" ]
             ++ lib.optional (outboundElements != [ ]) "elements = ${set outboundElements}"
@@ -158,7 +159,7 @@ in
               "iifname != $uplink_ifs ct direction reply ct mark ${toString ctMarkUplink} meta mark set ${uplinkMark}"
               "iifname $uplink_ifs ct direction original ct mark != ${toString ctMarkUplink} ct mark set ${toString ctMarkUplink}"
               "ct direction reply ct mark @melinoe_peer_marks meta mark set ct mark"
-              "ct mark != ${toString ctMarkVia} ct direction original ct mark != @melinoe_peer_marks ct mark set iifname map @melinoe_peer_ifaces"
+              "iifname ${quote net.meshInterface} ct mark != ${toString ctMarkVia} ct direction original ct mark != @melinoe_peer_marks ct mark set @ll,8,8 map @melinoe_peer_ids"
             ]
           ))
           (block "chain output" [

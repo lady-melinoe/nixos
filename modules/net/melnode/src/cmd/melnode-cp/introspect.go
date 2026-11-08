@@ -15,7 +15,7 @@ var processStart = time.Now()
 type dpView struct {
 	attached bool
 	links    map[uint32]dpproto.LinkInfo
-	tuns     []dpproto.TunInfo
+	dev      dpproto.DeviceInfo
 	routes   map[uint32]uint32
 	stats    []dpproto.Stat
 	err      error
@@ -46,8 +46,10 @@ func (n *Node) readDP(wait bool) dpView {
 			v.links[li.PeerID] = li
 		}
 	}
-	if tuns, err := cl.TunList(); ok(err) {
-		v.tuns = tuns
+	if dev, err := cl.Device(); err == nil {
+		v.dev = dev
+	} else if !dpproto.IsCode(err, dpproto.CodeNotFound) {
+		ok(err)
 	}
 	if rl, err := cl.RouteList(); ok(err) {
 		v.routes = make(map[uint32]uint32, len(rl))
@@ -129,24 +131,16 @@ func (n *Node) linksFrom(v dpView) []linkInfo {
 
 func keyToBase64(k []byte) string { return base64.StdEncoding.EncodeToString(k) }
 
-type tunInfo struct {
-	PeerID  uint32  `json:"peer_id"`
-	Name    string  `json:"name"`
-	IfIndex uint32  `json:"ifindex"`
-	NextHop *uint32 `json:"next_hop"`
+type deviceInfo struct {
+	Name    string `json:"name"`
+	IfIndex uint32 `json:"ifindex"`
 }
 
-func tunsFrom(v dpView) []tunInfo {
-	out := make([]tunInfo, 0, len(v.tuns))
-	for _, t := range v.tuns {
-		ti := tunInfo{PeerID: t.PeerID, Name: t.Name, IfIndex: t.IfIndex}
-		if nh, ok := v.routes[t.PeerID]; ok {
-			ti.NextHop = &nh
-		}
-		out = append(out, ti)
+func deviceFrom(v dpView) *deviceInfo {
+	if v.dev.IfIndex == 0 {
+		return nil
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].PeerID < out[j].PeerID })
-	return out
+	return &deviceInfo{Name: v.dev.Name, IfIndex: v.dev.IfIndex}
 }
 
 type pathInfo struct {
@@ -159,7 +153,6 @@ type pathInfo struct {
 
 type routeInfo struct {
 	Dest  uint32     `json:"dest"`
-	Tun   string     `json:"tun,omitempty"`
 	Paths []pathInfo `json:"paths"`
 }
 
@@ -180,7 +173,7 @@ func prefixStrings(ps []pvPrefix) []string {
 	return out
 }
 
-func (pv *PathVector) routesFrom(tuns []tunInfo) []routeInfo {
+func (pv *PathVector) routesFrom() []routeInfo {
 	pv.mu.Lock()
 	out := make([]routeInfo, 0, len(pv.learned))
 	for dest, byNeighbor := range pv.learned {
@@ -213,13 +206,6 @@ func (pv *PathVector) routesFrom(tuns []tunInfo) []routeInfo {
 	pv.mu.Unlock()
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Dest < out[j].Dest })
-	names := make(map[uint32]string)
-	for _, t := range tuns {
-		names[t.PeerID] = t.Name
-	}
-	for i := range out {
-		out[i].Tun = names[out[i].Dest]
-	}
 	return out
 }
 
@@ -288,11 +274,11 @@ type summaryInfo struct {
 	LinksTotal        int       `json:"links_total"`
 	LinksUp           int       `json:"links_up"`
 	Destinations      int       `json:"destinations"`
-	Tuns              int       `json:"tuns"`
+	Device            string    `json:"device,omitempty"`
 	Prefixes          int       `json:"prefixes"`
 }
 
-func (pv *PathVector) summaryFrom(v dpView, links []linkInfo, tuns []tunInfo, at time.Time) summaryInfo {
+func (pv *PathVector) summaryFrom(v dpView, links []linkInfo, at time.Time) summaryInfo {
 	n := pv.node
 	s := summaryInfo{
 		LocalID:           n.localID,
@@ -301,7 +287,7 @@ func (pv *PathVector) summaryFrom(v dpView, links []linkInfo, tuns []tunInfo, at
 		MTU:               int(n.mtu.Load()),
 		DataplaneAttached: v.attached,
 		LinksTotal:        len(links),
-		Tuns:              len(tuns),
+		Device:            v.dev.Name,
 	}
 	if pk := n.pubkey.Load(); pk != nil {
 		s.PublicKey = keyToBase64(pk[:])
@@ -342,7 +328,7 @@ func dataplaneFrom(v dpView) dataplaneInfo {
 	return info
 }
 
-var readPaths = []string{"/summary", "/links", "/routes", "/prefixes", "/tuns", "/dataplane"}
+var readPaths = []string{"/summary", "/links", "/routes", "/prefixes", "/device", "/dataplane"}
 
 type introspectViews struct {
 	generatedAt time.Time
@@ -352,15 +338,14 @@ type introspectViews struct {
 func (pv *PathVector) buildViews(v dpView) introspectViews {
 	at := time.Now()
 	links := pv.node.linksFrom(v)
-	tuns := tunsFrom(v)
 	return introspectViews{
 		generatedAt: at,
 		byPath: map[string]any{
-			"/summary":   pv.summaryFrom(v, links, tuns, at),
+			"/summary":   pv.summaryFrom(v, links, at),
 			"/links":     links,
-			"/routes":    pv.routesFrom(tuns),
+			"/routes":    pv.routesFrom(),
 			"/prefixes":  pv.prefixesSnapshot(),
-			"/tuns":      tuns,
+			"/device":    deviceFrom(v),
 			"/dataplane": dataplaneFrom(v),
 		},
 	}

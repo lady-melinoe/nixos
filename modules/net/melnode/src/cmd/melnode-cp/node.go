@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/netip"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,9 +20,8 @@ type Node struct {
 	localID uint32
 	log     *Logger
 
-	device    dpproto.DeviceSet
-	tunPrefix string
-	dpConfig  ebpfdp.Config
+	device   dpproto.DeviceSet
+	dpConfig ebpfdp.Config
 
 	// dial opens a data plane; tests replace it.
 	dial    func(onPunt func(dpproto.Punt)) (dpproto.Datapath, error)
@@ -95,8 +96,8 @@ func newNode(cfg *Config, verbose bool) (*Node, error) {
 			ListenPort: uint16(cfg.LocalPort),
 			Fwmark:     uint32(cfg.Fwmark),
 			MTU:        uint32(cfg.MTU),
+			IfName:     cfg.Interface,
 		},
-		tunPrefix: cfg.TunPrefix,
 		dpConfig: ebpfdp.Config{
 			ObjectPath: cfg.EbpfObject,
 			PinDir:     cfg.PinDir,
@@ -119,7 +120,12 @@ func newNode(cfg *Config, verbose bool) (*Node, error) {
 		parsed, _ := parsePrefix(cfg.IdentityPrefix)
 		identityPrefix = &parsed
 	}
-	n.router = newRouter(n, n.localID, identityPrefix, cfg.TunCreateHookBin, cfg.TunDestroyHookBin)
+	nodeAddrs := make(map[uint32]netip.Addr, len(cfg.NodeAddresses))
+	for id, a := range cfg.NodeAddresses {
+		n, _ := strconv.Atoi(id)
+		nodeAddrs[uint32(n)] = netip.MustParseAddr(a)
+	}
+	n.router = newRouter(n, n.localID, identityPrefix, nodeAddrs, cfg.PeerCreateHookBin, cfg.PeerDestroyHookBin)
 
 	for _, lc := range cfg.Links {
 		pub, _ := parsePubKeyBase64(lc.PeerPubkey)
@@ -129,7 +135,7 @@ func newNode(cfg *Config, verbose bool) (*Node, error) {
 	n.pathVector = newPathVector(n, n.localID)
 	if identityPrefix != nil {
 		n.pathVector.AdvertisePrefix(*identityPrefix)
-		log.Printf("identity: always advertising %v (assigned to every tun this node owns)", *identityPrefix)
+		log.Printf("identity: always advertising %v (assigned to the device)", *identityPrefix)
 	}
 	return n, nil
 }

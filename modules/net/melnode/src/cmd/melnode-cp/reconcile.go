@@ -3,9 +3,11 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/vishvananda/netlink"
@@ -21,15 +23,20 @@ const (
 	rtTableMain = 254
 )
 
+// hostOps is what the router does to the host: the device (one, with a neighbour entry for every
+// node that can be reached, which maps the address routes to it go via to its id), the data plane's
+// routes and the kernel's.
 type hostOps interface {
 	Ready() bool
-	Tuns() ([]uint32, error)
-	TunName(peerID uint32) (string, bool)
-	EnsureTun(peerID uint32) error
-	DestroyTun(peerID uint32)
+	EnsureDevice() error
+	Peers() ([]uint32, error)
+	// PeerNexthop is the address routes to a node go via, once the node has its neighbour entry.
+	PeerNexthop(peerID uint32) (string, bool)
+	EnsurePeer(peerID uint32) error
+	DestroyPeer(peerID uint32)
 	ProgramRoutes(routes map[uint32]uint32) error
 	ListRoutes() (map[pvPrefix]string, error)
-	ReplaceRoute(p pvPrefix, ifname string) error
+	ReplaceRoute(p pvPrefix, nexthop string) error
 	DelRoute(p pvPrefix) error
 }
 
@@ -41,7 +48,8 @@ type reconcilerState struct {
 	kickCh          chan struct{}
 	reconMu         sync.Mutex
 	holdUntil       atomic.Int64
-	tunErr          map[uint32]string // why each tun last failed to set up, under reconMu
+	peerErr         map[uint32]string // why each node last failed to set up, under reconMu
+	deviceErr       string            // why the device last failed to set up, under reconMu
 }
 
 func (s *reconcilerState) holding() bool { return time.Now().UnixNano() < s.holdUntil.Load() }
@@ -54,7 +62,7 @@ func (r *Router) startHold() {
 func (s *reconcilerState) init(r *Router) {
 	s.host = &realHost{r: r}
 	s.kickCh = make(chan struct{}, 1)
-	s.tunErr = make(map[uint32]string)
+	s.peerErr = make(map[uint32]string)
 }
 
 func (r *Router) Kick() {
@@ -133,26 +141,36 @@ func (r *Router) reconcileOnce() (retry bool) {
 	r.mu.RUnlock()
 	sort.Slice(wantDests, func(i, j int) bool { return wantDests[i] < wantDests[j] })
 
-	haveTun := make(map[uint32]bool)
-	tuns, err := h.Tuns()
+	if err := h.EnsureDevice(); err != nil {
+		if msg := err.Error(); r.deviceErr != msg {
+			r.deviceErr = msg
+			r.node.log.Errorf("router: setting up the device (will retry): %v", err)
+		}
+		retry = true
+	} else {
+		r.deviceErr = ""
+	}
+
+	havePeer := make(map[uint32]bool)
+	peers, err := h.Peers()
 	if err != nil {
-		r.node.log.Errorf("router: listing data plane tuns (will retry): %v", err)
+		r.node.log.Errorf("router: listing the nodes with a neighbour entry (will retry): %v", err)
 		return true
 	}
-	for _, id := range tuns {
-		haveTun[id] = true
+	for _, id := range peers {
+		havePeer[id] = true
 	}
 	for _, d := range wantDests {
-		if err := h.EnsureTun(d); err != nil {
+		if err := h.EnsurePeer(d); err != nil {
 			// Retried with a growing backoff; a cause that keeps failing is logged once.
-			if msg := err.Error(); r.tunErr[d] != msg {
-				r.tunErr[d] = msg
-				r.node.log.Errorf("router: can't set up the tun for peerid %d (will retry): %v", d, err)
+			if msg := err.Error(); r.peerErr[d] != msg {
+				r.peerErr[d] = msg
+				r.node.log.Errorf("router: can't set up peerid %d (will retry): %v", d, err)
 			}
 			retry = true
-		} else if _, failed := r.tunErr[d]; failed {
-			delete(r.tunErr, d)
-			r.node.log.Verbosef("router: the tun for peerid %d is set up now", d)
+		} else if _, failed := r.peerErr[d]; failed {
+			delete(r.peerErr, d)
+			r.node.log.Verbosef("router: peerid %d is set up now", d)
 		}
 	}
 
@@ -168,9 +186,9 @@ func (r *Router) reconcileOnce() (retry bool) {
 		retry = true
 	}
 
-	for id := range haveTun {
+	for id := range havePeer {
 		if !inTable[id] {
-			h.DestroyTun(id)
+			h.DestroyPeer(id)
 		}
 	}
 
@@ -195,7 +213,7 @@ func (r *Router) reconcileOnce() (retry bool) {
 			}
 			continue
 		}
-		name, ok := h.TunName(owner)
+		name, ok := h.PeerNexthop(owner)
 		if !ok {
 			retry = true
 			continue
@@ -204,11 +222,11 @@ func (r *Router) reconcileOnce() (retry bool) {
 			continue
 		}
 		if err := h.ReplaceRoute(p, name); err != nil {
-			r.node.log.Errorf("router: failed to install kernel route %v via peerid %d (dev %s): %v", p, owner, name, err)
+			r.node.log.Errorf("router: failed to install kernel route %v via peerid %d (%s): %v", p, owner, name, err)
 			retry = true
 			continue
 		}
-		r.node.log.Verbosef("router: kernel route %v -> peerid %d (dev %s)", p, owner, name)
+		r.node.log.Verbosef("router: kernel route %v -> peerid %d (via %s)", p, owner, name)
 	}
 	for p := range have {
 		if _, ok := want[p]; ok || hold {
@@ -237,57 +255,108 @@ func (h *realHost) client() (dpproto.Datapath, error) {
 
 func (h *realHost) Ready() bool { return h.r.node.dp() != nil }
 
-func (h *realHost) Tuns() ([]uint32, error) {
+func (h *realHost) EnsureDevice() error {
 	cl, err := h.client()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	tuns, err := cl.TunList()
+	dev, err := cl.Device()
+	if err != nil {
+		return err
+	}
+	h.r.hostMu.Lock()
+	h.r.dev = dev
+	done := h.r.devConfigured == dev.IfIndex
+	h.r.hostMu.Unlock()
+	if done {
+		return nil
+	}
+	if err := h.r.configureDevice(dev); err != nil {
+		return err
+	}
+	h.r.hostMu.Lock()
+	h.r.devConfigured = dev.IfIndex
+	h.r.hostMu.Unlock()
+	return nil
+}
+
+func (h *realHost) device() (dpproto.DeviceInfo, error) {
+	h.r.hostMu.Lock()
+	defer h.r.hostMu.Unlock()
+	if h.r.dev.IfIndex == 0 {
+		return dpproto.DeviceInfo{}, errors.New("the device is not set up yet")
+	}
+	return h.r.dev, nil
+}
+
+// Peers lists the nodes that have a neighbour entry on the device: the entry's link address is
+// the node's id.
+func (h *realHost) Peers() ([]uint32, error) {
+	dev, err := h.device()
 	if err != nil {
 		return nil, err
 	}
-	names := make(map[uint32]string, len(tuns))
-	ids := make([]uint32, 0, len(tuns))
-	for _, t := range tuns {
-		names[t.PeerID] = t.Name
-		ids = append(ids, t.PeerID)
+	neighs, err := netlink.NeighList(int(dev.IfIndex), netlink.FAMILY_V4)
+	if err != nil {
+		return nil, err
+	}
+	nexthops := make(map[uint32]string, len(neighs))
+	ids := make([]uint32, 0, len(neighs))
+	for _, n := range neighs {
+		if n.State&netlink.NUD_PERMANENT == 0 || len(n.HardwareAddr) != 1 {
+			continue
+		}
+		id := uint32(n.HardwareAddr[0])
+		nexthops[id] = n.IP.String()
+		ids = append(ids, id)
 	}
 	h.r.hostMu.Lock()
-	h.r.tunNames = names
+	h.r.nexthops = nexthops
 	h.r.hostMu.Unlock()
 	return ids, nil
 }
 
-func (h *realHost) TunName(peerID uint32) (string, bool) {
+func (h *realHost) PeerNexthop(peerID uint32) (string, bool) {
 	h.r.hostMu.Lock()
 	defer h.r.hostMu.Unlock()
-	n, ok := h.r.tunNames[peerID]
+	n, ok := h.r.nexthops[peerID]
 	return n, ok
 }
 
-func (h *realHost) EnsureTun(peerID uint32) error {
+func (h *realHost) EnsurePeer(peerID uint32) error {
 	h.r.hostMu.Lock()
-	_, exists := h.r.tunNames[peerID]
+	_, exists := h.r.nexthops[peerID]
 	ready := exists && h.r.hooked[peerID]
 	h.r.hostMu.Unlock()
 	if ready {
 		return nil
 	}
-
-	cl, err := h.client()
+	dev, err := h.device()
 	if err != nil {
 		return err
 	}
-	info, err := cl.TunSet(dpproto.TunSet{PeerID: peerID, Name: h.r.node.tunPrefix + itoa(peerID)})
-	if err != nil {
-		return err
+	addr, ok := h.r.nodeAddrs[peerID]
+	if !ok {
+		return fmt.Errorf("no address for node %d in nodeAddresses", peerID)
 	}
+	// The neighbour entry is what makes a route via the node's address go to the node.
+	err = netlink.NeighSet(&netlink.Neigh{
+		LinkIndex:    int(dev.IfIndex),
+		Family:       netlink.FAMILY_V4,
+		State:        netlink.NUD_PERMANENT,
+		IP:           addr.AsSlice(),
+		HardwareAddr: net.HardwareAddr{byte(peerID)},
+	})
+	if err != nil {
+		return fmt.Errorf("neighbour %v on %s: %w", addr, dev.Name, err)
+	}
+	gw := addr.String()
 	h.r.hostMu.Lock()
-	h.r.tunNames[peerID] = info.Name
+	h.r.nexthops[peerID] = gw
 	h.r.hostMu.Unlock()
 
-	if err := h.r.configureTun(peerID, info.Name); err != nil {
-		return fmt.Errorf("configuring tun %s: %w", info.Name, err)
+	if err := h.r.runPeerHook("create", h.r.peerCreateHookBin, peerID, dev.Name, gw); err != nil {
+		return fmt.Errorf("setting up node %d: %w", peerID, err)
 	}
 	h.r.hostMu.Lock()
 	h.r.hooked[peerID] = true
@@ -295,22 +364,26 @@ func (h *realHost) EnsureTun(peerID uint32) error {
 	return nil
 }
 
-func (h *realHost) DestroyTun(peerID uint32) {
+func (h *realHost) DestroyPeer(peerID uint32) {
 	h.r.hostMu.Lock()
-	name, hadName := h.r.tunNames[peerID]
-	delete(h.r.tunNames, peerID)
+	gw, had := h.r.nexthops[peerID]
+	delete(h.r.nexthops, peerID)
 	delete(h.r.hooked, peerID)
+	dev := h.r.dev
 	h.r.hostMu.Unlock()
 
-	if cl, err := h.client(); err == nil {
-		if err := cl.TunDel(peerID); err != nil {
-			h.r.node.log.Errorf("router: destroying tun for peerid %d: %v", peerID, err)
+	if addr, ok := h.r.nodeAddrs[peerID]; ok && dev.IfIndex != 0 {
+		err := netlink.NeighDel(&netlink.Neigh{
+			LinkIndex: int(dev.IfIndex), Family: netlink.FAMILY_V4, IP: addr.AsSlice(),
+		})
+		if err != nil && !errors.Is(err, syscall.ENOENT) {
+			h.r.node.log.Errorf("router: removing the neighbour entry of peerid %d: %v", peerID, err)
 			return
 		}
 	}
-	if hadName {
-		if err := h.r.runTunHook("destroy", h.r.tunDestroyHookBin, peerID, name); err != nil {
-			h.r.node.log.Errorf("router: %v (peerid %d, %s)", err, peerID, name)
+	if had {
+		if err := h.r.runPeerHook("destroy", h.r.peerDestroyHookBin, peerID, dev.Name, gw); err != nil {
+			h.r.node.log.Errorf("router: %v (peerid %d, %s)", err, peerID, dev.Name)
 		}
 	}
 }
@@ -355,14 +428,6 @@ func (h *realHost) ListRoutes() (map[pvPrefix]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	links, err := netlink.LinkList()
-	if err != nil {
-		return nil, err
-	}
-	names := make(map[int]string, len(links))
-	for _, l := range links {
-		names[l.Attrs().Index] = l.Attrs().Name
-	}
 	out := make(map[pvPrefix]string, len(routes))
 	for _, rt := range routes {
 		if rt.Dst == nil || rt.Priority != routePriorityMelnode {
@@ -372,21 +437,28 @@ func (h *realHost) ListRoutes() (map[pvPrefix]string, error) {
 		if !ok {
 			continue
 		}
-		out[p] = names[rt.LinkIndex]
+		out[p] = rt.Gw.String()
 	}
 	return out, nil
 }
 
-func (h *realHost) ReplaceRoute(p pvPrefix, ifname string) error {
-	link, err := netlink.LinkByName(ifname)
+func (h *realHost) ReplaceRoute(p pvPrefix, nexthop string) error {
+	dev, err := h.device()
 	if err != nil {
 		return err
 	}
+	gw := net.ParseIP(nexthop)
+	if gw == nil {
+		return fmt.Errorf("bad next hop %q", nexthop)
+	}
 	return netlink.RouteReplace(&netlink.Route{
-		LinkIndex: link.Attrs().Index,
+		LinkIndex: int(dev.IfIndex),
 		Dst:       p.ipNet(),
-		Protocol:  routeProtocolMelnode,
-		Priority:  routePriorityMelnode,
+		Gw:        gw,
+		// The next hop is a node's address on the device itself, which no address of ours covers.
+		Flags:    int(netlink.FLAG_ONLINK),
+		Protocol: routeProtocolMelnode,
+		Priority: routePriorityMelnode,
 	})
 }
 

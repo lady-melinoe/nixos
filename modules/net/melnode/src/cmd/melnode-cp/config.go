@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -34,10 +35,16 @@ type Config struct {
 	MTU              int    `toml:"mtu"`
 	Fwmark           int    `toml:"fwmark"`
 
-	TunPrefix string `toml:"tunPrefix"`
+	// Interface is the name of the one network device. Every route to a node goes through it, via
+	// that node'"'"'s address in NodeAddresses, which the device'"'"'s neighbour table maps to the node'"'"'s id.
+	Interface string `toml:"interface"`
+	// NodeAddresses maps a node id (decimal) to the address routes to that node go via.
+	NodeAddresses map[string]string `toml:"nodeAddresses"`
 
-	TunCreateHookBin  string `toml:"tunCreateHookBin"`
-	TunDestroyHookBin string `toml:"tunDestroyHookBin"`
+	// The hooks run when a node becomes reachable and when it stops being, with its id, the
+	// device'"'"'s name and the address routes to it go via.
+	PeerCreateHookBin  string `toml:"peerCreateHookBin"`
+	PeerDestroyHookBin string `toml:"peerDestroyHookBin"`
 
 	IdentityPrefix string `toml:"identityPrefix"`
 
@@ -50,7 +57,7 @@ type Config struct {
 }
 
 func loadConfig(path string) (*Config, error) {
-	cfg := &Config{TunPrefix: "node-", MTU: defaultMTU, IntrospectIntervalMs: 1000}
+	cfg := &Config{Interface: "mel0", MTU: defaultMTU, IntrospectIntervalMs: 1000}
 	meta, err := toml.DecodeFile(path, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
@@ -116,8 +123,17 @@ func (c *Config) validate() error {
 	if c.Fwmark < 0 || c.Fwmark > 0xffffffff {
 		return fmt.Errorf("fwmark must fit in a uint32, got %d", c.Fwmark)
 	}
-	if c.TunPrefix == "" || len(c.TunPrefix) > 12 || strings.ContainsAny(c.TunPrefix, "/ \t\n") {
-		return fmt.Errorf("tunPrefix %q must be 1-12 characters with no spaces or slashes (interface names are at most 15, and the peerid follows)", c.TunPrefix)
+	if c.Interface == "" || len(c.Interface) > 15 || strings.ContainsAny(c.Interface, "/ \t\n") {
+		return fmt.Errorf("interface %q must be 1-15 characters with no spaces or slashes", c.Interface)
+	}
+	for id, a := range c.NodeAddresses {
+		n, err := strconv.Atoi(id)
+		if err != nil || n < 0 || n > 255 {
+			return fmt.Errorf("nodeAddresses: %q is not a node id (0-255)", id)
+		}
+		if ip, err := netip.ParseAddr(a); err != nil || !ip.Is4() {
+			return fmt.Errorf("nodeAddresses: node %s: %q is not an IPv4 address", id, a)
+		}
 	}
 	if c.IdentityPrefix != "" {
 		if _, ok := parsePrefix(c.IdentityPrefix); !ok {

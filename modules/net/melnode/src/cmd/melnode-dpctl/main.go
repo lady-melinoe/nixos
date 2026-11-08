@@ -5,7 +5,7 @@
 //
 //	melnode-dpctl [-object FILE] [-pin DIR] COMMAND [ARGS]
 //
-// Commands: up, down, links, link-set, link-del, tuns, tun-set, tun-del, routes, route-set,
+// Commands: up, down, links, link-set, link-del, device, routes, route-set,
 // inject, stats, punts.
 package main
 
@@ -36,13 +36,13 @@ func die(format string, args ...any) {
 func usage() {
 	fmt.Fprint(os.Stderr, `usage: melnode-dpctl [-object FILE] [-pin DIR] COMMAND [ARGS]
 
-  up -id N -port P -key FILE [-mtu M] [-fwmark F] [-timescale S] [-underload N]
+  up -id N -port P -key FILE [-name IFNAME] [-mtu M] [-fwmark F] [-timescale S] [-underload N]
                                  create the data plane and leave it running
   down                           tear it down
   links                          list links
   link-set ID PUBKEY [ENDPOINT]  add a link (or change its endpoint)
   link-del ID                    remove a link
-  tuns | tun-set ID NAME | tun-del ID
+  device                         the network device
   routes | route-set DST:NEXTHOP...   replace the whole route table
   inject LINK PROTO DST TTL HEX  send a control-plane packet
   stats [-all]                   counters (non-zero ones unless -all)
@@ -89,12 +89,13 @@ func main() {
 	var scale uint64
 	var upFlags *flag.FlagSet
 	var id, port, mtu, fwmark, underload uint
-	var keyFile string
+	var keyFile, ifName string
 	if cmd == "up" {
 		upFlags = flag.NewFlagSet("up", flag.ExitOnError)
 		upFlags.UintVar(&id, "id", 0, "node id")
 		upFlags.UintVar(&port, "port", 0, "UDP port")
-		upFlags.UintVar(&mtu, "mtu", 1416, "MTU of the per-peer devices")
+		upFlags.StringVar(&ifName, "name", "mel0", "name of the network device")
+		upFlags.UintVar(&mtu, "mtu", 1416, "MTU of the device")
 		upFlags.UintVar(&fwmark, "fwmark", 0, "fwmark for the UDP sockets")
 		upFlags.StringVar(&keyFile, "key", "", "file with the base64 private key")
 		upFlags.Uint64Var(&scale, "timescale", 1, "divide the protocol timers (tests)")
@@ -132,7 +133,7 @@ func main() {
 		}
 		reply, err := dp.DeviceSet(dpproto.DeviceSet{
 			LocalID: uint32(id), PrivateKey: readKey(keyFile), ListenPort: uint16(port),
-			Fwmark: uint32(fwmark), MTU: uint32(mtu),
+			Fwmark: uint32(fwmark), MTU: uint32(mtu), IfName: ifName,
 		})
 		if err != nil {
 			die("%v", err)
@@ -185,30 +186,12 @@ func main() {
 		if err := dp.LinkDel(parseID(args[0])); err != nil {
 			die("%v", err)
 		}
-	case "tuns":
-		ts, err := dp.TunList()
+	case "device":
+		dv, err := dp.Device()
 		if err != nil {
 			die("%v", err)
 		}
-		for _, t := range ts {
-			fmt.Printf("%d %s ifindex=%d\n", t.PeerID, t.Name, t.IfIndex)
-		}
-	case "tun-set":
-		if len(args) != 2 {
-			usage()
-		}
-		t, err := dp.TunSet(dpproto.TunSet{PeerID: parseID(args[0]), Name: args[1]})
-		if err != nil {
-			die("%v", err)
-		}
-		fmt.Printf("%d %s ifindex=%d\n", t.PeerID, t.Name, t.IfIndex)
-	case "tun-del":
-		if len(args) != 1 {
-			usage()
-		}
-		if err := dp.TunDel(parseID(args[0])); err != nil {
-			die("%v", err)
-		}
+		fmt.Printf("%s ifindex=%d\n", dv.Name, dv.IfIndex)
 	case "routes":
 		rs, err := dp.RouteList()
 		if err != nil {

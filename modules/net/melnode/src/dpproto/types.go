@@ -45,6 +45,8 @@ type DeviceSet struct {
 	ListenPort uint16
 	Fwmark     uint32
 	MTU        uint32
+	// IfName is the name of the device the data plane creates (at most 15 characters).
+	IfName string
 }
 
 type DeviceSetReply struct {
@@ -66,13 +68,9 @@ type LinkInfo struct {
 	RxBytes               uint64
 }
 
-type TunSet struct {
-	PeerID uint32
-	Name   string
-}
-
-type TunInfo struct {
-	PeerID  uint32
+// DeviceInfo is the one network device of a data plane: a link layer whose addresses are node
+// ids (one byte), so a route's next hop resolves to the node it goes through.
+type DeviceInfo struct {
 	Name    string
 	IfIndex uint32
 }
@@ -142,9 +140,7 @@ type Datapath interface {
 	LinkDel(peerID uint32) error
 	LinkList() ([]LinkInfo, error)
 
-	TunSet(TunSet) (TunInfo, error)
-	TunDel(peerID uint32) error
-	TunList() ([]TunInfo, error)
+	Device() (DeviceInfo, error)
 
 	RouteSet([]Route) error
 	RouteList() ([]Route, error)

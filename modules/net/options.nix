@@ -13,6 +13,14 @@ in
         uplink.nix, firewall.nix and melnode.nix.
       '';
     };
+    meshInterface = mkOption {
+      type = types.strMatching "[^/ \t\n]{1,15}";
+      default = "mel0";
+      description = ''
+        The network device melnode creates, through which every route to another node goes.
+        Shared by firewall.nix and melnode.nix.
+      '';
+    };
     outboundMarkBase = mkOption {
       type = types.ints.u32;
       default = 1000;

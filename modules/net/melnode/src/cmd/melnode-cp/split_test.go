@@ -84,7 +84,7 @@ func newTestNode(t *testing.T) *Node {
 	t.Helper()
 	n := &Node{localID: 1, log: &Logger{DiscardLogf, DiscardLogf}, links: map[uint32]*Link{}}
 	n.mtu.Store(defaultMTU)
-	n.router = newRouter(n, 1, nil, "", "")
+	n.router = newRouter(n, 1, nil, nil, "", "")
 	n.router.host = newFakeHost()
 	n.pathVector = newPathVector(n, 1)
 	return n
@@ -188,11 +188,9 @@ func (f *fakeDP) LinkList() ([]dpproto.LinkInfo, error) {
 	}
 	return out, nil
 }
-func (f *fakeDP) TunSet(dpproto.TunSet) (dpproto.TunInfo, error) {
-	return dpproto.TunInfo{}, dpproto.Errorf(dpproto.CodeUnsupported, "fake")
+func (f *fakeDP) Device() (dpproto.DeviceInfo, error) {
+	return dpproto.DeviceInfo{}, dpproto.Errorf(dpproto.CodeNotFound, "fake")
 }
-func (f *fakeDP) TunDel(uint32) error                 { return nil }
-func (f *fakeDP) TunList() ([]dpproto.TunInfo, error) { return nil, nil }
 func (f *fakeDP) RouteSet([]dpproto.Route) error      { return nil }
 func (f *fakeDP) RouteList() ([]dpproto.Route, error) { return nil, nil }
 func (f *fakeDP) Inject(m dpproto.Inject) error       { f.injects <- m; return nil }

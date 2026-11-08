@@ -60,7 +60,7 @@ type Config struct {
 }
 
 type layouts struct {
-	dev, peer, ep, setup, peerCtl, tun, inject, epArgs, punt *layout
+	dev, peer, ep, setup, peerCtl, inject, epArgs, punt *layout
 }
 
 // DP is a data plane. Create it with Open and configure it with DeviceSet.
@@ -99,14 +99,14 @@ var timers = map[string]uint64{
 }
 
 var mapNames = []string{
-	"dev_map", "peers", "kps", "idx_map", "peer_by_pub", "routes", "tun_by_peer",
-	"peer_by_ifindex", "punts", "punt_scratch", "hs_scratch", "stats", "peer_stats",
+	"dev_map", "peers", "kps", "idx_map", "peer_by_pub", "routes",
+	"punts", "punt_scratch", "hs_scratch", "stats", "peer_stats",
 	"ratelimit", "tick_map", "inj_scratch",
 }
 
 var progNames = []string{
-	"mn_xmit", "mn_rx", "mn_kick", "mn_setup", "mn_teardown", "mn_inject", "mn_tun_add",
-	"mn_tun_del", "mn_peer_commit", "mn_peer_remove", "mn_peer_set_ep",
+	"mn_xmit", "mn_rx", "mn_kick", "mn_setup", "mn_teardown", "mn_inject",
+	"mn_peer_commit", "mn_peer_remove", "mn_peer_set_ep",
 }
 
 // Open reads the object and checks it is the one this helper understands. It touches no kernel
@@ -162,11 +162,10 @@ func (d *DP) checkSpec() error {
 		return l
 	}
 	d.lay.ep = mk("bpfx_endpoint", map[string]int{"family": 2, "port": 2, "src_ifindex": 4, "addr": 16, "src": 16, "tos": 1})
-	d.lay.dev = mk("mn_dev", map[string]int{"port": 2, "local_id": 2, "mtu": 4, "fwmark": 4, "spriv": 32, "spub": 32})
+	d.lay.dev = mk("mn_dev", map[string]int{"port": 2, "local_id": 2, "mtu": 4, "fwmark": 4, "ifindex": 4, "ifname": 16, "spriv": 32, "spub": 32})
 	d.lay.peer = mk("mn_peer", map[string]int{"present": 4, "pub": 32, "ep": 0, "last_hs_boot_ns": 8})
-	d.lay.setup = mk("mn_setup_args", map[string]int{"xmit_fd": 4, "rx_fd": 4, "mtu": 4, "port": 2, "local_id": 2, "fwmark": 4, "stage": 4, "err": 4})
+	d.lay.setup = mk("mn_setup_args", map[string]int{"xmit_fd": 4, "rx_fd": 4, "mtu": 4, "port": 2, "local_id": 2, "fwmark": 4, "ifname": 16, "stage": 4, "err": 4})
 	d.lay.peerCtl = mk("mn_peer_ctl", map[string]int{"slot": 4, "err": 4})
-	d.lay.tun = mk("mn_tun_args", map[string]int{"name": 16, "peer": 4, "xmit_fd": 4, "ifindex": 4, "err": 4})
 	d.lay.inject = mk("mn_inject_args", map[string]int{"link": 4, "len": 4, "proto": 1, "dst": 1, "ttl": 1, "err": 4})
 	d.lay.epArgs = mk("mn_ep_args", map[string]int{"slot": 4, "err": 4, "ep": 0})
 	d.lay.punt = mk("mn_punt_hdr", map[string]int{"link": 4, "len": 4, "proto": 1, "src": 1, "dst": 1, "ttl": 1})
@@ -227,6 +226,9 @@ func (d *DP) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) {
 	}
 	if m.PrivateKey == ([32]byte{}) {
 		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeInvalid, "private key is zero")
+	}
+	if m.IfName == "" || len(m.IfName) > 15 || strings.ContainsAny(m.IfName, "/ \t\n") {
+		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeInvalid, "device name %q must be 1-15 characters with no spaces or slashes", m.IfName)
 	}
 	if d.isSet {
 		return d.sameConfig(m)
@@ -339,6 +341,7 @@ func (d *DP) create(m dpproto.DeviceSet) error {
 	d.lay.setup.setU16(ctx, "port", m.ListenPort)
 	d.lay.setup.setU16(ctx, "local_id", uint16(m.LocalID))
 	d.lay.setup.setU32(ctx, "fwmark", m.Fwmark)
+	copy(d.lay.setup.bytes(ctx, "ifname"), m.IfName)
 	ret, out, err := d.runSyscall("mn_setup", ctx)
 	if err != nil {
 		return cleanup(fmt.Errorf("ebpfdp: running mn_setup: %w", err))
@@ -373,6 +376,7 @@ func (d *DP) create(m dpproto.DeviceSet) error {
 func setupError(stage, errno int32, port uint16) error {
 	what := map[int32]string{
 		1: "deriving the device keys", 2: fmt.Sprintf("opening UDP port %d", port), 3: "opening the IPv6 socket",
+		4: "creating the network device",
 	}[stage]
 	if what == "" {
 		what = fmt.Sprintf("stage %d", stage)
@@ -428,6 +432,7 @@ func (d *DP) loadPinned() (cfg dpproto.DeviceSet, pub [32]byte, ok bool) {
 		ListenPort: d.lay.dev.getU16(dev, "port"),
 		Fwmark:     d.lay.dev.getU32(dev, "fwmark"),
 		MTU:        d.lay.dev.getU32(dev, "mtu"),
+		IfName:     strings.TrimRight(string(d.lay.dev.bytes(dev, "ifname")), "\x00"),
 	}
 	copy(cfg.PrivateKey[:], d.lay.dev.bytes(dev, "spriv"))
 	copy(pub[:], d.lay.dev.bytes(dev, "spub"))
@@ -780,112 +785,30 @@ func (d *DP) LinkList() ([]dpproto.LinkInfo, error) {
 	return out, nil
 }
 
-// ---- per-peer devices ----
+// ---- the device ----
 
-func (d *DP) tunIfindex(peerID uint32) (uint32, error) {
-	var ifx uint32
-	if err := d.maps["tun_by_peer"].Lookup(peerID, &ifx); err != nil {
-		return 0, fmt.Errorf("ebpfdp: reading device of %d: %w", peerID, err)
-	}
-	return ifx, nil
-}
-
-func (d *DP) TunSet(m dpproto.TunSet) (dpproto.TunInfo, error) {
+// Device is the data plane's network device. It exists as long as the data plane does; if something
+// removed it behind our back the error says so.
+func (d *DP) Device() (dpproto.DeviceInfo, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if err := d.ready(); err != nil {
-		return dpproto.TunInfo{}, err
+		return dpproto.DeviceInfo{}, err
 	}
-	if m.PeerID >= maxPeers || m.PeerID == d.devCfg.LocalID {
-		return dpproto.TunInfo{}, errRange("peer id", m.PeerID)
+	dev := d.lay.dev.new()
+	if err := d.maps["dev_map"].Lookup(uint32(0), dev); err != nil {
+		return dpproto.DeviceInfo{}, fmt.Errorf("ebpfdp: reading the device: %w", err)
 	}
-	if m.Name == "" || len(m.Name) > 15 {
-		return dpproto.TunInfo{}, dpproto.Errorf(dpproto.CodeInvalid, "device name %q must be 1-15 characters", m.Name)
+	ifx := d.lay.dev.getU32(dev, "ifindex")
+	name := strings.TrimRight(string(d.lay.dev.bytes(dev, "ifname")), "\x00")
+	if ifx == 0 {
+		return dpproto.DeviceInfo{}, dpproto.Errorf(dpproto.CodeNotFound, "the data plane has no device")
 	}
-	ifx, err := d.tunIfindex(m.PeerID)
+	ifc, err := net.InterfaceByIndex(int(ifx))
 	if err != nil {
-		return dpproto.TunInfo{}, err
+		return dpproto.DeviceInfo{}, dpproto.Errorf(dpproto.CodeNotFound, "device %q (ifindex %d) is gone: %v", name, ifx, err)
 	}
-	if ifx != 0 {
-		ifc, err := net.InterfaceByIndex(int(ifx))
-		if err == nil {
-			if ifc.Name != m.Name {
-				return dpproto.TunInfo{}, dpproto.Errorf(dpproto.CodeExists, "device for %d is already %q", m.PeerID, ifc.Name)
-			}
-			return dpproto.TunInfo{PeerID: m.PeerID, Name: ifc.Name, IfIndex: ifx}, nil
-		}
-		// The device was removed behind our back: forget it and make a new one.
-		d.forgetTun(m.PeerID)
-	}
-	l := d.lay.tun
-	ctx := l.new()
-	copy(l.bytes(ctx, "name"), m.Name)
-	l.setU32(ctx, "peer", m.PeerID)
-	l.setU32(ctx, "xmit_fd", uint32(d.progs["mn_xmit"].FD()))
-	ret, out, err := d.runSyscall("mn_tun_add", ctx)
-	if err != nil {
-		return dpproto.TunInfo{}, dpproto.Errorf(dpproto.CodeInternal, "creating device %q: %v", m.Name, err)
-	}
-	if ret != 0 {
-		e := int32(l.getU32(out, "err"))
-		return dpproto.TunInfo{}, dpproto.Errorf(codeFor(e), "creating device %q: %v", m.Name, unix.Errno(-e))
-	}
-	return dpproto.TunInfo{PeerID: m.PeerID, Name: m.Name, IfIndex: l.getU32(out, "ifindex")}, nil
-}
-
-// forgetTun clears the data plane's record of a device that no longer exists.
-func (d *DP) forgetTun(peerID uint32) {
-	var ifx uint32
-	if d.maps["tun_by_peer"].Lookup(peerID, &ifx) == nil && ifx != 0 {
-		_ = d.maps["peer_by_ifindex"].Delete(ifx)
-	}
-	_ = d.maps["tun_by_peer"].Update(peerID, uint32(0), ebpf.UpdateAny)
-}
-
-func (d *DP) TunDel(peerID uint32) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if err := d.ready(); err != nil {
-		return err
-	}
-	if peerID >= maxPeers {
-		return errRange("peer id", peerID)
-	}
-	l := d.lay.tun
-	ctx := l.new()
-	l.setU32(ctx, "peer", peerID)
-	ret, out, err := d.runSyscall("mn_tun_del", ctx)
-	if err != nil {
-		return dpproto.Errorf(dpproto.CodeInternal, "deleting device of %d: %v", peerID, err)
-	}
-	if ret != 0 {
-		return dpproto.Errorf(codeFor(int32(l.getU32(out, "err"))), "no device for %d", peerID)
-	}
-	return nil
-}
-
-func (d *DP) TunList() ([]dpproto.TunInfo, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if err := d.ready(); err != nil {
-		return nil, err
-	}
-	var out []dpproto.TunInfo
-	for id := uint32(0); id < maxPeers; id++ {
-		ifx, err := d.tunIfindex(id)
-		if err != nil {
-			return nil, err
-		}
-		if ifx == 0 {
-			continue
-		}
-		ifc, err := net.InterfaceByIndex(int(ifx))
-		if err != nil {
-			continue
-		}
-		out = append(out, dpproto.TunInfo{PeerID: id, Name: ifc.Name, IfIndex: ifx})
-	}
-	return out, nil
+	return dpproto.DeviceInfo{Name: ifc.Name, IfIndex: ifx}, nil
 }
 
 // ---- routes ----

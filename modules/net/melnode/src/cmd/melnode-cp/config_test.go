@@ -22,7 +22,7 @@ func validTestConfig() *Config {
 		LocalPrivkey:         testKey(9),
 		MTU:                  defaultMTU,
 		IntrospectIntervalMs: 1000,
-		TunPrefix:            "node-",
+		Interface:            "mel0",
 		Links:                []LinkConfig{{PeerID: 2, PeerPubkey: testKey(2), Endpoint: "192.0.2.2:60198"}},
 	}
 }

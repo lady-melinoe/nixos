@@ -3,6 +3,7 @@
   lib,
   pkgs,
   inputs,
+  melinoeLib,
   ...
 }:
 let
@@ -11,7 +12,8 @@ let
   net = config.melinoe.net;
   cluster = config.melinoe.cluster;
 
-  tunPrefix = "node-";
+  # The one network device: every route to another node goes through it.
+  interface = net.meshInterface;
   controlSocket = "/run/melnode/control.sock";
 
   # The control plane (userspace), and the data plane: bpfx, a small generic kernel module, and the
@@ -90,11 +92,17 @@ let
     builtins.readFile ./melnode/mnctl.py
   );
 
+  # The address routes to each node go via: the device maps it to the node's id.
+  nodeAddresses = lib.mapAttrs' (
+    _: node:
+    lib.nameValuePair (toString node.id) (melinoeLib.ip.nodeAddress cluster.networks.nodes node.id)
+  ) cluster.nodes;
+
   helperConfig = pkgs.writeText "melnode-helper.json" (
     builtins.toJSON {
       node_id = config.melinoe.node.id;
       table_base = net.outboundMarkBase;
-      tun_prefix = tunPrefix;
+      inherit interface;
       control_socket = controlSocket;
       pub_ips = net.publicPrefixes;
       extra_routes = cfg.extraRoutes;
@@ -106,7 +114,7 @@ let
 
   hook =
     kind:
-    pkgs.writeShellScript "melnode-tun-${kind}-hook" ''
+    pkgs.writeShellScript "melnode-peer-${kind}-hook" ''
       exec ${helperCmd} hook-${kind} "$@"
     '';
 
@@ -116,13 +124,13 @@ let
       localPort = cfg.port;
       localPrivkeyPath = cfg.privateKeyFile;
       inherit (cfg) mtu introspectIntervalMs;
-      inherit tunPrefix;
+      inherit interface nodeAddresses;
       fwmark = net.uplinkMark;
       identityPrefix = "${config.melinoe.node.address}/32";
       inherit controlSocket;
       introspectListen = ":${toString cfg.introspectPort}";
-      tunCreateHookBin = "${hook "create"}";
-      tunDestroyHookBin = "${hook "destroy"}";
+      peerCreateHookBin = "${hook "create"}";
+      peerDestroyHookBin = "${hook "destroy"}";
       link = links;
     }
     // {
@@ -262,7 +270,7 @@ in
           description = "Mirror non-mesh routes from the main table into the uplink fwmark table";
           after = [ "network-pre.target" ];
           wants = [ "network-pre.target" ];
-          serviceConfig.ExecStart = "${routeMirror}/bin/melinoe-uplink-routes --to-table ${toString net.uplinkMark} --exclude-prefix ${tunPrefix}";
+          serviceConfig.ExecStart = "${routeMirror}/bin/melinoe-uplink-routes --to-table ${toString net.uplinkMark} --exclude-prefix ${interface}";
         }
       ];
 

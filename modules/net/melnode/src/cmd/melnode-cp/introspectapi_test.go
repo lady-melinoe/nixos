@@ -44,9 +44,9 @@ func (d *countingDP) LinkList() ([]dpproto.LinkInfo, error) {
 	return []dpproto.LinkInfo{{PeerID: 2, TxBytes: 7}}, nil
 }
 
-func (d *countingDP) TunList() ([]dpproto.TunInfo, error) {
+func (d *countingDP) Device() (dpproto.DeviceInfo, error) {
 	d.hit()
-	return []dpproto.TunInfo{{PeerID: 2, Name: "node-2", IfIndex: 7}}, nil
+	return dpproto.DeviceInfo{Name: "mel0", IfIndex: 7}, nil
 }
 
 func (d *countingDP) RouteList() ([]dpproto.Route, error) {
@@ -107,10 +107,10 @@ func TestIntrospectTCPServesSnapshot(t *testing.T) {
 		t.Fatalf("requests reached the data plane: %d calls, want %d", got, before)
 	}
 
-	var tuns []tunInfo
-	getJSON(t, a, "/tuns", &tuns)
-	if len(tuns) != 1 || tuns[0].Name != "node-2" || tuns[0].NextHop == nil || *tuns[0].NextHop != 2 {
-		t.Fatalf("/tuns = %+v, want node-2 via 2", tuns)
+	var dev deviceInfo
+	getJSON(t, a, "/device", &dev)
+	if dev.Name != "mel0" || dev.IfIndex != 7 {
+		t.Fatalf("/device = %+v, want mel0 (ifindex 7)", dev)
 	}
 	var sum summaryInfo
 	h := getJSON(t, a, "/summary", &sum)
@@ -121,7 +121,7 @@ func TestIntrospectTCPServesSnapshot(t *testing.T) {
 	if err != nil || !at.Equal(sum.GeneratedAt) {
 		t.Errorf("X-Melnode-Generated-At %q vs generated_at %v", h.Get("X-Melnode-Generated-At"), sum.GeneratedAt)
 	}
-	if sum.Tuns != 1 || sum.LinksTotal != 1 || !sum.DataplaneAttached {
+	if sum.Device != "mel0" || sum.LinksTotal != 1 || !sum.DataplaneAttached {
 		t.Errorf("/summary = %+v", sum)
 	}
 }
@@ -172,9 +172,9 @@ func TestIntrospectRefreshWaitsForGate(t *testing.T) {
 	if s := a.snap.Load(); s == first {
 		t.Fatal("refresh didn't store a snapshot")
 	}
-	var tuns []tunInfo
-	getJSON(t, a, "/tuns", &tuns)
-	if len(tuns) != 1 {
-		t.Fatalf("snapshot built without the data plane: /tuns = %+v", tuns)
+	var dev deviceInfo
+	getJSON(t, a, "/device", &dev)
+	if dev.Name != "mel0" {
+		t.Fatalf("snapshot built without the data plane: /device = %+v", dev)
 	}
 }

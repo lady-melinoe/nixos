@@ -17,7 +17,7 @@ func TestReconcileEnsuresAdoptedTun(t *testing.T) {
 			return
 		}
 	}
-	t.Fatalf("EnsureTun(5) never called for an existing tun; ops=%v", h.ops)
+	t.Fatalf("EnsurePeer(5) never called for an existing tun; ops=%v", h.ops)
 }
 
 func TestPathVectorNeedsSession(t *testing.T) {

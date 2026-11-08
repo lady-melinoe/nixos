@@ -36,7 +36,7 @@ func newPVNet(t *testing.T, ids ...uint32) *pvNet {
 		id := id
 		node := &Node{localID: id, log: &Logger{DiscardLogf, DiscardLogf}}
 		node.mtu.Store(defaultMTU)
-		node.router = newRouter(node, id, nil, "", "")
+		node.router = newRouter(node, id, nil, nil, "", "")
 		node.router.host = newFakeHost()
 		pv := newPathVector(node, id)
 		pv.sendHook = func(peer *Link, wire []byte) {
@@ -243,7 +243,9 @@ func newFakeHost() *fakeHost {
 
 func (f *fakeHost) Ready() bool { return true }
 
-func (f *fakeHost) Tuns() ([]uint32, error) {
+func (f *fakeHost) EnsureDevice() error { return nil }
+
+func (f *fakeHost) Peers() ([]uint32, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []uint32
@@ -264,7 +266,7 @@ func (f *fakeHost) ProgramRoutes(want map[uint32]uint32) error {
 	return nil
 }
 
-func (f *fakeHost) TunName(id uint32) (string, bool) {
+func (f *fakeHost) PeerNexthop(id uint32) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.tuns[id] {
@@ -273,7 +275,7 @@ func (f *fakeHost) TunName(id uint32) (string, bool) {
 	return fmt.Sprintf("t-%d", id), true
 }
 
-func (f *fakeHost) EnsureTun(id uint32) error {
+func (f *fakeHost) EnsurePeer(id uint32) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failCreate[id] > 0 {
@@ -285,7 +287,7 @@ func (f *fakeHost) EnsureTun(id uint32) error {
 	return nil
 }
 
-func (f *fakeHost) DestroyTun(id uint32) {
+func (f *fakeHost) DestroyPeer(id uint32) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.tuns, id)
@@ -307,10 +309,10 @@ func (f *fakeHost) ListRoutes() (map[pvPrefix]string, error) {
 	return out, nil
 }
 
-func (f *fakeHost) ReplaceRoute(p pvPrefix, dev string) error {
+func (f *fakeHost) ReplaceRoute(p pvPrefix, nexthop string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.routes[p] = dev
+	f.routes[p] = nexthop
 	f.ops = append(f.ops, fmt.Sprintf("route+%v", p))
 	return nil
 }
@@ -381,7 +383,7 @@ func TestReconcileRetriesFailedTun(t *testing.T) {
 	}
 }
 
-func TestReconcileOrdersTunBeforeRoute(t *testing.T) {
+func TestReconcileOrdersPeerBeforeRoute(t *testing.T) {
 	n := newPVNet(t, 1, 2)
 	p := mustPrefix(t, "10.9.0.5/32")
 	n.nodes[2].AdvertisePrefix(p)

@@ -80,6 +80,32 @@ pkgs.testers.runNixOSTest {
         a.wait_until_succeeds("ping -c1 -W1 198.18.0.3", timeout=90)
         c.wait_until_succeeds("ping -c1 -W1 198.18.0.1", timeout=90)
 
+    with subtest("one device carries the whole mesh"):
+        links_b = b.succeed("ip -o link show")
+        assert "mel0" in links_b and "node-" not in links_b, links_b
+        # a neighbour entry per reachable node maps the address routes go via to the node's id
+        neigh = b.succeed("ip -4 neigh show dev mel0")
+        for gw, ll in (("198.18.0.1", "01"), ("198.18.0.3", "03")):
+            assert f"{gw} lladdr {ll} PERMANENT" in neigh, neigh
+        route = b.succeed("ip -4 route get 198.18.0.3")
+        assert "via 198.18.0.3 dev mel0" in route, route
+        # a reaches c through b: the route it has is via c, the data plane relays
+        route = a.succeed("ip -4 route get 198.18.0.3")
+        assert "via 198.18.0.3 dev mel0" in route, route
+        # per-node policy routing and the conntrack-pinning map, keyed by the sender's id
+        assert "default via 198.18.0.1 dev mel0" in b.succeed("ip -4 route show table 1001"), b.succeed("ip -4 route show table 1001")
+        ids = b.succeed("nft list map inet mangle melinoe_peer_ids")
+        assert "0x1 : 0x000003e9" in ids and "0x3 : 0x000003eb" in ids, ids
+
+    with subtest("a reply goes back the way the request came in"):
+        # c owns an address on a vm-* interface, which melnode-helper advertises
+        c.succeed("ip link add vm-test type dummy && ip addr add 198.18.1.77/32 dev vm-test && ip link set vm-test up && ip route replace 198.18.1.77/32 dev vm-test")
+        a.wait_until_succeeds("ip -4 route get 198.18.1.77 | grep -q 'via 198.18.0.3 dev mel0'", timeout=60)
+        a.wait_until_succeeds("ping -c1 -W1 198.18.1.77", timeout=60)
+        # the request was pinned to the node it came from (a, mark 1000 + 1), by the sender's link address
+        pinned = c.succeed("grep 198.18.1.77 /proc/net/nf_conntrack")
+        assert "mark=1001" in pinned, pinned
+
     with subtest("the mesh recovers from an unclean restart"):
         a.succeed("systemctl kill -s KILL --kill-whom=main melnode-cp.service")
         a.wait_until_succeeds("systemctl is-active melnode-cp.service")
@@ -102,19 +128,19 @@ pkgs.testers.runNixOSTest {
         a.wait_until_fails("ping -c1 -W1 198.18.0.3", timeout=90)
 
     with subtest("a restart after a crash builds a fresh data plane with the new configuration"):
-        ifindex = lambda m: m.succeed("cat /sys/class/net/node-2/ifindex").strip()
+        ifindex = lambda m: m.succeed("cat /sys/class/net/mel0/ifindex").strip()
         before = ifindex(a)
         crash_and_hold(a)
         start_with(a, "mtu-1400")
         a.wait_until_succeeds("ping -c1 -W1 198.18.0.2", timeout=90)
         assert ifindex(a) != before, "the data plane the crash left behind was reused"
-        assert a.succeed("cat /sys/class/net/node-2/mtu").strip() == "1400"
+        assert a.succeed("cat /sys/class/net/mel0/mtu").strip() == "1400"
         a.fail("journalctl -u melnode-cp.service -b | grep -q 'another configuration'")
 
     with subtest("a clean stop leaves nothing behind"):
         # a still has its link to b; c's was dropped from b's configuration above
         a.succeed("systemctl stop melnode-cp.service")
-        assert a.succeed("ip -o link show | grep -c 'node-' || true").strip() == "0", a.succeed("ip -o link show")
+        assert a.succeed("ip -o link show | grep -c 'mel0' || true").strip() == "0", a.succeed("ip -o link show")
         assert not udp_bound(a), "the UDP socket outlived a clean stop"
         a.succeed("test ! -e /sys/fs/bpf/melnode/dev_map")
         a.succeed("systemctl start melnode-cp.service")
