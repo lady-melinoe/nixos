@@ -141,9 +141,13 @@ in
             ]
             ++ map (name: "oifname ${quote name} masquerade") net.uplinkNames
           ))
-          (block "chain output" [ "type nat hook output priority dstnat; policy accept;" ])
+          (block "chain output"
+            [
+              "type nat hook output priority dstnat; policy accept;"
               "ip daddr $hostaddr dnat to meta l4proto . th dport map @portfwd"
               "ip daddr @pubroutefix dnat to meta l4proto . th dport map @portfwd"
+            ]
+          )
         ])
 
         (block "table inet mangle" [
