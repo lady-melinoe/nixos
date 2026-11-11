@@ -264,7 +264,7 @@ def teardown_peer(cfg: Config, peer_id: int, ifname: str, gateway: str) -> None:
 
 def live_peers(cfg: Config) -> dict[int, str] | None:
     """peer id -> gateway for every node with a permanent neighbour entry on the device."""
-    neighs = run_json(["ip", "-4", "-j", "neigh", "show", "dev", cfg.interface])
+    neighs = run_json(["ip", "-6", "-j", "neigh", "show", "dev", cfg.interface])
     if neighs is None:
         return None
     out: dict[int, str] = {}
