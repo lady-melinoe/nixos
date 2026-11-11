@@ -7,10 +7,10 @@
         ]
       },
       "locked": {
-        "lastModified": 1794425608,
-        "narHash": "sha256-TSTyqFmnm8JxGlSFu9WmdHlxVrCJWObhPlyH7Zr51CI=",
+        "lastModified": 1794431166,
+        "narHash": "sha256-ZfHseaVCu5Tw+0i/Rqu1zxzXxFvyUrZS2LswiSOJxb8=",
         "ref": "refs/heads/mommy",
-        "rev": "1b1726ce3c3c6021f39fc8ad7b47dac70a9168d4",
+        "rev": "3a04cdd20c40c394d3c816b518c837d3716bece8",
         "revCount": 20,
         "type": "git",
         "url": "https://gitlab.ucc.asn.au/melinoe/bpfx-kernel.git"
@@ -117,11 +117,11 @@
     "melinoe-vpn-ebpf": {
       "flake": false,
       "locked": {
-        "lastModified": 1794425663,
-        "narHash": "sha256-c6iBZ1FA4l3HQDRrpzqC6JGu9vDcawljzg19/VSs6NM=",
+        "lastModified": 1794432293,
+        "narHash": "sha256-nimg/yh/KrS4xEtMRlFOfRTJaYbwzJ2vTn8JMXViydw=",
         "ref": "refs/heads/mommy",
-        "rev": "4c5bd4967937f66efcbb5b56edb07a5654d02ff3",
-        "revCount": 17,
+        "rev": "23bad015f5d71d802327281f59f7288686c07811",
+        "revCount": 18,
         "type": "git",
         "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-ebpf.git"
       },
