@@ -18,19 +18,7 @@ func (n *Node) handlePunt(p dpproto.Punt) {
 	}
 	switch p.Proto {
 	case livenessProto:
-		switch payload[0] {
-		case livenessVers1:
-			if len(payload) < 6 {
-				return
-			}
-			length := binary.BigEndian.Uint16(payload[4:6])
-			if int(length) > len(payload) || int(length) < livenessV1Size {
-				return
-			}
-			link.monitor.handlePacket(payload[:length])
-		default:
-			n.log.Verbosef("proto-1 packet with unknown version %d from %v", payload[0], link)
-		}
+		n.log.Verbosef("proto-1 packet from %v reached the control plane; the data plane handles liveness", link)
 	case pvProto:
 		switch payload[0] {
 		case pvVers2:

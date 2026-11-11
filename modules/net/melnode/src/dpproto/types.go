@@ -66,6 +66,13 @@ type LinkInfo struct {
 	LastHandshakeUnixNano int64
 	TxBytes               uint64
 	RxBytes               uint64
+	LivenessState         uint8
+	LivenessDiag          uint8
+	Passive               bool
+	LocalDiscriminator    uint32
+	RemoteDiscriminator   uint32
+	RemoteDesiredMinTXUs  uint32
+	RemoteRequiredMinRXUs uint32
 }
 
 // DeviceInfo is the one network device of a data plane: a link layer whose addresses are node
@@ -124,6 +131,18 @@ type Punt struct {
 	Payload []byte
 }
 
+type LivenessForce struct {
+	Link  uint32
+	State uint8
+	Diag  uint8
+}
+
+type LivenessEvent struct {
+	Link  uint32
+	State uint8
+	Diag  uint8
+}
+
 type Inject struct {
 	Link    uint32
 	Proto   uint8
@@ -146,6 +165,7 @@ type Datapath interface {
 	RouteList() ([]Route, error)
 
 	Inject(Inject) error
+	LivenessForce(LivenessForce) error
 
 	Done() <-chan struct{}
 	Err() error

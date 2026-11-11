@@ -56,11 +56,13 @@ type Config struct {
 	Variables map[string]uint64
 	// OnPunt receives control-plane packets, from its own goroutine; it must not block.
 	OnPunt func(dpproto.Punt)
-	Logf   func(format string, args ...any)
+	// OnLiveness receives link liveness changes, from its own goroutine; it must not block.
+	OnLiveness func(dpproto.LivenessEvent)
+	Logf       func(format string, args ...any)
 }
 
 type layouts struct {
-	dev, peer, ep, addr, setup, peerArgs, peerUpd, route, inject, punt *layout
+	dev, peer, ep, addr, setup, peerArgs, peerUpd, route, inject, punt, bfd, bfdArgs, bfdEvent *layout
 }
 
 // DP is a data plane. Create it with Open and configure it with DeviceSet.
@@ -78,6 +80,7 @@ type DP struct {
 	maps   map[string]*ebpf.Map
 	progs  map[string]*ebpf.Program
 	rd     *ringbuf.Reader
+	erd    *ringbuf.Reader
 
 	done    chan struct{}
 	errOnce sync.Once
@@ -86,11 +89,11 @@ type DP struct {
 
 var _ dpproto.Datapath = (*DP)(nil)
 
-var mapNames = []string{"wg_dev", "wg_peers", "wg_peer_by_pub", "routes", "punts", "stats"}
+var mapNames = []string{"wg_dev", "wg_peers", "wg_peer_by_pub", "routes", "punts", "stats", "mn_bfd", "mn_events"}
 
 var progNames = []string{
 	"wg_set_identity", "wg_setup", "wg_teardown", "wg_peer_prepare", "wg_peer_update",
-	"wg_peer_remove", "mn_route_set", "mn_inject",
+	"wg_peer_remove", "mn_route_set", "mn_inject", "mn_bfd_force",
 }
 
 // Open reads the object and checks it is the one this helper understands. It touches no kernel
@@ -159,6 +162,9 @@ func (d *DP) checkSpec() error {
 	d.lay.route = mk("mn_route_args", map[string]int{"dst": 4, "nexthop": 4, "present": 4, "err": 4})
 	d.lay.inject = mk("mn_inject_args", map[string]int{"link": 4, "len": 4, "proto": 1, "dst": 1, "ttl": 1, "err": 4})
 	d.lay.punt = mk("mn_punt_hdr", map[string]int{"link": 4, "len": 4, "proto": 1, "src": 1, "dst": 1, "ttl": 1})
+	d.lay.bfd = mk("mn_bfd", map[string]int{"state": 4, "diag": 4, "passive": 4, "local_disc": 4, "remote_disc": 4, "remote_tx_us": 4, "remote_rx_us": 4})
+	d.lay.bfdArgs = mk("mn_bfd_args", map[string]int{"slot": 4, "err": 4, "state": 4, "diag": 4})
+	d.lay.bfdEvent = mk("mn_bfd_event", map[string]int{"link": 4, "state": 4, "diag": 4})
 	if err != nil {
 		return err
 	}
@@ -407,6 +413,10 @@ func (d *DP) Detach() {
 		d.rd.Close()
 		d.rd = nil
 	}
+	if d.erd != nil {
+		d.erd.Close()
+		d.erd = nil
+	}
 	d.closeHandles()
 	d.isSet = false
 	d.fail(errors.New("ebpfdp: detached"))
@@ -435,8 +445,60 @@ func (d *DP) startPunts() error {
 	if err != nil {
 		return fmt.Errorf("ebpfdp: ring buffer: %w", err)
 	}
-	d.rd = rd
+	erd, err := ringbuf.NewReader(d.maps["mn_events"])
+	if err != nil {
+		rd.Close()
+		return fmt.Errorf("ebpfdp: event ring buffer: %w", err)
+	}
+	d.rd, d.erd = rd, erd
 	go d.readPunts(rd)
+	go d.readEvents(erd)
+	return nil
+}
+
+func (d *DP) readEvents(rd *ringbuf.Reader) {
+	l := d.lay.bfdEvent
+	for {
+		rec, err := rd.Read()
+		if err != nil {
+			if !errors.Is(err, ringbuf.ErrClosed) {
+				d.fail(fmt.Errorf("ebpfdp: reading liveness events: %w", err))
+			}
+			return
+		}
+		b := rec.RawSample
+		if len(b) < l.size {
+			continue
+		}
+		if d.cfg.OnLiveness != nil {
+			d.cfg.OnLiveness(dpproto.LivenessEvent{
+				Link:  l.getU32(b, "link"),
+				State: uint8(l.getU32(b, "state")),
+				Diag:  uint8(l.getU32(b, "diag")),
+			})
+		}
+	}
+}
+
+// LivenessForce sets a link's liveness state from a local decision (path-vector timeout, admin down).
+func (d *DP) LivenessForce(m dpproto.LivenessForce) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := d.ready(); err != nil {
+		return err
+	}
+	l := d.lay.bfdArgs
+	ctx := l.new()
+	l.setU32(ctx, "slot", m.Link)
+	l.setU32(ctx, "state", uint32(m.State))
+	l.setU32(ctx, "diag", uint32(m.Diag))
+	ret, _, err := d.runSyscall("mn_bfd_force", ctx)
+	if err != nil {
+		return dpproto.Errorf(dpproto.CodeInternal, "liveness of link %d: %v", m.Link, err)
+	}
+	if ret != 0 {
+		return dpproto.Errorf(dpproto.CodeNotFound, "no liveness for link %d", m.Link)
+	}
 	return nil
 }
 
@@ -484,6 +546,10 @@ func (d *DP) teardownLocked() {
 	if d.rd != nil {
 		d.rd.Close()
 		d.rd = nil
+	}
+	if d.erd != nil {
+		d.erd.Close()
+		d.erd = nil
 	}
 	if d.progs != nil {
 		if _, _, err := d.runSyscall("wg_teardown", make([]byte, 8)); err != nil {
@@ -686,6 +752,17 @@ func (d *DP) LinkList() ([]dpproto.LinkInfo, error) {
 			TxBytes:               pl.getU64(raw, "tx_bytes"),
 		}
 		copy(li.PubKey[:], pl.bytes(raw, "pub"))
+		bl := d.lay.bfd
+		braw := bl.new()
+		if err := d.maps["mn_bfd"].Lookup(slot, braw); err == nil {
+			li.LivenessState = uint8(bl.getU32(braw, "state"))
+			li.LivenessDiag = uint8(bl.getU32(braw, "diag"))
+			li.Passive = bl.getU32(braw, "passive") != 0
+			li.LocalDiscriminator = bl.getU32(braw, "local_disc")
+			li.RemoteDiscriminator = bl.getU32(braw, "remote_disc")
+			li.RemoteDesiredMinTXUs = bl.getU32(braw, "remote_tx_us")
+			li.RemoteRequiredMinRXUs = bl.getU32(braw, "remote_rx_us")
+		}
 		out = append(out, li)
 	}
 	return out, nil

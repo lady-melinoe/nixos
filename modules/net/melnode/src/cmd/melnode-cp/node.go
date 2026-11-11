@@ -6,7 +6,6 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"melnode/dpproto"
 	"melnode/ebpfdp"
@@ -22,7 +21,7 @@ type Node struct {
 	dpConfig ebpfdp.Config
 
 	// dial opens a data plane; tests replace it.
-	dial    func(onPunt func(dpproto.Punt)) (dpproto.Datapath, error)
+	dial    func(onPunt func(dpproto.Punt), onLiveness func(dpproto.LivenessEvent)) (dpproto.Datapath, error)
 	verbose bool
 
 	router     *Router
@@ -30,9 +29,6 @@ type Node struct {
 	links      map[uint32]*Link
 
 	mtu atomic.Int32
-
-	// sessionLifetime, divided by the data plane's TimeScale.
-	sessionLifetime time.Duration
 
 	dpc    atomic.Pointer[dpHandle]
 	pubkey atomic.Pointer[[32]byte]
@@ -108,10 +104,6 @@ func newNode(cfg *Config, verbose bool) (*Node, error) {
 		n.log = NewLogger(LogLevelVerbose, "")
 	}
 	n.mtu.Store(int32(cfg.MTU))
-	n.sessionLifetime = sessionLifetime
-	if cfg.TimeScale > 1 {
-		n.sessionLifetime /= time.Duration(cfg.TimeScale)
-	}
 
 	var identityPrefix *pvPrefix
 	if cfg.IdentityPrefix != "" {

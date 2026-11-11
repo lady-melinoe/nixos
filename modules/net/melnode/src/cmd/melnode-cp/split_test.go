@@ -68,18 +68,6 @@ func TestAttachHoldDefersKernelRouteRemoval(t *testing.T) {
 	}
 }
 
-func livenessPunt(link uint32, st linkState, padding int) dpproto.Punt {
-	pkt := livenessPacket{
-		State:           st,
-		DetectMult:      defaultDetectMult,
-		MyDiscriminator: 0xabcd,
-		DesiredMinTX:    defaultDesiredMinTX,
-		RequiredMinRX:   defaultRequiredMinRX,
-	}
-	payload := append(pkt.encode(), make([]byte, padding)...)
-	return dpproto.Punt{Ingress: link, Proto: livenessProto, Src: uint8(link), Dst: 1, TTL: linkLocalTTL, Payload: payload}
-}
-
 func newTestNode(t *testing.T) *Node {
 	t.Helper()
 	n := &Node{localID: 1, log: &Logger{DiscardLogf, DiscardLogf}, links: map[uint32]*Link{}}
@@ -97,38 +85,18 @@ func TestHandlePuntDispatch(t *testing.T) {
 	l.monitor.Start()
 	defer l.monitor.Stop()
 
-	n.handlePunt(livenessPunt(2, linkStateDown, 12))
-	if got := l.monitor.State(); got != linkStateInit {
-		t.Fatalf("state after liveness punt = %v, want Init", got)
-	}
-
 	for _, p := range []dpproto.Punt{
 		{Ingress: 2, Proto: livenessProto},
-		{Ingress: 2, Proto: livenessProto, Payload: []byte{livenessVers1}},
-		{Ingress: 2, Proto: livenessProto, Payload: []byte{9, 0, 0, 0, 0, 24}},
-		{Ingress: 2, Proto: livenessProto, Payload: []byte{livenessVers1, 0, 0, 0, 0xff, 0xff, 0, 0}},
+		{Ingress: 2, Proto: livenessProto, Payload: []byte{1, 0, 2, 3, 0, 24}},
 		{Ingress: 2, Proto: pvProto, Payload: []byte{pvVers2, 0, 0}},
 		{Ingress: 2, Proto: 77, Payload: []byte{1, 2, 3, 4}},
 		{Ingress: 99, Proto: livenessProto, Payload: []byte{1, 2, 3, 4, 5, 6, 7, 8}},
 	} {
 		n.handlePunt(p)
 	}
-	if got := l.monitor.State(); got != linkStateInit {
-		t.Fatalf("state after garbage = %v, want Init", got)
+	if got := l.monitor.State(); got != linkStateDown {
+		t.Fatalf("state after punts = %v, want Down (liveness belongs to the data plane)", got)
 	}
-}
-
-func TestPuntToStoppedMonitorIsIgnored(t *testing.T) {
-	n := newTestNode(t)
-	l := newLink(n, 2, [32]byte{2}, "", 0)
-	n.links[2] = l
-	n.handlePunt(livenessPunt(2, linkStateDown, 0))
-	l.monitor.Start()
-	l.monitor.Stop()
-	l.monitor.Stop()
-	n.handlePunt(livenessPunt(2, linkStateDown, 0))
-	l.monitor.Start()
-	l.monitor.Stop()
 }
 
 type fakeDP struct {
@@ -138,15 +106,19 @@ type fakeDP struct {
 	dev     *dpproto.DeviceSet
 	closed  bool
 	onPunt  func(dpproto.Punt)
+	onLive  func(dpproto.LivenessEvent)
+	forces  chan dpproto.LivenessForce
 	done    chan struct{}
 	once    sync.Once
 }
 
-func newFakeDP(onPunt func(dpproto.Punt)) *fakeDP {
+func newFakeDP(onPunt func(dpproto.Punt), onLive func(dpproto.LivenessEvent)) *fakeDP {
 	return &fakeDP{
 		links:   map[uint32]dpproto.LinkSet{},
 		injects: make(chan dpproto.Inject, 256),
+		forces:  make(chan dpproto.LivenessForce, 256),
 		onPunt:  onPunt,
+		onLive:  onLive,
 		done:    make(chan struct{}),
 	}
 }
@@ -194,8 +166,12 @@ func (f *fakeDP) Device() (dpproto.DeviceInfo, error) {
 func (f *fakeDP) RouteSet([]dpproto.Route) error      { return nil }
 func (f *fakeDP) RouteList() ([]dpproto.Route, error) { return nil, nil }
 func (f *fakeDP) Inject(m dpproto.Inject) error       { f.injects <- m; return nil }
-func (f *fakeDP) Done() <-chan struct{}               { return f.done }
-func (f *fakeDP) Err() error                          { return errors.New("fake data plane lost") }
+func (f *fakeDP) LivenessForce(m dpproto.LivenessForce) error {
+	f.forces <- m
+	return nil
+}
+func (f *fakeDP) Done() <-chan struct{} { return f.done }
+func (f *fakeDP) Err() error            { return errors.New("fake data plane lost") }
 func (f *fakeDP) Close() {
 	f.mu.Lock()
 	f.closed = true
@@ -213,13 +189,13 @@ type fakeDialer struct {
 	down bool
 }
 
-func (fd *fakeDialer) dial(onPunt func(dpproto.Punt)) (dpproto.Datapath, error) {
+func (fd *fakeDialer) dial(onPunt func(dpproto.Punt), onLive func(dpproto.LivenessEvent)) (dpproto.Datapath, error) {
 	fd.mu.Lock()
 	defer fd.mu.Unlock()
 	if fd.down {
 		return nil, errors.New("data plane unavailable")
 	}
-	dp := newFakeDP(onPunt)
+	dp := newFakeDP(onPunt, onLive)
 	fd.dps = append(fd.dps, dp)
 	return dp, nil
 }
@@ -273,34 +249,17 @@ func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 		return len(dp.links) == 2 && dp.links[2].PubKey == [32]byte{2} && dp.links[2].Endpoint == "10.0.0.2:60198" && dp.links[3].PubKey == [32]byte{3}
 	})
 
-	seen := map[uint32]bool{}
-	waitFor(t, "liveness injected on both links", func() bool {
-		for {
-			select {
-			case in := <-dp.injects:
-				if in.Proto == livenessProto {
-					if in.TTL != linkLocalTTL || in.Dst != uint8(in.Link) {
-						t.Errorf("bad inject header: %+v", in)
-					}
-					seen[in.Link] = true
-				}
-			default:
-				return seen[2] && seen[3]
-			}
-		}
-	})
-
-	dp.onPunt(livenessPunt(2, linkStateDown, 8))
-	waitFor(t, "punt delivered to link 2's monitor", func() bool { return n.links[2].monitor.State() == linkStateInit })
+	dp.onLive(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateInit)})
+	waitFor(t, "event delivered to link 2's monitor", func() bool { return n.links[2].monitor.State() == linkStateInit })
 
 	close(stop)
 	<-done
 	got := map[uint32]bool{}
 	for len(got) < 2 {
 		select {
-		case in := <-dp.injects:
-			if in.Proto == livenessProto && len(in.Payload) > 2 && linkState(in.Payload[2]) == linkStateAdminDown {
-				got[in.Link] = true
+		case f := <-dp.forces:
+			if linkState(f.State) == linkStateAdminDown {
+				got[f.Link] = true
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatalf("no AdminDown on links after stop, saw %v", got)

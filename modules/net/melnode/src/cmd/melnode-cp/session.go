@@ -13,25 +13,28 @@ const (
 
 	puntQueueSize = 1024
 
-	livenessPuntQueueSize = 64
+	livenessQueueSize = 1024
 
-	handshakePollInterval = time.Second
+	livenessSyncInterval = time.Second
 )
 
 type dpSession struct {
-	cl            dpproto.Datapath
-	livenessPunts chan dpproto.Punt
-	punts         chan dpproto.Punt
-	done          chan struct{}
+	cl       dpproto.Datapath
+	liveness chan dpproto.LivenessEvent
+	punts    chan dpproto.Punt
+	done     chan struct{}
 }
 
 func (s *dpSession) onPunt(p dpproto.Punt) {
-	ch := s.punts
-	if p.Proto == livenessProto {
-		ch = s.livenessPunts
-	}
 	select {
-	case ch <- p:
+	case s.punts <- p:
+	default:
+	}
+}
+
+func (s *dpSession) onLiveness(ev dpproto.LivenessEvent) {
+	select {
+	case s.liveness <- ev:
 	default:
 	}
 }
@@ -41,8 +44,10 @@ func (s *dpSession) livenessWorker(n *Node) {
 		select {
 		case <-s.done:
 			return
-		case p := <-s.livenessPunts:
-			n.handlePunt(p)
+		case ev := <-s.liveness:
+			if l := n.links[ev.Link]; l != nil {
+				l.monitor.onEvent(ev)
+			}
 		}
 	}
 }
@@ -58,9 +63,9 @@ func (s *dpSession) worker(n *Node) {
 	}
 }
 
-// watchHandshakes passes the data plane's handshake times to the link monitors, for passive mode.
-func (s *dpSession) watchHandshakes(n *Node) {
-	tick := time.NewTicker(handshakePollInterval)
+// syncLiveness re-reads every link's liveness state from the data plane, in case an event was lost.
+func (s *dpSession) syncLiveness(n *Node) {
+	tick := time.NewTicker(livenessSyncInterval)
 	defer tick.Stop()
 	for {
 		select {
@@ -70,12 +75,12 @@ func (s *dpSession) watchHandshakes(n *Node) {
 		}
 		list, err := s.cl.LinkList()
 		if err != nil {
-			n.log.Verbosef("reading handshake times: %v", err)
+			n.log.Verbosef("reading liveness: %v", err)
 			continue
 		}
 		for _, li := range list {
-			if l := n.links[li.PeerID]; l != nil && li.LastHandshakeUnixNano > 0 {
-				l.monitor.noteHandshake(time.Unix(0, li.LastHandshakeUnixNano))
+			if l := n.links[li.PeerID]; l != nil {
+				l.monitor.onEvent(dpproto.LivenessEvent{Link: li.PeerID, State: li.LivenessState, Diag: li.LivenessDiag})
 			}
 		}
 	}
@@ -122,11 +127,11 @@ func (n *Node) runSessions(stop <-chan struct{}) {
 
 func (n *Node) attach() (*dpSession, error) {
 	sess := &dpSession{
-		livenessPunts: make(chan dpproto.Punt, livenessPuntQueueSize),
-		punts:         make(chan dpproto.Punt, puntQueueSize),
-		done:          make(chan struct{}),
+		liveness: make(chan dpproto.LivenessEvent, livenessQueueSize),
+		punts:    make(chan dpproto.Punt, puntQueueSize),
+		done:     make(chan struct{}),
 	}
-	cl, err := n.dialDataplane(sess.onPunt)
+	cl, err := n.dialDataplane(sess.onPunt, sess.onLiveness)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +161,7 @@ func (n *Node) attach() (*dpSession, error) {
 	for _, l := range n.sortedLinks() {
 		l.monitor.Start()
 	}
-	go sess.watchHandshakes(n)
+	go sess.syncLiveness(n)
 	n.log.Verbosef("attached to data plane (node %d, mtu %d, udp port %d)", n.device.LocalID, n.device.MTU, n.device.ListenPort)
 	return sess, nil
 }

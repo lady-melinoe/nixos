@@ -87,16 +87,18 @@ func (l *Link) linkInfo(dp *dpproto.LinkInfo) linkInfo {
 	m := l.monitor
 	m.mu.Lock()
 	info := linkInfo{
-		State:                 m.state.String(),
-		StateForSeconds:       time.Since(m.stateSince).Seconds(),
-		Passive:               m.passiveLocked(time.Now()),
-		Diag:                  m.diag.String(),
-		LocalDiscriminator:    m.localDiscriminator,
-		RemoteDiscriminator:   m.remoteDiscriminator,
-		RemoteDesiredMinTXMs:  ms(m.remoteDesiredMinTX),
-		RemoteRequiredMinRXMs: ms(m.remoteRequiredMinRX),
+		State:           m.state.String(),
+		StateForSeconds: time.Since(m.stateSince).Seconds(),
+		Diag:            m.diag.String(),
 	}
 	m.mu.Unlock()
+	if dp != nil {
+		info.Passive = dp.Passive
+		info.LocalDiscriminator = dp.LocalDiscriminator
+		info.RemoteDiscriminator = dp.RemoteDiscriminator
+		info.RemoteDesiredMinTXMs = float64(dp.RemoteDesiredMinTXUs) / 1000
+		info.RemoteRequiredMinRXMs = float64(dp.RemoteRequiredMinRXUs) / 1000
+	}
 
 	info.PeerID = l.id
 	info.PrependCount = l.prependCount

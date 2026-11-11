@@ -38,38 +38,30 @@ func TestPathVectorNeedsSession(t *testing.T) {
 	}
 }
 
-func livenessFrom(link uint32, st linkState, my, your uint32) dpproto.Punt {
-	p := livenessPunt(link, st, 0)
-	pkt := livenessPacket{State: st, DetectMult: defaultDetectMult, MyDiscriminator: my, YourDiscriminator: your,
-		DesiredMinTX: defaultDesiredMinTX, RequiredMinRX: defaultRequiredMinRX}
-	p.Payload = pkt.encode()
-	return p
-}
-
-func TestLivenessChecksDiscriminators(t *testing.T) {
+func TestLivenessEventsReachStartedMonitorOnly(t *testing.T) {
 	n := newTestNode(t)
 	l := newLink(n, 2, [32]byte{2}, "", 0)
 	n.links[2] = l
+	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateUp)})
+	if s := l.monitor.State(); s != linkStateDown {
+		t.Fatalf("state = %v after an event before Start, want Down", s)
+	}
+	var got []linkState
+	l.monitor.SetOnStateChange(func(_ *Link, s linkState) { got = append(got, s) })
 	l.monitor.Start()
-	defer l.monitor.Stop()
-	mine := l.monitor.localDiscriminator
-
-	n.handlePunt(livenessFrom(2, linkStateUp, 0x55, mine+1))
-	n.handlePunt(livenessFrom(2, linkStateUp, 0x55, 0))
-	if s := l.monitor.State(); s != linkStateDown {
-		t.Fatalf("state = %v after stale Up packets, want Down", s)
-	}
-	n.handlePunt(livenessFrom(2, linkStateUp, 0x55, mine))
-	if s := l.monitor.State(); s != linkStateDown {
-		t.Fatalf("state = %v after Up while Down, want Down", s)
-	}
-	n.handlePunt(livenessFrom(2, linkStateDown, 0x55, 0))
-	if s := l.monitor.State(); s != linkStateInit {
-		t.Fatalf("state = %v, want Init", s)
-	}
-	n.handlePunt(livenessFrom(2, linkStateInit, 0x55, mine))
+	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateInit)})
+	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateUp)})
+	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateUp)})
 	if s := l.monitor.State(); s != linkStateUp {
 		t.Fatalf("state = %v, want Up", s)
+	}
+	if len(got) != 2 || got[0] != linkStateInit || got[1] != linkStateUp {
+		t.Fatalf("callbacks = %v, want [Init Up]", got)
+	}
+	l.monitor.Stop()
+	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateDown)})
+	if s := l.monitor.State(); s != linkStateUp {
+		t.Fatalf("state = %v after an event once stopped, want Up", s)
 	}
 }
 
