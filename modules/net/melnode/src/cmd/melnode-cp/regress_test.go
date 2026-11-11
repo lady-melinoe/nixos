@@ -42,24 +42,29 @@ func TestLivenessEventsReachStartedMonitorOnly(t *testing.T) {
 	n := newTestNode(t)
 	l := newLink(n, 2, [32]byte{2}, "", 0)
 	n.links[2] = l
-	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateUp)})
+	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateUp), Seq: 1}, false)
 	if s := l.monitor.State(); s != linkStateDown {
 		t.Fatalf("state = %v after an event before Start, want Down", s)
 	}
 	var got []linkState
 	l.monitor.SetOnStateChange(func(_ *Link, s linkState) { got = append(got, s) })
 	l.monitor.Start()
-	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateInit)})
-	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateUp)})
-	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateUp)})
+	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateInit), Seq: 1}, false)
+	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateUp), Seq: 2}, false)
+	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateInit), Seq: 1}, true)
 	if s := l.monitor.State(); s != linkStateUp {
 		t.Fatalf("state = %v, want Up", s)
 	}
 	if len(got) != 2 || got[0] != linkStateInit || got[1] != linkStateUp {
 		t.Fatalf("callbacks = %v, want [Init Up]", got)
 	}
+	got = nil
+	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateUp), Seq: 5}, true)
+	if len(got) != 2 || got[0] != linkStateDown || got[1] != linkStateUp {
+		t.Fatalf("missed flap replayed as %v, want [Down Up]", got)
+	}
 	l.monitor.Stop()
-	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateDown)})
+	l.monitor.onEvent(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateDown), Seq: 9}, false)
 	if s := l.monitor.State(); s != linkStateUp {
 		t.Fatalf("state = %v after an event once stopped, want Up", s)
 	}

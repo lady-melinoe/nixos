@@ -68,6 +68,8 @@ type LinkInfo struct {
 	RxBytes               uint64
 	LivenessState         uint8
 	LivenessDiag          uint8
+	LivenessSeq           uint32
+	LivenessValid         bool
 	Passive               bool
 	LocalDiscriminator    uint32
 	RemoteDiscriminator   uint32
@@ -141,6 +143,7 @@ type LivenessEvent struct {
 	Link  uint32
 	State uint8
 	Diag  uint8
+	Seq   uint32
 }
 
 type Inject struct {

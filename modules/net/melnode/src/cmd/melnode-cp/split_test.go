@@ -249,7 +249,7 @@ func TestSessionSyncsLinksAndCarriesLiveness(t *testing.T) {
 		return len(dp.links) == 2 && dp.links[2].PubKey == [32]byte{2} && dp.links[2].Endpoint == "10.0.0.2:60198" && dp.links[3].PubKey == [32]byte{3}
 	})
 
-	dp.onLive(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateInit)})
+	dp.onLive(dpproto.LivenessEvent{Link: 2, State: uint8(linkStateInit), Seq: 1})
 	waitFor(t, "event delivered to link 2's monitor", func() bool { return n.links[2].monitor.State() == linkStateInit })
 
 	close(stop)

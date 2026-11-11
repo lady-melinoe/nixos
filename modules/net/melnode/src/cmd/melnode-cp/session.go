@@ -46,7 +46,7 @@ func (s *dpSession) livenessWorker(n *Node) {
 			return
 		case ev := <-s.liveness:
 			if l := n.links[ev.Link]; l != nil {
-				l.monitor.onEvent(ev)
+				l.monitor.onEvent(ev, false)
 			}
 		}
 	}
@@ -79,8 +79,8 @@ func (s *dpSession) syncLiveness(n *Node) {
 			continue
 		}
 		for _, li := range list {
-			if l := n.links[li.PeerID]; l != nil {
-				l.monitor.onEvent(dpproto.LivenessEvent{Link: li.PeerID, State: li.LivenessState, Diag: li.LivenessDiag})
+			if l := n.links[li.PeerID]; l != nil && li.LivenessValid {
+				l.monitor.onEvent(dpproto.LivenessEvent{Link: li.PeerID, State: li.LivenessState, Diag: li.LivenessDiag, Seq: li.LivenessSeq}, true)
 			}
 		}
 	}

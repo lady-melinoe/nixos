@@ -73,6 +73,7 @@ type LinkMonitor struct {
 	state      linkState
 	stateSince time.Time
 	diag       diag
+	seq        uint32
 
 	onStateChange func(link *Link, next linkState)
 }
@@ -100,28 +101,36 @@ func (m *LinkMonitor) SetOnStateChange(fn func(link *Link, next linkState)) {
 }
 
 func (m *LinkMonitor) Start() {
+	m.cbMu.Lock()
+	defer m.cbMu.Unlock()
 	m.mu.Lock()
 	m.running = true
+	m.seq = 0
 	m.mu.Unlock()
-	m.apply(linkStateDown, diagNone)
+	m.applyLocked(linkStateDown, diagNone)
 }
 
 func (m *LinkMonitor) Stop() {
+	m.cbMu.Lock()
+	defer m.cbMu.Unlock()
 	m.mu.Lock()
 	m.running = false
 	m.mu.Unlock()
 }
 
+// AdminDown tells the peer we are going away and takes the link down here at once: the data
+// plane is about to be closed, so its event may never be read.
 func (m *LinkMonitor) AdminDown() {
 	m.force(linkStateAdminDown, diagAdminDown)
-	m.apply(linkStateAdminDown, diagAdminDown)
+	m.cbMu.Lock()
+	defer m.cbMu.Unlock()
+	m.applyLocked(linkStateAdminDown, diagAdminDown)
 }
 
-// transitionTo applies a local decision, such as a path-vector timeout, to the data plane's
-// session and to this mirror.
+// transitionTo passes a local decision, such as a path-vector timeout, to the data plane. The
+// mirror follows when the data plane reports the change.
 func (m *LinkMonitor) transitionTo(next linkState, d diag) {
 	m.force(next, d)
-	m.apply(next, d)
 }
 
 func (m *LinkMonitor) force(next linkState, d diag) {
@@ -135,20 +144,32 @@ func (m *LinkMonitor) force(next linkState, d diag) {
 	}
 }
 
-// onEvent takes a state change the data plane reported.
-func (m *LinkMonitor) onEvent(ev dpproto.LivenessEvent) {
-	m.mu.Lock()
-	running := m.running
-	m.mu.Unlock()
-	if running {
-		m.apply(linkState(ev.State), diag(ev.Diag))
+// onEvent takes a state the data plane reported, by event or by resync. Anything older than what
+// was already applied is dropped. A resync that finds changes we never saw, with the state back
+// where it was, means the link flapped: replay a Down so the path vector resets its session.
+func (m *LinkMonitor) onEvent(ev dpproto.LivenessEvent, resync bool) {
+	if ev.State > uint8(linkStateAdminDown) {
+		return
 	}
-}
-
-func (m *LinkMonitor) apply(next linkState, d diag) {
 	m.cbMu.Lock()
 	defer m.cbMu.Unlock()
+	m.mu.Lock()
+	if !m.running || ev.Seq <= m.seq && !(ev.Seq == 0 && m.seq == 0) {
+		m.mu.Unlock()
+		return
+	}
+	missed := ev.Seq - m.seq
+	cur := m.state
+	m.seq = ev.Seq
+	m.mu.Unlock()
+	next := linkState(ev.State)
+	if resync && missed >= 2 && next == cur && cur == linkStateUp {
+		m.applyLocked(linkStateDown, diagDetectTimeout)
+	}
+	m.applyLocked(next, diag(ev.Diag))
+}
 
+func (m *LinkMonitor) applyLocked(next linkState, d diag) {
 	m.mu.Lock()
 	prev := m.state
 	if prev == next {
