@@ -220,6 +220,7 @@ in
 
     services.udev.extraRules = lib.mkIf enabled ''
       ACTION=="add", SUBSYSTEM=="net", KERNEL=="vm-*", RUN+="${pkgs.procps}/bin/sysctl -qw net.ipv4.conf.%k.rp_filter=1"
+      ACTION=="add", SUBSYSTEM=="net", DRIVERS=="igb", RUN+="${pkgs.ethtool}/bin/ethtool -G %k rx 4096"
     '';
 
     systemd.services.melinoe-inet-setup = lib.mkIf enabled {
