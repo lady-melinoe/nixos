@@ -109,7 +109,7 @@ func main() {
 	puntsDone := make(chan struct{})
 	var puntsOnce sync.Once
 	dp, err := ebpfdp.Open(ebpfdp.Config{
-		ObjectPath: *object, PinDir: *pin, TimeScale: scale, UnderLoadThreshold: uint32(underload),
+		ObjectPath: *object, PinDir: *pin, TimeScale: scale, UnderLoadThreshold: uint32(underload), KeepPinned: true,
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
 		OnPunt: func(p dpproto.Punt) {
 			b, _ := json.Marshal(map[string]any{

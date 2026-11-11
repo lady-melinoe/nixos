@@ -1,11 +1,9 @@
 // Package ebpfdp is the data plane: it has the melnode eBPF object loaded and attached by the
-// loader (mn-up load), then drives it through its pinned maps and SYSCALL programs, and implements
-// dpproto.Datapath on top of it.
+// loader (mn-up load), takes over its link, maps and SYSCALL programs and removes the pins, and
+// implements dpproto.Datapath on top of it.
 //
-// The state lives in the kernel and is pinned under PinDir, so it outlives a helper that dies. A
-// new helper does not pick it up: DeviceSet tears it down and builds a fresh data plane, with its
-// own keys, peers and routes, so nothing an earlier run authorised survives it. A clean Close tears
-// everything down.
+// The process holding the link owns the data plane: when it exits, however it exits, the kernel
+// closes the link and the device, sockets and sessions go with it, so peers see the node go down.
 package ebpfdp
 
 import (
@@ -23,6 +21,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
+	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"golang.org/x/sys/unix"
 
@@ -44,6 +43,8 @@ const (
 // Config says where the object and its loader are and how it is run.
 type Config struct {
 	ObjectPath string // melnode.bpf.o
+	// KeepPinned leaves the data plane pinned under PinDir, for tools that exit after setting it up.
+	KeepPinned bool
 	// LoaderPath is the mn-up binary; default $MELNODE_LOADER, else mn-up on PATH.
 	LoaderPath string
 	PinDir     string // default DefaultPinDir
@@ -81,6 +82,7 @@ type DP struct {
 	progs  map[string]*ebpf.Program
 	rd     *ringbuf.Reader
 	erd    *ringbuf.Reader
+	owner  link.Link
 
 	done    chan struct{}
 	errOnce sync.Once
@@ -304,6 +306,16 @@ func (d *DP) create(m dpproto.DeviceSet) error {
 	if err := d.openPinned(); err != nil {
 		d.unpinAll()
 		return err
+	}
+	if !d.cfg.KeepPinned {
+		owner, err := link.LoadPinnedLink(filepath.Join(d.cfg.PinDir, "link"), nil)
+		if err != nil {
+			d.closeHandles()
+			d.unpinAll()
+			return fmt.Errorf("ebpfdp: opening the data plane link: %w", err)
+		}
+		d.owner = owner
+		d.unpinAll()
 	}
 	cleanup := func(err error) error {
 		d.teardownLocked()
@@ -558,6 +570,10 @@ func (d *DP) teardownLocked() {
 		}
 	}
 	d.closeHandles()
+	if d.owner != nil {
+		d.owner.Close()
+		d.owner = nil
+	}
 	d.unpinAll()
 	d.isSet = false
 }

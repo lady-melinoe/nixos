@@ -54,13 +54,15 @@ pkgs.testers.runNixOSTest {
             raise Exception("no UDP socket on 60198:\n" + m.succeed(
                 "ss -Huanp; ip -o link show; journalctl -u melnode-cp.service -b --no-pager | tail -30"))
 
-    def crash_and_hold(m):
-        """Kill melnode-cp the way a crash does and keep systemd from restarting it: its data plane stays."""
+    def crash_and_hold(m, peer=None, link=None):
+        """Kill melnode-cp the way a crash does and keep systemd from restarting it: its data plane goes with it."""
         m.succeed("systemctl kill -s KILL --kill-whom=main melnode-cp.service")
         m.succeed("systemctl stop melnode-cp.service")
-        m.succeed("test -e /sys/fs/bpf/melnode/maps/wg_dev")
-        # nothing owns the sockets but the kernel, so the process dying does not close them
-        assert udp_bound(m), "the UDP socket went with the process"
+        m.wait_until_fails("ip link show mel0", timeout=10)
+        m.succeed("test ! -e /sys/fs/bpf/melnode/maps/wg_dev")
+        assert not udp_bound(m), "the UDP socket outlived the process"
+        if peer is not None:
+            peer.wait_until_succeeds(f"curl -sf http://127.0.0.1:60198/links | jq -e '.[] | select(.peer_id == {link}) | .state != \"Up\"'", timeout=5)
 
     def start_with(m, specialisation):
         m.succeed(f"/run/current-system/specialisation/{specialisation}/bin/switch-to-configuration test")
@@ -114,12 +116,12 @@ pkgs.testers.runNixOSTest {
     with subtest("a restart after a crash does not keep a link the configuration dropped"):
         def link_ids(m):
             try:
-                return sorted(l.split()[0] for l in dpctl(m, "links").splitlines() if l.strip())
+                return sorted(str(l["peer_id"]) for l in links(m))
             except Exception:  # the new data plane is not up yet
                 return None
 
         assert link_ids(b) == ["1", "3"], link_ids(b)
-        crash_and_hold(b)
+        crash_and_hold(b, a, 2)
         start_with(b, "without-c")
         # the new start builds its data plane from its own configuration, which has link 1 only
         retry(lambda _: link_ids(b) == ["1"], timeout_seconds=60)
