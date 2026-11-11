@@ -36,7 +36,7 @@ func newPVNet(t *testing.T, ids ...uint32) *pvNet {
 		id := id
 		node := &Node{localID: id, log: &Logger{DiscardLogf, DiscardLogf}}
 		node.mtu.Store(defaultMTU)
-		node.router = newRouter(node, id, nil, nil, "", "")
+		node.router = newRouter(node, id, nil, "", "")
 		node.router.host = newFakeHost()
 		pv := newPathVector(node, id)
 		pv.sendHook = func(peer *Link, wire []byte) {

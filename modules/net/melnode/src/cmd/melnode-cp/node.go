@@ -3,9 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
-	"net/netip"
 	"sort"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -120,12 +118,7 @@ func newNode(cfg *Config, verbose bool) (*Node, error) {
 		parsed, _ := parsePrefix(cfg.IdentityPrefix)
 		identityPrefix = &parsed
 	}
-	nodeAddrs := make(map[uint32]netip.Addr, len(cfg.NodeAddresses))
-	for id, a := range cfg.NodeAddresses {
-		n, _ := strconv.Atoi(id)
-		nodeAddrs[uint32(n)] = netip.MustParseAddr(a)
-	}
-	n.router = newRouter(n, n.localID, identityPrefix, nodeAddrs, cfg.PeerCreateHookBin, cfg.PeerDestroyHookBin)
+	n.router = newRouter(n, n.localID, identityPrefix, cfg.PeerCreateHookBin, cfg.PeerDestroyHookBin)
 
 	for _, lc := range cfg.Links {
 		pub, _ := parsePubKeyBase64(lc.PeerPubkey)

@@ -84,7 +84,7 @@ func newTestNode(t *testing.T) *Node {
 	t.Helper()
 	n := &Node{localID: 1, log: &Logger{DiscardLogf, DiscardLogf}, links: map[uint32]*Link{}}
 	n.mtu.Store(defaultMTU)
-	n.router = newRouter(n, 1, nil, nil, "", "")
+	n.router = newRouter(n, 1, nil, "", "")
 	n.router.host = newFakeHost()
 	n.pathVector = newPathVector(n, 1)
 	return n

@@ -40,7 +40,8 @@ pkgs.testers.runNixOSTest {
         exe = m.succeed(f"{show} | grep -o '/nix/store/[^ ;]*/bin/melnode-cp' | head -1").strip()
         conf = m.succeed(f"{show} | grep -o '/nix/store/[^ ;]*melnode-cp.toml' | head -1").strip()
         obj = m.succeed(f"sed -n 's/^ebpfObject = \"\\(.*\\)\"$/\\1/p' {conf}").strip()
-        return m.succeed(f"{prefix}env MELNODE_OBJECT={obj} {exe.rsplit('/', 1)[0]}/melnode-dpctl {args}")
+        loader = m.succeed("systemctl show -p Environment --value melnode-cp.service | tr ' ' '\\n' | sed -n 's/^MELNODE_LOADER=//p'").strip()
+        return m.succeed(f"{prefix}env MELNODE_OBJECT={obj} MELNODE_LOADER={loader} {exe.rsplit('/', 1)[0]}/melnode-dpctl {args}")
 
     def udp_bound(m, port=60198):
         return bool(m.succeed(f"ss -Hulnp 'sport = :{port}'").strip())
@@ -57,7 +58,7 @@ pkgs.testers.runNixOSTest {
         """Kill melnode-cp the way a crash does and keep systemd from restarting it: its data plane stays."""
         m.succeed("systemctl kill -s KILL --kill-whom=main melnode-cp.service")
         m.succeed("systemctl stop melnode-cp.service")
-        m.succeed("test -e /sys/fs/bpf/melnode/dev_map")
+        m.succeed("test -e /sys/fs/bpf/melnode/maps/wg_dev")
         # nothing owns the sockets but the kernel, so the process dying does not close them
         assert udp_bound(m), "the UDP socket went with the process"
 
@@ -84,23 +85,21 @@ pkgs.testers.runNixOSTest {
         links_b = b.succeed("ip -o link show")
         assert "mel0" in links_b and "node-" not in links_b, links_b
         # a neighbour entry per reachable node maps the address routes go via to the node's id
-        neigh = b.succeed("ip -4 neigh show dev mel0")
-        for gw, ll in (("198.18.0.1", "01"), ("198.18.0.3", "03")):
+        neigh = b.succeed("ip -6 neigh show dev mel0")
+        for gw, ll in (("fe80::1", "01"), ("fe80::3", "03")):
             assert f"{gw} lladdr {ll} PERMANENT" in neigh, neigh
         route = b.succeed("ip -4 route get 198.18.0.3")
-        assert "via 198.18.0.3 dev mel0" in route, route
-        # a reaches c through b: the route it has is via c, the data plane relays
+        assert "via inet6 fe80::3 dev mel0" in route, route
         route = a.succeed("ip -4 route get 198.18.0.3")
-        assert "via 198.18.0.3 dev mel0" in route, route
-        # per-node policy routing and the conntrack-pinning map, keyed by the sender's id
-        assert "default via 198.18.0.1 dev mel0" in b.succeed("ip -4 route show table 1001"), b.succeed("ip -4 route show table 1001")
+        assert "via inet6 fe80::3 dev mel0" in route, route
+        assert "default via inet6 fe80::1 dev mel0" in b.succeed("ip -4 route show table 1001"), b.succeed("ip -4 route show table 1001")
         ids = b.succeed("nft list map inet mangle melinoe_peer_ids")
         assert "0x1 : 0x000003e9" in ids and "0x3 : 0x000003eb" in ids, ids
 
     with subtest("a reply goes back the way the request came in"):
         # c owns an address on a vm-* interface, which melnode-helper advertises
         c.succeed("ip link add vm-test type dummy && ip addr add 198.18.1.77/32 dev vm-test && ip link set vm-test up && ip route replace 198.18.1.77/32 dev vm-test")
-        a.wait_until_succeeds("ip -4 route get 198.18.1.77 | grep -q 'via 198.18.0.3 dev mel0'", timeout=60)
+        a.wait_until_succeeds("ip -4 route get 198.18.1.77 | grep -q 'via inet6 fe80::3 dev mel0'", timeout=60)
         a.wait_until_succeeds("ping -c1 -W1 198.18.1.77", timeout=60)
         # the request was pinned to the node it came from (a, mark 1000 + 1), by the sender's link address
         pinned = c.succeed("grep 198.18.1.77 /proc/net/nf_conntrack")
@@ -142,7 +141,7 @@ pkgs.testers.runNixOSTest {
         a.succeed("systemctl stop melnode-cp.service")
         assert a.succeed("ip -o link show | grep -c 'mel0' || true").strip() == "0", a.succeed("ip -o link show")
         assert not udp_bound(a), "the UDP socket outlived a clean stop"
-        a.succeed("test ! -e /sys/fs/bpf/melnode/dev_map")
+        a.succeed("test ! -e /sys/fs/bpf/melnode/maps/wg_dev")
         a.succeed("systemctl start melnode-cp.service")
         a.wait_until_succeeds("ping -c1 -W1 198.18.0.2", timeout=90)
 
@@ -151,6 +150,8 @@ pkgs.testers.runNixOSTest {
         # ip netns exec gives its command a fresh /sys, so the scratch pins go on a bpffs of their own
         a.succeed("mkdir -p /run/scratch-bpf && mount -t bpf bpf /run/scratch-bpf")
         dpctl(a, "-pin /run/scratch-bpf/dp up -id 9 -port 60999 -key /etc/melinoe/wg.privatekey", prefix="ip netns exec scratch ")
+        a.succeed("ip netns exec scratch ip link set mel0 up")
+        a.wait_until_succeeds("ip netns exec scratch ss -Hulnp | grep -q 60999", timeout=20)
         assert "60999" in a.succeed("ip netns exec scratch ss -Hulnp"), "no socket in the namespace"
         before = int(a.succeed("dmesg | grep -c -E 'WARNING|BUG:|Oops|refcount|leak' || true").strip())
         a.succeed("ip netns del scratch")

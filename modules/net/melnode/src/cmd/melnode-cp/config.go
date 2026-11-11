@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -36,10 +35,8 @@ type Config struct {
 	Fwmark           int    `toml:"fwmark"`
 
 	// Interface is the name of the one network device. Every route to a node goes through it, via
-	// that node'"'"'s address in NodeAddresses, which the device'"'"'s neighbour table maps to the node'"'"'s id.
+	// the node'"'"'s link-local address fe80::<id>, which the data plane maps to the node'"'"'s id.
 	Interface string `toml:"interface"`
-	// NodeAddresses maps a node id (decimal) to the address routes to that node go via.
-	NodeAddresses map[string]string `toml:"nodeAddresses"`
 
 	// The hooks run when a node becomes reachable and when it stops being, with its id, the
 	// device'"'"'s name and the address routes to it go via.
@@ -125,15 +122,6 @@ func (c *Config) validate() error {
 	}
 	if c.Interface == "" || len(c.Interface) > 15 || strings.ContainsAny(c.Interface, "/ \t\n") {
 		return fmt.Errorf("interface %q must be 1-15 characters with no spaces or slashes", c.Interface)
-	}
-	for id, a := range c.NodeAddresses {
-		n, err := strconv.Atoi(id)
-		if err != nil || n < 0 || n > 255 {
-			return fmt.Errorf("nodeAddresses: %q is not a node id (0-255)", id)
-		}
-		if ip, err := netip.ParseAddr(a); err != nil || !ip.Is4() {
-			return fmt.Errorf("nodeAddresses: node %s: %q is not an IPv4 address", id, a)
-		}
 	}
 	if c.IdentityPrefix != "" {
 		if _, ok := parsePrefix(c.IdentityPrefix); !ok {

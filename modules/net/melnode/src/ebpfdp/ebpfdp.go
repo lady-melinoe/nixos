@@ -1,27 +1,25 @@
-// Package ebpfdp is the data plane: it loads the melnode eBPF object, sets up the devices and UDP
-// sockets through its control programs, and implements dpproto.Datapath on top of it.
+// Package ebpfdp is the data plane: it has the melnode eBPF object loaded and attached by the
+// loader (mn-up load), then drives it through its pinned maps and SYSCALL programs, and implements
+// dpproto.Datapath on top of it.
 //
-// The object is the data plane; this package only configures it and carries the control plane's
-// packets in and out. Everything the helper knows about the object's maps and structs is read
-// from its BTF at start-up (see layout.go).
-//
-// The state lives in the kernel and is pinned under PinDir (the maps keep the protocol timers
-// alive), so it outlives a helper that dies. A new helper does not pick it up: DeviceSet tears it
-// down and builds a fresh data plane, with its own keys, peers and routes, so nothing an earlier
-// run authorised survives it. A clean Close tears everything down.
+// The state lives in the kernel and is pinned under PinDir, so it outlives a helper that dies. A
+// new helper does not pick it up: DeviceSet tears it down and builds a fresh data plane, with its
+// own keys, peers and routes, so nothing an earlier run authorised survives it. A clean Close tears
+// everything down.
 package ebpfdp
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
@@ -34,25 +32,27 @@ import (
 const (
 	DefaultPinDir = "/sys/fs/bpf/melnode"
 
-	maxPeers   = 256
-	afINET     = 2
-	afINET6    = 10
-	injectMax  = 4096
-	timeScale1 = 1
+	maxPeers    = 256
+	afINET      = 2
+	afINET6     = 10
+	injectMax   = 4096
+	timeScale1  = 1
+	nsPerSec    = 1000000000
+	updEndpoint = 2
 )
 
-// Config says where the object is and how it is run.
+// Config says where the object and its loader are and how it is run.
 type Config struct {
 	ObjectPath string // melnode.bpf.o
+	// LoaderPath is the mn-up binary; default $MELNODE_LOADER, else mn-up on PATH.
+	LoaderPath string
 	PinDir     string // default DefaultPinDir
 	// TimeScale divides the protocol timers (tests only); 0 or 1 is real time.
 	TimeScale uint64
-	// UnderLoadThreshold is how many handshake messages a second make the node demand cookies;
-	// 0 keeps the object's default. Tests only.
+	// UnderLoadThreshold is not supported by the v2 object, which decides load like kernel
+	// WireGuard does; a nonzero value is logged and ignored.
 	UnderLoadThreshold uint32
-	// Variables sets named `const volatile` variables of the object before it is loaded: the way
-	// to tune a policy compiled into the data plane (thresholds, lane counts, ...) without this
-	// helper knowing about it. Unknown names are an error.
+	// Variables sets named `const volatile` variables of the object before it is loaded.
 	Variables map[string]uint64
 	// OnPunt receives control-plane packets, from its own goroutine; it must not block.
 	OnPunt func(dpproto.Punt)
@@ -60,7 +60,7 @@ type Config struct {
 }
 
 type layouts struct {
-	dev, peer, ep, setup, peerCtl, inject, epArgs, punt *layout
+	dev, peer, ep, addr, setup, peerArgs, peerUpd, route, inject, punt *layout
 }
 
 // DP is a data plane. Create it with Open and configure it with DeviceSet.
@@ -77,7 +77,6 @@ type DP struct {
 	pub    [32]byte
 	maps   map[string]*ebpf.Map
 	progs  map[string]*ebpf.Program
-	coll   *ebpf.Collection // nil when attached to pinned state
 	rd     *ringbuf.Reader
 
 	done    chan struct{}
@@ -87,26 +86,11 @@ type DP struct {
 
 var _ dpproto.Datapath = (*DP)(nil)
 
-// the timers the object lets us scale, with their unscaled values in seconds.
-var timers = map[string]uint64{
-	"t_reject_after":      180,
-	"t_rekey_after":       120,
-	"t_rekey_timeout":     5,
-	"t_keepalive_timeout": 10,
-	"t_rekey_attempt":     90,
-	"t_cookie_secret":     120,
-	"t_cookie_latency":    5,
-}
-
-var mapNames = []string{
-	"dev_map", "peers", "kps", "idx_map", "peer_by_pub", "routes",
-	"punts", "punt_scratch", "hs_scratch", "stats", "peer_stats",
-	"ratelimit", "tick_map", "inj_scratch",
-}
+var mapNames = []string{"wg_dev", "wg_peers", "wg_peer_by_pub", "routes", "punts", "stats"}
 
 var progNames = []string{
-	"mn_xmit", "mn_rx", "mn_kick", "mn_setup", "mn_teardown", "mn_inject",
-	"mn_peer_commit", "mn_peer_remove", "mn_peer_set_ep",
+	"wg_set_identity", "wg_setup", "wg_teardown", "wg_peer_prepare", "wg_peer_update",
+	"wg_peer_remove", "mn_route_set", "mn_inject",
 }
 
 // Open reads the object and checks it is the one this helper understands. It touches no kernel
@@ -117,6 +101,12 @@ func Open(cfg Config) (*DP, error) {
 	}
 	if cfg.PinDir == "" {
 		cfg.PinDir = DefaultPinDir
+	}
+	if cfg.LoaderPath == "" {
+		cfg.LoaderPath = os.Getenv("MELNODE_LOADER")
+	}
+	if cfg.LoaderPath == "" {
+		cfg.LoaderPath = "mn-up"
 	}
 	if cfg.TimeScale == 0 {
 		cfg.TimeScale = timeScale1
@@ -146,10 +136,8 @@ func (d *DP) checkSpec() error {
 			return fmt.Errorf("no program %q", n)
 		}
 	}
-	for n := range timers {
-		if d.spec.Variables[n] == nil {
-			return fmt.Errorf("no variable %q", n)
-		}
+	if d.spec.Variables["mn_psec"] == nil {
+		return errors.New("no variable mn_psec")
 	}
 	types := d.spec.Types
 	var err error
@@ -161,33 +149,29 @@ func (d *DP) checkSpec() error {
 		l, err = newLayout(types, name, want)
 		return l
 	}
-	d.lay.ep = mk("bpfx_endpoint", map[string]int{"family": 2, "port": 2, "src_ifindex": 4, "addr": 16, "src": 16, "tos": 1})
-	d.lay.dev = mk("mn_dev", map[string]int{"port": 2, "local_id": 2, "mtu": 4, "fwmark": 4, "ifindex": 4, "ifname": 16, "spriv": 32, "spub": 32})
-	d.lay.peer = mk("mn_peer", map[string]int{"present": 4, "pub": 32, "ep": 0, "last_hs_boot_ns": 8})
-	d.lay.setup = mk("mn_setup_args", map[string]int{"xmit_fd": 4, "rx_fd": 4, "mtu": 4, "port": 2, "local_id": 2, "fwmark": 4, "ifname": 16, "stage": 4, "err": 4})
-	d.lay.peerCtl = mk("mn_peer_ctl", map[string]int{"slot": 4, "err": 4})
+	d.lay.addr = mk("bpfx_addr", map[string]int{"family": 2, "port": 2, "addr": 16})
+	d.lay.ep = mk("wg_endpoint", map[string]int{"addr": 0})
+	d.lay.dev = mk("wg_dev", map[string]int{"port": 2, "local_id": 2, "mtu": 4, "fwmark": 4, "name": 16, "priv": 32, "pub": 32})
+	d.lay.peer = mk("wg_peer", map[string]int{"present": 4, "pub": 32, "ep": 0, "walltime_last_handshake": 8, "rx_bytes": 8, "tx_bytes": 8})
+	d.lay.setup = mk("wg_setup_args", map[string]int{"name": 16, "mtu": 4, "fwmark": 4, "port": 2, "local_id": 2, "err": 4})
+	d.lay.peerArgs = mk("wg_peer_args", map[string]int{"slot": 4, "err": 4})
+	d.lay.peerUpd = mk("wg_peer_upd", map[string]int{"slot": 4, "err": 4, "flags": 4, "ep": 0})
+	d.lay.route = mk("mn_route_args", map[string]int{"dst": 4, "nexthop": 4, "present": 4, "err": 4})
 	d.lay.inject = mk("mn_inject_args", map[string]int{"link": 4, "len": 4, "proto": 1, "dst": 1, "ttl": 1, "err": 4})
-	d.lay.epArgs = mk("mn_ep_args", map[string]int{"slot": 4, "err": 4, "ep": 0})
 	d.lay.punt = mk("mn_punt_hdr", map[string]int{"link": 4, "len": 4, "proto": 1, "src": 1, "dst": 1, "ttl": 1})
 	if err != nil {
 		return err
 	}
-	// The counters' names come from the object when it says them (its enum is anchored in BTF), so
-	// an object with more counters than this helper knows still reports all of them.
-	d.statNames = statNames
 	var enum *btf.Enum
-	if types.TypeByName("mn_stat_id", &enum) == nil {
-		var names []string
-		for _, v := range enum.Values {
-			if n := strings.TrimPrefix(v.Name, "MN_ST_"); n != "MAX" {
-				names = append(names, n)
-			}
-		}
-		if len(names) >= len(statNames) {
-			d.statNames = names
-			registerStatNames(names)
+	if err := types.TypeByName("mn_stat_id", &enum); err != nil {
+		return fmt.Errorf("no enum mn_stat_id: %w", err)
+	}
+	for _, v := range enum.Values {
+		if n := strings.TrimPrefix(v.Name, "MN_ST_"); n != "MAX" {
+			d.statNames = append(d.statNames, n)
 		}
 	}
+	registerStatNames(d.statNames)
 	return nil
 }
 
@@ -209,14 +193,14 @@ func (d *DP) fail(err error) {
 	})
 }
 
-// DeviceSet creates the data plane's devices and sockets, after tearing down any an earlier run
+// DeviceSet creates the data plane's device and sockets, after tearing down any an earlier run
 // left pinned. Called again with the same configuration it returns the public key; with another
 // it fails.
 func (d *DP) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if m.LocalID > 255 {
-		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeInvalid, "local id %d out of range", m.LocalID)
+	if m.LocalID == 0 || m.LocalID > 255 {
+		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeInvalid, "local id %d out of range 1-255", m.LocalID)
 	}
 	if m.ListenPort == 0 {
 		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeInvalid, "listen port must be set")
@@ -227,11 +211,14 @@ func (d *DP) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) {
 	if m.PrivateKey == ([32]byte{}) {
 		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeInvalid, "private key is zero")
 	}
-	if m.IfName == "" || len(m.IfName) > 15 || strings.ContainsAny(m.IfName, "/ \t\n") {
-		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeInvalid, "device name %q must be 1-15 characters with no spaces or slashes", m.IfName)
+	if m.IfName == "" || len(m.IfName) > 15 || strings.ContainsAny(m.IfName, "/ \t\n%") {
+		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeInvalid, "device name %q must be 1-15 characters with no spaces, slashes or %%", m.IfName)
 	}
 	if d.isSet {
-		return d.sameConfig(m)
+		if m != d.devCfg {
+			return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeExists, "already configured differently")
+		}
+		return dpproto.DeviceSetReply{PubKey: d.pub}, nil
 	}
 	if d.pinnedExists() {
 		d.cfg.Logf("ebpfdp: removing the state an earlier run left in %s", d.cfg.PinDir)
@@ -243,129 +230,104 @@ func (d *DP) DeviceSet(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) {
 	return dpproto.DeviceSetReply{PubKey: d.pub}, nil
 }
 
-func (d *DP) sameConfig(m dpproto.DeviceSet) (dpproto.DeviceSetReply, error) {
-	if m != d.devCfg {
-		return dpproto.DeviceSetReply{}, dpproto.Errorf(dpproto.CodeExists, "already configured differently")
-	}
-	return dpproto.DeviceSetReply{PubKey: d.pub}, nil
-}
-
-func (d *DP) pinPath(name string) string { return filepath.Join(d.cfg.PinDir, name) }
-
 func (d *DP) pinnedExists() bool {
-	_, err := os.Stat(d.pinPath("dev_map"))
+	_, err := os.Stat(d.cfg.PinDir)
 	return err == nil
 }
 
 func (d *DP) unpinAll() {
-	// bpffs entries are removed with unlink; the directory with rmdir.
-	for _, n := range mapNames {
-		_ = os.Remove(d.pinPath(n))
+	if err := os.RemoveAll(d.cfg.PinDir); err != nil {
+		d.cfg.Logf("ebpfdp: removing %s: %v", d.cfg.PinDir, err)
 	}
-	for _, n := range progNames {
-		_ = os.Remove(d.pinPath("prog_" + n))
-	}
-	_ = os.Remove(d.cfg.PinDir)
 }
 
-func (d *DP) verifierErr(what string, err error) error {
-	var ve *ebpf.VerifierError
-	if errors.As(err, &ve) {
-		return fmt.Errorf("%s: %+v", what, ve)
+func (d *DP) load() error {
+	if err := os.MkdirAll(filepath.Dir(d.cfg.PinDir), 0o755); err != nil {
+		return fmt.Errorf("ebpfdp: %w", err)
 	}
-	return fmt.Errorf("%s: %w", what, err)
+	args := []string{"load", d.cfg.ObjectPath, d.cfg.PinDir,
+		"--set", fmt.Sprintf("mn_psec=%d", nsPerSec/d.cfg.TimeScale)}
+	for name, v := range d.cfg.Variables {
+		args = append(args, "--set", fmt.Sprintf("%s=%d", name, v))
+	}
+	if d.cfg.UnderLoadThreshold != 0 {
+		d.cfg.Logf("ebpfdp: the v2 object has no load threshold; ignoring %d", d.cfg.UnderLoadThreshold)
+	}
+	out, err := exec.Command(d.cfg.LoaderPath, args...).CombinedOutput()
+	if err != nil {
+		d.unpinAll()
+		return fmt.Errorf("ebpfdp: loading the object: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (d *DP) openPinned() error {
+	maps := make(map[string]*ebpf.Map, len(mapNames))
+	progs := make(map[string]*ebpf.Program, len(progNames))
+	fail := func(err error) error {
+		for _, mp := range maps {
+			mp.Close()
+		}
+		for _, p := range progs {
+			p.Close()
+		}
+		return err
+	}
+	for _, n := range mapNames {
+		mp, err := ebpf.LoadPinnedMap(filepath.Join(d.cfg.PinDir, "maps", n), nil)
+		if err != nil {
+			return fail(fmt.Errorf("ebpfdp: map %s: %w", n, err))
+		}
+		maps[n] = mp
+	}
+	for _, n := range progNames {
+		p, err := ebpf.LoadPinnedProgram(filepath.Join(d.cfg.PinDir, "progs", n), nil)
+		if err != nil {
+			return fail(fmt.Errorf("ebpfdp: program %s: %w", n, err))
+		}
+		progs[n] = p
+	}
+	d.maps, d.progs = maps, progs
+	return nil
 }
 
 func (d *DP) create(m dpproto.DeviceSet) error {
-	if err := os.MkdirAll(d.cfg.PinDir, 0o755); err != nil {
-		return fmt.Errorf("ebpfdp: %w", err)
+	if err := d.load(); err != nil {
+		return err
 	}
-	spec := d.spec.Copy()
-	for name, ms := range spec.Maps {
-		if !strings.HasPrefix(name, ".") {
-			ms.Pinning = ebpf.PinByName
-		}
-	}
-	for n, secs := range timers {
-		v := secs * uint64(time.Second) / d.cfg.TimeScale
-		if err := spec.Variables[n].Set(v); err != nil {
-			return fmt.Errorf("ebpfdp: setting %s: %w", n, err)
-		}
-	}
-	for name, v := range d.cfg.Variables {
-		if err := setVariable(spec, name, v); err != nil {
-			return fmt.Errorf("ebpfdp: %w", err)
-		}
-	}
-	if d.cfg.UnderLoadThreshold != 0 {
-		if err := spec.Variables["under_load_threshold"].Set(d.cfg.UnderLoadThreshold); err != nil {
-			return fmt.Errorf("ebpfdp: setting the load threshold: %w", err)
-		}
-	}
-	coll, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{
-		Maps: ebpf.MapOptions{PinPath: d.cfg.PinDir},
-	})
-	if err != nil {
+	if err := d.openPinned(); err != nil {
 		d.unpinAll()
-		return d.verifierErr("ebpfdp: loading the object", err)
+		return err
 	}
-	d.coll = coll
-	d.maps, d.progs = coll.Maps, coll.Programs
 	cleanup := func(err error) error {
 		d.teardownLocked()
 		return err
 	}
-
 	dev := d.lay.dev.new()
-	copy(d.lay.dev.bytes(dev, "spriv"), m.PrivateKey[:])
-	if err := d.maps["dev_map"].Update(uint32(0), dev, ebpf.UpdateAny); err != nil {
+	copy(d.lay.dev.bytes(dev, "priv"), m.PrivateKey[:])
+	if err := d.maps["wg_dev"].Update(uint32(0), dev, ebpf.UpdateAny); err != nil {
 		return cleanup(fmt.Errorf("ebpfdp: writing the device: %w", err))
 	}
-
-	ctx := d.lay.setup.new()
-	// Optional programs a policy may use (the lanes of bpfx, say): handed to mn_setup if the object
-	// has them and its setup args have the field, so adding them is an object-only change.
-	for _, opt := range []struct{ prog, field string }{{"mn_lane_tx", "lane_tx_fd"}, {"mn_lane_rx", "lane_rx_fd"}} {
-		if _, ok := d.lay.setup.fields[opt.field]; !ok {
-			continue
-		}
-		fd := int32(-1)
-		if p := d.progs[opt.prog]; p != nil {
-			fd = int32(p.FD())
-		}
-		d.lay.setup.setU32(ctx, opt.field, uint32(fd))
+	if ret, _, err := d.runSyscall("wg_set_identity", d.lay.peerArgs.new()); err != nil || ret != 0 {
+		return cleanup(fmt.Errorf("ebpfdp: setting the identity: ret %d: %v", int32(ret), err))
 	}
-	d.lay.setup.setU32(ctx, "xmit_fd", uint32(d.progs["mn_xmit"].FD()))
-	d.lay.setup.setU32(ctx, "rx_fd", uint32(d.progs["mn_rx"].FD()))
+	ctx := d.lay.setup.new()
+	copy(d.lay.setup.bytes(ctx, "name"), m.IfName)
 	d.lay.setup.setU32(ctx, "mtu", m.MTU)
+	d.lay.setup.setU32(ctx, "fwmark", m.Fwmark)
 	d.lay.setup.setU16(ctx, "port", m.ListenPort)
 	d.lay.setup.setU16(ctx, "local_id", uint16(m.LocalID))
-	d.lay.setup.setU32(ctx, "fwmark", m.Fwmark)
-	copy(d.lay.setup.bytes(ctx, "ifname"), m.IfName)
-	ret, out, err := d.runSyscall("mn_setup", ctx)
+	ret, _, err := d.runSyscall("wg_setup", ctx)
 	if err != nil {
-		return cleanup(fmt.Errorf("ebpfdp: running mn_setup: %w", err))
+		return cleanup(fmt.Errorf("ebpfdp: running wg_setup: %w", err))
 	}
-	if ret != 0 {
-		stage := int32(d.lay.setup.getU32(out, "stage"))
-		errno := int32(d.lay.setup.getU32(out, "err"))
-		return cleanup(setupError(stage, errno, m.ListenPort))
+	if errno := int32(ret); errno != 0 {
+		return cleanup(dpproto.Errorf(codeFor(errno), "creating device %s failed: %v", m.IfName, unix.Errno(-errno)))
 	}
-
-	if err := d.maps["dev_map"].Lookup(uint32(0), dev); err != nil {
+	if err := d.maps["wg_dev"].Lookup(uint32(0), dev); err != nil {
 		return cleanup(fmt.Errorf("ebpfdp: reading the device: %w", err))
 	}
-	copy(d.pub[:], d.lay.dev.bytes(dev, "spub"))
-
-	ret, err = d.progs["mn_kick"].Run(&ebpf.RunOptions{Data: make([]byte, 14)})
-	if err != nil || ret != 0 {
-		return cleanup(fmt.Errorf("ebpfdp: starting the timer: ret %d: %v", ret, err))
-	}
-	for _, n := range progNames {
-		if err := d.progs[n].Pin(d.pinPath("prog_" + n)); err != nil {
-			return cleanup(fmt.Errorf("ebpfdp: pinning %s: %w", n, err))
-		}
-	}
+	copy(d.pub[:], d.lay.dev.bytes(dev, "pub"))
 	if err := d.startPunts(); err != nil {
 		return cleanup(err)
 	}
@@ -373,58 +335,14 @@ func (d *DP) create(m dpproto.DeviceSet) error {
 	return nil
 }
 
-func setupError(stage, errno int32, port uint16) error {
-	what := map[int32]string{
-		1: "deriving the device keys", 2: fmt.Sprintf("opening UDP port %d", port), 3: "opening the IPv6 socket",
-		4: "creating the network device",
-	}[stage]
-	if what == "" {
-		what = fmt.Sprintf("stage %d", stage)
-	}
-	code := dpproto.CodeInternal
-	switch -errno {
-	case int32(unix.EADDRINUSE):
-		code = dpproto.CodeAddrInUse
-	case int32(unix.EEXIST):
-		code = dpproto.CodeExists
-	case int32(unix.EINVAL):
-		code = dpproto.CodeInvalid
-	}
-	return dpproto.Errorf(code, "setup failed %s: %v", what, unix.Errno(-errno))
-}
-
 // loadPinned opens the pinned maps and programs and reads the node's configuration from them.
-// ok is false if there is no usable state (nothing pinned, or not all of it).
 func (d *DP) loadPinned() (cfg dpproto.DeviceSet, pub [32]byte, ok bool) {
-	maps := make(map[string]*ebpf.Map, len(mapNames))
-	progs := make(map[string]*ebpf.Program, len(progNames))
-	closeAll := func() {
-		for _, mp := range maps {
-			mp.Close()
-		}
-		for _, p := range progs {
-			p.Close()
-		}
-	}
-	for _, n := range mapNames {
-		mp, err := ebpf.LoadPinnedMap(d.pinPath(n), nil)
-		if err != nil {
-			closeAll()
-			return cfg, pub, false
-		}
-		maps[n] = mp
-	}
-	for _, n := range progNames {
-		p, err := ebpf.LoadPinnedProgram(d.pinPath("prog_"+n), nil)
-		if err != nil {
-			closeAll()
-			return cfg, pub, false
-		}
-		progs[n] = p
+	if err := d.openPinned(); err != nil {
+		return cfg, pub, false
 	}
 	dev := d.lay.dev.new()
-	if err := maps["dev_map"].Lookup(uint32(0), dev); err != nil {
-		closeAll()
+	if err := d.maps["wg_dev"].Lookup(uint32(0), dev); err != nil {
+		d.closeHandles()
 		return cfg, pub, false
 	}
 	cfg = dpproto.DeviceSet{
@@ -432,11 +350,10 @@ func (d *DP) loadPinned() (cfg dpproto.DeviceSet, pub [32]byte, ok bool) {
 		ListenPort: d.lay.dev.getU16(dev, "port"),
 		Fwmark:     d.lay.dev.getU32(dev, "fwmark"),
 		MTU:        d.lay.dev.getU32(dev, "mtu"),
-		IfName:     strings.TrimRight(string(d.lay.dev.bytes(dev, "ifname")), "\x00"),
+		IfName:     strings.TrimRight(string(d.lay.dev.bytes(dev, "name")), "\x00"),
 	}
-	copy(cfg.PrivateKey[:], d.lay.dev.bytes(dev, "spriv"))
-	copy(pub[:], d.lay.dev.bytes(dev, "spub"))
-	d.maps, d.progs = maps, progs
+	copy(cfg.PrivateKey[:], d.lay.dev.bytes(dev, "priv"))
+	copy(pub[:], d.lay.dev.bytes(dev, "pub"))
 	return cfg, pub, true
 }
 
@@ -495,17 +412,12 @@ func (d *DP) Detach() {
 	d.fail(errors.New("ebpfdp: detached"))
 }
 
-// closeHandles drops this process's references to the maps and programs.
 func (d *DP) closeHandles() {
 	for _, p := range d.progs {
 		p.Close()
 	}
 	for _, m := range d.maps {
 		m.Close()
-	}
-	if d.coll != nil {
-		d.coll.Close()
-		d.coll = nil
 	}
 	d.maps, d.progs = nil, nil
 }
@@ -560,7 +472,7 @@ func (d *DP) readPunts(rd *ringbuf.Reader) {
 	}
 }
 
-// Close tears the data plane down: devices, sockets, timers, pins.
+// Close tears the data plane down: device, sockets, timers, pins.
 func (d *DP) Close() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -574,15 +486,12 @@ func (d *DP) teardownLocked() {
 		d.rd = nil
 	}
 	if d.progs != nil {
-		if p := d.progs["mn_teardown"]; p != nil {
-			ctx := make([]byte, 8)
-			if _, _, err := d.runSyscall("mn_teardown", ctx); err != nil {
-				d.cfg.Logf("ebpfdp: teardown: %v", err)
-			}
+		if _, _, err := d.runSyscall("wg_teardown", make([]byte, 8)); err != nil {
+			d.cfg.Logf("ebpfdp: teardown: %v", err)
 		}
 	}
-	d.unpinAll()
 	d.closeHandles()
+	d.unpinAll()
 	d.isSet = false
 }
 
@@ -597,10 +506,10 @@ var errRange = func(what string, id uint32) error {
 	return dpproto.Errorf(dpproto.CodeInvalid, "%s %d out of range", what, id)
 }
 
-// ---- endpoints ----
+// ---- endpoints: struct bpfx_addr, port in network order ----
 
-func (d *DP) putEndpoint(b []byte, s string) error {
-	l := d.lay.ep
+func (d *DP) putAddr(b []byte, s string) error {
+	l := d.lay.addr
 	ap, err := netip.ParseAddrPort(s)
 	if err != nil {
 		return dpproto.Errorf(dpproto.CodeInvalid, "invalid endpoint %q (must be an ip:port literal): %v", s, err)
@@ -614,14 +523,14 @@ func (d *DP) putEndpoint(b []byte, s string) error {
 	} else {
 		l.setU16(b, "family", afINET6)
 	}
-	l.setU16(b, "port", ap.Port())
+	binary.BigEndian.PutUint16(l.bytes(b, "port"), ap.Port())
 	copy(l.bytes(b, "addr"), a.AsSlice())
 	return nil
 }
 
-func (d *DP) getEndpoint(b []byte) string {
-	l := d.lay.ep
-	port := l.getU16(b, "port")
+func (d *DP) getAddr(b []byte) string {
+	l := d.lay.addr
+	port := binary.BigEndian.Uint16(l.bytes(b, "port"))
 	addr := l.bytes(b, "addr")
 	switch l.getU16(b, "family") {
 	case afINET:
@@ -632,11 +541,15 @@ func (d *DP) getEndpoint(b []byte) string {
 	return ""
 }
 
+func (d *DP) peerAddrOff() int {
+	return d.lay.peer.f("ep").off + d.lay.ep.f("addr").off
+}
+
 // ---- links ----
 
 func (d *DP) peerRaw(slot uint32) ([]byte, error) {
 	raw := d.lay.peer.new()
-	if err := d.maps["peers"].Lookup(slot, raw); err != nil {
+	if err := d.maps["wg_peers"].Lookup(slot, raw); err != nil {
 		return nil, fmt.Errorf("ebpfdp: reading peer %d: %w", slot, err)
 	}
 	return raw, nil
@@ -648,7 +561,7 @@ func (d *DP) LinkSet(m dpproto.LinkSet) error {
 	if err := d.ready(); err != nil {
 		return err
 	}
-	if m.PeerID >= maxPeers {
+	if m.PeerID == 0 || m.PeerID >= maxPeers {
 		return errRange("peer id", m.PeerID)
 	}
 	if m.PeerID == d.devCfg.LocalID {
@@ -662,8 +575,6 @@ func (d *DP) LinkSet(m dpproto.LinkSet) error {
 	if err != nil {
 		return err
 	}
-	epOff := pl.f("ep").off
-
 	if pl.getU32(raw, "present") != 0 {
 		if !bytes.Equal(pl.bytes(raw, "pub"), m.PubKey[:]) {
 			return dpproto.Errorf(dpproto.CodeExists, "link %d exists with another public key", m.PeerID)
@@ -671,42 +582,43 @@ func (d *DP) LinkSet(m dpproto.LinkSet) error {
 		if m.Endpoint == "" {
 			return nil
 		}
-		ctx := d.lay.epArgs.new()
-		d.lay.epArgs.setU32(ctx, "slot", m.PeerID)
-		if err := d.putEndpoint(ctx[d.lay.epArgs.f("ep").off:], m.Endpoint); err != nil {
+		ul := d.lay.peerUpd
+		ctx := ul.new()
+		ul.setU32(ctx, "slot", m.PeerID)
+		ul.setU32(ctx, "flags", updEndpoint)
+		if err := d.putAddr(ctx[ul.f("ep").off:], m.Endpoint); err != nil {
 			return err
 		}
-		ret, out, err := d.runSyscall("mn_peer_set_ep", ctx)
+		ret, _, err := d.runSyscall("wg_peer_update", ctx)
 		if err != nil || ret != 0 {
-			return dpproto.Errorf(dpproto.CodeInternal, "setting endpoint of link %d: ret %d err %v (%d)", m.PeerID, ret, err, int32(d.lay.epArgs.getU32(out, "err")))
+			return dpproto.Errorf(dpproto.CodeInternal, "setting endpoint of link %d: ret %d err %v", m.PeerID, int32(ret), err)
 		}
 		return nil
 	}
-
-	// A public key can name only one link.
 	var existing uint32
-	if err := d.maps["peer_by_pub"].Lookup(m.PubKey, &existing); err == nil && existing != m.PeerID {
+	if err := d.maps["wg_peer_by_pub"].Lookup(m.PubKey, &existing); err == nil && existing != m.PeerID {
 		return dpproto.Errorf(dpproto.CodeExists, "public key already used by link %d", existing)
 	}
-
 	fresh := pl.new()
 	copy(pl.bytes(fresh, "pub"), m.PubKey[:])
 	if m.Endpoint != "" {
-		if err := d.putEndpoint(fresh[epOff:], m.Endpoint); err != nil {
+		if err := d.putAddr(fresh[d.peerAddrOff():], m.Endpoint); err != nil {
 			return err
 		}
 	}
-	if err := d.maps["peers"].Update(m.PeerID, fresh, ebpf.UpdateAny); err != nil {
+	if err := d.maps["wg_peers"].Update(m.PeerID, fresh, ebpf.UpdateAny); err != nil {
 		return dpproto.Errorf(dpproto.CodeInternal, "writing link %d: %v", m.PeerID, err)
 	}
-	ctx := d.lay.peerCtl.new()
-	d.lay.peerCtl.setU32(ctx, "slot", m.PeerID)
-	ret, out, err := d.runSyscall("mn_peer_commit", ctx)
+	ctx := d.lay.peerArgs.new()
+	d.lay.peerArgs.setU32(ctx, "slot", m.PeerID)
+	ret, out, err := d.runSyscall("wg_peer_prepare", ctx)
 	if err != nil {
 		return dpproto.Errorf(dpproto.CodeInternal, "committing link %d: %v", m.PeerID, err)
 	}
 	if ret != 0 {
-		return dpproto.Errorf(codeFor(int32(d.lay.peerCtl.getU32(out, "err"))), "committing link %d failed (errno %d)", m.PeerID, -int32(d.lay.peerCtl.getU32(out, "err")))
+		errno := int32(d.lay.peerArgs.getU32(out, "err"))
+		_ = d.maps["wg_peers"].Update(m.PeerID, pl.new(), ebpf.UpdateAny)
+		return dpproto.Errorf(codeFor(errno), "committing link %d failed (errno %d)", m.PeerID, -errno)
 	}
 	return nil
 }
@@ -715,10 +627,12 @@ func codeFor(errno int32) uint16 {
 	switch -errno {
 	case int32(unix.EEXIST):
 		return dpproto.CodeExists
-	case int32(unix.ENOENT):
+	case int32(unix.ENOENT), int32(unix.ENODEV):
 		return dpproto.CodeNotFound
 	case int32(unix.EINVAL):
 		return dpproto.CodeInvalid
+	case int32(unix.EADDRINUSE):
+		return dpproto.CodeAddrInUse
 	}
 	return dpproto.CodeInternal
 }
@@ -732,23 +646,20 @@ func (d *DP) LinkDel(peerID uint32) error {
 	if peerID >= maxPeers {
 		return errRange("peer id", peerID)
 	}
-	ctx := d.lay.peerCtl.new()
-	d.lay.peerCtl.setU32(ctx, "slot", peerID)
-	ret, out, err := d.runSyscall("mn_peer_remove", ctx)
+	raw, err := d.peerRaw(peerID)
 	if err != nil {
-		return dpproto.Errorf(dpproto.CodeInternal, "removing link %d: %v", peerID, err)
+		return err
 	}
-	if ret != 0 {
-		return dpproto.Errorf(codeFor(int32(d.lay.peerCtl.getU32(out, "err"))), "no link %d", peerID)
+	if d.lay.peer.getU32(raw, "present") == 0 {
+		return dpproto.Errorf(dpproto.CodeNotFound, "no link %d", peerID)
+	}
+	ctx := d.lay.peerArgs.new()
+	d.lay.peerArgs.setU32(ctx, "slot", peerID)
+	ret, _, err := d.runSyscall("wg_peer_remove", ctx)
+	if err != nil || ret != 0 {
+		return dpproto.Errorf(dpproto.CodeInternal, "removing link %d: ret %d err %v", peerID, int32(ret), err)
 	}
 	return nil
-}
-
-func bootToUnix() (nowBoot uint64, off int64) {
-	var ts unix.Timespec
-	_ = unix.ClockGettime(unix.CLOCK_BOOTTIME, &ts)
-	nowBoot = uint64(ts.Nano())
-	return nowBoot, time.Now().UnixNano() - int64(nowBoot)
 }
 
 func (d *DP) LinkList() ([]dpproto.LinkInfo, error) {
@@ -758,7 +669,6 @@ func (d *DP) LinkList() ([]dpproto.LinkInfo, error) {
 		return nil, err
 	}
 	pl := d.lay.peer
-	_, off := bootToUnix()
 	var out []dpproto.LinkInfo
 	for slot := uint32(0); slot < maxPeers; slot++ {
 		raw, err := d.peerRaw(slot)
@@ -768,18 +678,14 @@ func (d *DP) LinkList() ([]dpproto.LinkInfo, error) {
 		if pl.getU32(raw, "present") == 0 {
 			continue
 		}
-		li := dpproto.LinkInfo{PeerID: slot, Endpoint: d.getEndpoint(raw[pl.f("ep").off:])}
+		li := dpproto.LinkInfo{
+			PeerID:                slot,
+			Endpoint:              d.getAddr(raw[d.peerAddrOff():]),
+			LastHandshakeUnixNano: int64(pl.getU64(raw, "walltime_last_handshake")),
+			RxBytes:               pl.getU64(raw, "rx_bytes"),
+			TxBytes:               pl.getU64(raw, "tx_bytes"),
+		}
 		copy(li.PubKey[:], pl.bytes(raw, "pub"))
-		if hs := pl.getU64(raw, "last_hs_boot_ns"); hs != 0 {
-			li.LastHandshakeUnixNano = int64(hs) + off
-		}
-		var per []struct{ Rx, Tx, RxP, TxP uint64 }
-		if err := d.maps["peer_stats"].Lookup(slot, &per); err == nil {
-			for _, c := range per {
-				li.RxBytes += c.Rx
-				li.TxBytes += c.Tx
-			}
-		}
 		out = append(out, li)
 	}
 	return out, nil
@@ -795,23 +701,34 @@ func (d *DP) Device() (dpproto.DeviceInfo, error) {
 	if err := d.ready(); err != nil {
 		return dpproto.DeviceInfo{}, err
 	}
-	dev := d.lay.dev.new()
-	if err := d.maps["dev_map"].Lookup(uint32(0), dev); err != nil {
-		return dpproto.DeviceInfo{}, fmt.Errorf("ebpfdp: reading the device: %w", err)
-	}
-	ifx := d.lay.dev.getU32(dev, "ifindex")
-	name := strings.TrimRight(string(d.lay.dev.bytes(dev, "ifname")), "\x00")
-	if ifx == 0 {
-		return dpproto.DeviceInfo{}, dpproto.Errorf(dpproto.CodeNotFound, "the data plane has no device")
-	}
-	ifc, err := net.InterfaceByIndex(int(ifx))
+	name := d.devCfg.IfName
+	ifc, err := net.InterfaceByName(name)
 	if err != nil {
-		return dpproto.DeviceInfo{}, dpproto.Errorf(dpproto.CodeNotFound, "device %q (ifindex %d) is gone: %v", name, ifx, err)
+		return dpproto.DeviceInfo{}, dpproto.Errorf(dpproto.CodeNotFound, "device %q is gone: %v", name, err)
 	}
-	return dpproto.DeviceInfo{Name: ifc.Name, IfIndex: ifx}, nil
+	return dpproto.DeviceInfo{Name: ifc.Name, IfIndex: uint32(ifc.Index)}, nil
 }
 
 // ---- routes ----
+
+func (d *DP) setRoute(dst, nh uint32, present bool) error {
+	l := d.lay.route
+	ctx := l.new()
+	l.setU32(ctx, "dst", dst)
+	l.setU32(ctx, "nexthop", nh)
+	if present {
+		l.setU32(ctx, "present", 1)
+	}
+	ret, out, err := d.runSyscall("mn_route_set", ctx)
+	if err != nil {
+		return fmt.Errorf("ebpfdp: route %d: %w", dst, err)
+	}
+	if ret != 0 {
+		errno := int32(l.getU32(out, "err"))
+		return dpproto.Errorf(codeFor(errno), "route %d via %d failed (errno %d)", dst, nh, -errno)
+	}
+	return nil
+}
 
 func (d *DP) RouteSet(routes []dpproto.Route) error {
 	d.mu.Lock()
@@ -821,7 +738,7 @@ func (d *DP) RouteSet(routes []dpproto.Route) error {
 	}
 	want := make(map[uint32]uint32, len(routes))
 	for _, r := range routes {
-		if r.Dst >= maxPeers || r.NextHop >= maxPeers {
+		if r.Dst == 0 || r.Dst >= maxPeers || r.NextHop >= maxPeers {
 			return dpproto.Errorf(dpproto.CodeInvalid, "route %d via %d out of range", r.Dst, r.NextHop)
 		}
 		if _, dup := want[r.Dst]; dup {
@@ -829,22 +746,21 @@ func (d *DP) RouteSet(routes []dpproto.Route) error {
 		}
 		want[r.Dst] = r.NextHop
 	}
-	// struct mn_route is {present, nexthop}.
-	for dst := uint32(0); dst < maxPeers; dst++ {
+	for dst := uint32(1); dst < maxPeers; dst++ {
 		var cur [2]uint32
 		if err := d.maps["routes"].Lookup(dst, &cur); err != nil {
 			return fmt.Errorf("ebpfdp: reading route %d: %w", dst, err)
 		}
 		nh, ok := want[dst]
-		next := [2]uint32{}
-		if ok {
-			next = [2]uint32{1, nh}
+		if cur[0] != 0 && !ok {
+			if err := d.setRoute(dst, 0, false); err != nil {
+				return err
+			}
 		}
-		if cur == next {
-			continue
-		}
-		if err := d.maps["routes"].Update(dst, next, ebpf.UpdateAny); err != nil {
-			return fmt.Errorf("ebpfdp: writing route %d: %w", dst, err)
+		if ok && (cur[0] == 0 || cur[1] != nh) {
+			if err := d.setRoute(dst, nh, true); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -876,16 +792,13 @@ func (d *DP) Inject(m dpproto.Inject) error {
 		return dpproto.Errorf(dpproto.CodeInvalid, "payload of %d bytes is too long", len(m.Payload))
 	}
 	l := d.lay.inject
-	dataOff := l.f("data").off
-	ctx := make([]byte, dataOff+len(m.Payload))
+	ctx := l.new()
 	l.setU32(ctx, "link", m.Link)
 	l.setU32(ctx, "len", uint32(len(m.Payload)))
 	l.setU8(ctx, "proto", m.Proto)
 	l.setU8(ctx, "dst", m.Dst)
 	l.setU8(ctx, "ttl", m.TTL)
-	copy(ctx[dataOff:], m.Payload)
-	// The lock is held through the run: Close drops the programs, and mn_inject shares a scratch
-	// buffer, so only one runs at a time.
+	copy(ctx[l.f("data").off:], m.Payload)
 	d.mu.Lock()
 	if err := d.ready(); err != nil {
 		d.mu.Unlock()
@@ -921,23 +834,4 @@ func (d *DP) Stats() ([]dpproto.Stat, error) {
 		out = append(out, dpproto.Stat{ID: uint16(i + 1), Value: sum})
 	}
 	return out, nil
-}
-
-// setVariable sets a global of the object, whatever width it has.
-func setVariable(spec *ebpf.CollectionSpec, name string, v uint64) error {
-	vs := spec.Variables[name]
-	if vs == nil {
-		return fmt.Errorf("the object has no variable %q to set", name)
-	}
-	switch vs.Size() {
-	case 1:
-		return vs.Set(uint8(v))
-	case 2:
-		return vs.Set(uint16(v))
-	case 4:
-		return vs.Set(uint32(v))
-	case 8:
-		return vs.Set(v)
-	}
-	return fmt.Errorf("variable %q has an unsupported size %d", name, vs.Size())
 }

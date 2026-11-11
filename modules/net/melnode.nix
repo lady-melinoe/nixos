@@ -35,6 +35,9 @@ let
     bpfx-kernel = inputs.bpfx-kernel.outPath;
     inherit (config.boot.kernelPackages) kernel;
   };
+  loader = pkgs.callPackage (inputs.melinoe-vpn-ebpf + "/tools/mn-up.nix") {
+    bpfx-kernel = inputs.bpfx-kernel.outPath;
+  };
 
   # What the control plane needs to load and run the data plane (on top of CAP_NET_ADMIN).
   dataplaneCaps = [
@@ -92,12 +95,6 @@ let
     builtins.readFile ./melnode/mnctl.py
   );
 
-  # The address routes to each node go via: the device maps it to the node's id.
-  nodeAddresses = lib.mapAttrs' (
-    _: node:
-    lib.nameValuePair (toString node.id) (melinoeLib.ip.nodeAddress cluster.networks.nodes node.id)
-  ) cluster.nodes;
-
   helperConfig = pkgs.writeText "melnode-helper.json" (
     builtins.toJSON {
       node_id = config.melinoe.node.id;
@@ -124,7 +121,7 @@ let
       localPort = cfg.port;
       localPrivkeyPath = cfg.privateKeyFile;
       inherit (cfg) mtu introspectIntervalMs;
-      inherit interface nodeAddresses;
+      inherit interface;
       fwmark = net.uplinkMark;
       identityPrefix = "${config.melinoe.node.address}/32";
       inherit controlSocket;
@@ -292,6 +289,7 @@ in
           path = toolPath;
           serviceConfig = {
             ExecStart = "${package}/bin/melnode-cp -config ${controlPlaneConfig}";
+            Environment = [ "MELNODE_LOADER=${loader}/bin/mn-up" ];
             RuntimeDirectory = "melnode";
             AmbientCapabilities = dataplaneCaps;
             CapabilityBoundingSet = dataplaneCaps;

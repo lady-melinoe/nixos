@@ -7,7 +7,6 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/vishvananda/netlink"
@@ -30,7 +29,7 @@ type hostOps interface {
 	Ready() bool
 	EnsureDevice() error
 	Peers() ([]uint32, error)
-	// PeerNexthop is the address routes to a node go via, once the node has its neighbour entry.
+	// PeerNexthop is the link-local address routes to a node go via.
 	PeerNexthop(peerID uint32) (string, bool)
 	EnsurePeer(peerID uint32) error
 	DestroyPeer(peerID uint32)
@@ -296,14 +295,14 @@ func (h *realHost) Peers() ([]uint32, error) {
 	if err != nil {
 		return nil, err
 	}
-	neighs, err := netlink.NeighList(int(dev.IfIndex), netlink.FAMILY_V4)
+	neighs, err := netlink.NeighList(int(dev.IfIndex), netlink.FAMILY_V6)
 	if err != nil {
 		return nil, err
 	}
 	nexthops := make(map[uint32]string, len(neighs))
 	ids := make([]uint32, 0, len(neighs))
 	for _, n := range neighs {
-		if n.State&netlink.NUD_PERMANENT == 0 || len(n.HardwareAddr) != 1 {
+		if n.State&netlink.NUD_PERMANENT == 0 || len(n.HardwareAddr) != 1 || n.IP.String() != nodeNexthop(uint32(n.HardwareAddr[0])) {
 			continue
 		}
 		id := uint32(n.HardwareAddr[0])
@@ -311,6 +310,9 @@ func (h *realHost) Peers() ([]uint32, error) {
 		ids = append(ids, id)
 	}
 	h.r.hostMu.Lock()
+	for id := range h.r.hooked {
+		nexthops[id] = nodeNexthop(id)
+	}
 	h.r.nexthops = nexthops
 	h.r.hostMu.Unlock()
 	return ids, nil
@@ -335,22 +337,7 @@ func (h *realHost) EnsurePeer(peerID uint32) error {
 	if err != nil {
 		return err
 	}
-	addr, ok := h.r.nodeAddrs[peerID]
-	if !ok {
-		return fmt.Errorf("no address for node %d in nodeAddresses", peerID)
-	}
-	// The neighbour entry is what makes a route via the node's address go to the node.
-	err = netlink.NeighSet(&netlink.Neigh{
-		LinkIndex:    int(dev.IfIndex),
-		Family:       netlink.FAMILY_V4,
-		State:        netlink.NUD_PERMANENT,
-		IP:           addr.AsSlice(),
-		HardwareAddr: net.HardwareAddr{byte(peerID)},
-	})
-	if err != nil {
-		return fmt.Errorf("neighbour %v on %s: %w", addr, dev.Name, err)
-	}
-	gw := addr.String()
+	gw := nodeNexthop(peerID)
 	h.r.hostMu.Lock()
 	h.r.nexthops[peerID] = gw
 	h.r.hostMu.Unlock()
@@ -372,15 +359,6 @@ func (h *realHost) DestroyPeer(peerID uint32) {
 	dev := h.r.dev
 	h.r.hostMu.Unlock()
 
-	if addr, ok := h.r.nodeAddrs[peerID]; ok && dev.IfIndex != 0 {
-		err := netlink.NeighDel(&netlink.Neigh{
-			LinkIndex: int(dev.IfIndex), Family: netlink.FAMILY_V4, IP: addr.AsSlice(),
-		})
-		if err != nil && !errors.Is(err, syscall.ENOENT) {
-			h.r.node.log.Errorf("router: removing the neighbour entry of peerid %d: %v", peerID, err)
-			return
-		}
-	}
 	if had {
 		if err := h.r.runPeerHook("destroy", h.r.peerDestroyHookBin, peerID, dev.Name, gw); err != nil {
 			h.r.node.log.Errorf("router: %v (peerid %d, %s)", err, peerID, dev.Name)
@@ -437,7 +415,11 @@ func (h *realHost) ListRoutes() (map[pvPrefix]string, error) {
 		if !ok {
 			continue
 		}
-		out[p] = rt.Gw.String()
+		v, ok := rt.Via.(*netlink.Via)
+		if !ok || v.AddrFamily != netlink.FAMILY_V6 {
+			continue
+		}
+		out[p] = v.Addr.String()
 	}
 	return out, nil
 }
@@ -448,17 +430,15 @@ func (h *realHost) ReplaceRoute(p pvPrefix, nexthop string) error {
 		return err
 	}
 	gw := net.ParseIP(nexthop)
-	if gw == nil {
+	if gw == nil || gw.To4() != nil {
 		return fmt.Errorf("bad next hop %q", nexthop)
 	}
 	return netlink.RouteReplace(&netlink.Route{
 		LinkIndex: int(dev.IfIndex),
 		Dst:       p.ipNet(),
-		Gw:        gw,
-		// The next hop is a node's address on the device itself, which no address of ours covers.
-		Flags:    int(netlink.FLAG_ONLINK),
-		Protocol: routeProtocolMelnode,
-		Priority: routePriorityMelnode,
+		Via:       &netlink.Via{AddrFamily: netlink.FAMILY_V6, Addr: gw},
+		Protocol:  routeProtocolMelnode,
+		Priority:  routePriorityMelnode,
 	})
 }
 
