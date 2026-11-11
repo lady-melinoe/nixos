@@ -91,7 +91,13 @@ type DP struct {
 
 var _ dpproto.Datapath = (*DP)(nil)
 
-var mapNames = []string{"wg_dev", "wg_peers", "wg_peer_by_pub", "routes", "punts", "stats", "mn_bfd", "mn_events"}
+var mapNames = []string{
+	"wg_dev", "wg_peers", "wg_peer_by_pub", "routes",
+	"punts", "stats", "mn_bfd", "mn_events",
+	"mn_tm_bfd",
+	"wg_tm_retrans", "wg_tm_keepal", "wg_tm_newhs",
+	"wg_tm_zero", "wg_tm_persist", "wg_tm_hswork",
+}
 
 var progNames = []string{
 	"wg_set_identity", "wg_setup", "wg_teardown", "wg_peer_prepare", "wg_peer_update",
