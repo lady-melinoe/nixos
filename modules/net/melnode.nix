@@ -27,7 +27,7 @@ let
       "cmd/melnode-cp"
       "cmd/melnode-dpctl"
     ];
-    vendorHash = "sha256-mu6nUf4cD59wxkxdEy+RjgDJVYJGjB9XhBeypAZHn0I=";
+    vendorHash = "sha256-k1pptyekJMwzq2Jv7v+ZspVfFYCfWPr5OM5HNRjmJaQ=";
     env.CGO_ENABLED = "0";
     meta.mainProgram = "melnode-cp";
   };
