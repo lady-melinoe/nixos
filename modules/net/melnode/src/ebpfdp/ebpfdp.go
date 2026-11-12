@@ -170,7 +170,7 @@ func (d *DP) checkSpec() error {
 	d.lay.route = mk("mn_route_args", map[string]int{"dst": 4, "nexthop": 4, "present": 4, "err": 4})
 	d.lay.inject = mk("mn_inject_args", map[string]int{"link": 4, "len": 4, "proto": 1, "dst": 1, "ttl": 1, "err": 4})
 	d.lay.punt = mk("mn_punt_hdr", map[string]int{"link": 4, "len": 4, "proto": 1, "src": 1, "dst": 1, "ttl": 1})
-	d.lay.bfd = mk("mn_bfd", map[string]int{"state": 4, "diag": 4, "passive": 4, "seq": 4, "local_disc": 4, "remote_disc": 4, "remote_tx_us": 4, "remote_rx_us": 4})
+	d.lay.bfd = mk("mn_bfd", map[string]int{"state": 4, "diag": 4, "passive": 4, "seq": 4, "local_disc": 4, "remote_disc": 4, "remote_tx_us": 4, "remote_rx_us": 4, "rtt_us": 4})
 	d.lay.bfdArgs = mk("mn_bfd_args", map[string]int{"slot": 4, "err": 4, "state": 4, "diag": 4})
 	d.lay.bfdEvent = mk("mn_bfd_event", map[string]int{"link": 4, "state": 4, "diag": 4, "seq": 4})
 	if err != nil {
@@ -787,6 +787,7 @@ func (d *DP) LinkList() ([]dpproto.LinkInfo, error) {
 			li.RemoteDiscriminator = bl.getU32(braw, "remote_disc")
 			li.RemoteDesiredMinTXUs = bl.getU32(braw, "remote_tx_us")
 			li.RemoteRequiredMinRXUs = bl.getU32(braw, "remote_rx_us")
+			li.RTTUs = bl.getU32(braw, "rtt_us")
 		}
 		out = append(out, li)
 	}

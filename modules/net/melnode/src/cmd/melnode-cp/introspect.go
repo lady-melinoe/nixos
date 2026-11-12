@@ -75,6 +75,7 @@ type linkInfo struct {
 	RemoteDiscriminator   uint32   `json:"remote_discriminator"`
 	RemoteDesiredMinTXMs  float64  `json:"remote_desired_min_tx_ms"`
 	RemoteRequiredMinRXMs float64  `json:"remote_required_min_rx_ms"`
+	RTTMs                 *float64 `json:"rtt_ms"`
 	PrependCount          uint32   `json:"prepend_count"`
 	LastHandshakeSecAgo   *float64 `json:"last_handshake_seconds_ago"`
 	TxBytes               uint64   `json:"tx_bytes"`
@@ -98,6 +99,10 @@ func (l *Link) linkInfo(dp *dpproto.LinkInfo) linkInfo {
 		info.RemoteDiscriminator = dp.RemoteDiscriminator
 		info.RemoteDesiredMinTXMs = float64(dp.RemoteDesiredMinTXUs) / 1000
 		info.RemoteRequiredMinRXMs = float64(dp.RemoteRequiredMinRXUs) / 1000
+		if dp.RTTUs != 0 {
+			rtt := float64(dp.RTTUs) / 1000
+			info.RTTMs = &rtt
+		}
 	}
 
 	info.PeerID = l.id

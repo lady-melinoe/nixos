@@ -153,6 +153,7 @@ def cmd_links(client):
     rows = []
     for l in links:
         hs = l.get("last_handshake_seconds_ago")
+        rtt = l.get("rtt_ms")
         state = l["state"]
         rows.append(
             [
@@ -162,6 +163,7 @@ def cmd_links(client):
                 l.get("endpoint") or "-",
                 l["prepend_count"],
                 "never" if hs is None else fmt_duration(hs) + " ago",
+                "-" if rtt is None else f"{rtt:.2f}ms",
                 fmt_bytes(l["tx_bytes"]),
                 fmt_bytes(l["rx_bytes"]),
                 l["diag"],
@@ -170,8 +172,8 @@ def cmd_links(client):
     print(
         table(
             rows,
-            ["Peer", "State", "For", "Endpoint", "Prepend", "Handshake", "Tx", "Rx", "Diag"],
-            ["<", "<", ">", "<", ">", ">", ">", ">", "<"],
+            ["Peer", "State", "For", "Endpoint", "Prepend", "Handshake", "RTT", "Tx", "Rx", "Diag"],
+            ["<", "<", ">", "<", ">", ">", ">", ">", ">", "<"],
         )
     )
 

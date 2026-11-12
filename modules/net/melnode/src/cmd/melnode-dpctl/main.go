@@ -165,8 +165,8 @@ func main() {
 			if l.LastHandshakeUnixNano != 0 {
 				hs = time.Since(time.Unix(0, l.LastHandshakeUnixNano)).Round(time.Millisecond).String() + " ago"
 			}
-			fmt.Printf("%d %s endpoint=%s handshake=%s tx=%d rx=%d\n", l.PeerID,
-				base64.StdEncoding.EncodeToString(l.PubKey[:]), l.Endpoint, hs, l.TxBytes, l.RxBytes)
+			fmt.Printf("%d %s endpoint=%s handshake=%s tx=%d rx=%d rtt_us=%d\n", l.PeerID,
+				base64.StdEncoding.EncodeToString(l.PubKey[:]), l.Endpoint, hs, l.TxBytes, l.RxBytes, l.RTTUs)
 		}
 	case "link-set":
 		if len(args) < 2 || len(args) > 3 {

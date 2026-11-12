@@ -75,6 +75,7 @@ type LinkInfo struct {
 	RemoteDiscriminator   uint32
 	RemoteDesiredMinTXUs  uint32
 	RemoteRequiredMinRXUs uint32
+	RTTUs                 uint32
 }
 
 // DeviceInfo is the one network device of a data plane: a link layer whose addresses are node
