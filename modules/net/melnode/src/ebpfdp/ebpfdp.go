@@ -94,7 +94,7 @@ var _ dpproto.Datapath = (*DP)(nil)
 var mapNames = []string{
 	"wg_dev", "wg_peers", "wg_peer_by_pub", "routes",
 	"punts", "stats", "mn_bfd", "mn_events",
-	"mn_tm_bfd",
+	"mn_tm_bfd", "wg_gone", "wg_gc",
 	"wg_tm_retrans", "wg_tm_keepal", "wg_tm_newhs",
 	"wg_tm_zero", "wg_tm_persist", "wg_tm_hswork",
 }
