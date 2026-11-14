@@ -33,7 +33,7 @@
     pkiBundle = "/var/lib/sbctl";
   };
   environment.systemPackages = [ pkgs.sbctl ];
-
+  hardware.steam-hardware.enable = true;
   services.tlp = {
     enable = true;
     settings = {
