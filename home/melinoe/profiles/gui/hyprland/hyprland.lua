@@ -16,6 +16,7 @@ hl.monitor({
     max_luminance         = 570,
     max_avg_luminance     = 375,
 })
+hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })
 
 require("hyprland-de-setup")
 require("hyprland-binds")
