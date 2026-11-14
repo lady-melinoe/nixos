@@ -88,6 +88,7 @@ in
             [
               "type filter hook forward priority filter; policy accept;"
               "ct state invalid drop"
+              "iifname ${quote net.meshInterface} tcp flags syn tcp option maxseg size set rt mtu"
             ]
             ++ lib.concatMap (vm: map (ip: "ip saddr ${vm.source} ip daddr ${ip} drop") vm.outboundDropIP) vms
             ++ lib.concatMap (
