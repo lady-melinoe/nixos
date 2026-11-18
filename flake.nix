@@ -6,7 +6,7 @@
 
     # Pinned by rev so `nix flake update` never bumps the kernel (and thus
     # never forces a kernel or bpfx module rebuild). To update: change the rev.
-    nixpkgs-kernel.url = "github:NixOS/nixpkgs/02c087f3fe673c9e317f206a627cb6b910336dbe";
+    nixpkgs-kernel.url = "github:NixOS/nixpkgs/1a08097fc1ed85575db39763b2c4a5d8970a37ba";
 
     disko = {
       url = "github:nix-community/disko";
