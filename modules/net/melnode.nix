@@ -285,7 +285,6 @@ in
             "nftables.service"
           ];
           stopIfChanged = false;
-          restartTriggers = [ (builtins.hashString "sha256" config.networking.nftables.ruleset) ];
           path = toolPath;
           serviceConfig = {
             ExecStart = "${package}/bin/melnode-cp -config ${controlPlaneConfig}";
