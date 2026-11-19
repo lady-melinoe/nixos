@@ -2,11 +2,11 @@
   melinoe.cluster.vms = {
     npm = {
       ip = "198.18.1.1";
-      hostAccess.tcp = [ 8002 ];
+#      hostAccess.tcp = [ 8002 ]; # for eilidh drive
     };
     npmalt = {
       ip = "198.18.1.2";
-      hostAccess.tcp = [ 8002 ];
+#      hostAccess.tcp = [ 8002 ]; # for eilidh drive 
     };
     vaultwarden.ip = "198.18.1.3";
     authentik.ip = "198.18.1.4";
@@ -46,19 +46,9 @@
       udp = [ 8080 ];
       outboundVia = "phaesyle";
     };
-    devicebridge = {
-      ip = "198.18.3.0/24";
-      udp = [ 51820 ];
-    };
     dadbridge = {
       ip = "198.18.4.0/24";
       udp = [ 51821 ];
-    };
-    uccbridge = {
-      ip = "198.18.5.0/24";
-      udp = [ 80 ];
-      outboundVia = "ceridwen";
-      outboundDropIP = [ "198.18.1.0/24" "198.18.2.0/24" "198.18.3.0/24" "198.18.4.0/24" ];
     };
     glrunner0.ip = "198.18.2.0";
     mailv2 = {
