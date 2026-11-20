@@ -33,6 +33,7 @@
       morrigan = 4;
       satet = 0;
       nephthys = 0;
+      melinoe-testing = 0;
     };
   };
 }
