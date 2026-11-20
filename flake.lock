@@ -7,11 +7,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794437571,
-        "narHash": "sha256-KKGuPbV7WPFl29xRl40+EOOTk5YZCwgCH6U3EOo6NTI=",
+        "lastModified": 1795172510,
+        "narHash": "sha256-Z0Tgic4ydlxDq/CmJ8z/MNQXEk7ugv1ZMIzVdrG5xyE=",
         "ref": "refs/heads/mommy",
-        "rev": "01cc068ac1ca68061fc34a41d767a405bb97c010",
-        "revCount": 21,
+        "rev": "d0004a51d69e83257bf1672825d7fca736fc859f",
+        "revCount": 22,
         "type": "git",
         "url": "https://gitlab.ucc.asn.au/melinoe/bpfx-kernel.git"
       },
