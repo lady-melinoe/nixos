@@ -3,7 +3,6 @@
   imports = [
     profiles.hw-membervm
     profiles.efi-grub
-    profiles.site-ucc
   ];
 
   melinoe = {
