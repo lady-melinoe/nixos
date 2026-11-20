@@ -2,8 +2,14 @@
 {
   melinoe.haproxy = {
     backends = {
-      nginx1 = config.melinoe.cluster.vms.npm.address;
-      nginx2 = config.melinoe.cluster.vms.npmalt.address;
+      nginx1 = {
+        address = config.melinoe.cluster.vms.npm.address;
+        checkHost = "nginx.melinoe.xyz";
+      };
+      nginx2 = {
+        address = config.melinoe.cluster.vms.npmalt.address;
+        checkHost = "nginx-alt.melinoe.xyz";
+      };
     };
     proxyProtocolSources = [ "192.168.11.2" ];
   };

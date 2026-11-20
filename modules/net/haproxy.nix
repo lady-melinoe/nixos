@@ -87,11 +87,14 @@ let
         "backend ${name}"
         "    balance source"
         "    hash-type consistent"
-        "    option tcp-check"
+        "    option httpchk GET ${cfg.healthCheck.path}"
+        "    http-check expect rstring '\"status\"[[:space:]]*:[[:space:]]*\"OK\"'"
       ]
       ++ lib.mapAttrsToList (
-        server: address:
-        "    server ${server} ${address}:${toString port} send-proxy check check-send-proxy"
+        server: backend:
+        "    server ${server} ${backend.address}:${toString port} send-proxy"
+        + " check port ${toString cfg.healthCheck.port}"
+        + " check-ssl check-sni ${backend.checkHost} verify required ca-file ${config.security.pki.caBundle}"
       ) cfg.backends
       ++ [ "    source ${config.melinoe.node.address}" ]
     );
@@ -103,9 +106,37 @@ in
       default = true;
     };
     backends = mkOption {
-      type = types.attrsOf types.str;
+      type = types.attrsOf (
+        types.submodule {
+          options = {
+            address = mkOption {
+              type = types.str;
+              description = "Address of the web node.";
+            };
+            checkHost = mkOption {
+              type = types.str;
+              description = ''
+                Hostname used as SNI (and verified against the certificate)
+                when health checking this node's API.
+              '';
+            };
+          };
+        }
+      );
       default = { };
-      description = "Web nodes to balance across, by server name and address.";
+      description = "Web nodes to balance across, by server name.";
+    };
+    healthCheck = {
+      port = mkOption {
+        type = types.port;
+        default = 81;
+        description = "HTTPS port the health check API is served on.";
+      };
+      path = mkOption {
+        type = types.str;
+        default = "/api/";
+        description = "Path whose JSON response must contain status OK.";
+      };
     };
     proxyProtocolSources = mkOption {
       type = types.listOf types.str;
