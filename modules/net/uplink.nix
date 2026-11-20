@@ -15,6 +15,14 @@ let
 
   endpoint = config.melinoe.cluster.nodes.${config.networking.hostName}.endpoint;
 
+  natPublicAddresses = map (uplink: "${uplink.publicIp}/32") (
+    lib.filter (
+      uplink:
+      uplink.publicIp != null
+      && (uplink.address == null || uplink.publicIp != lib.head (lib.splitString "/" uplink.address))
+    ) cfg
+  );
+
   uplinkNames = lib.imap0 (
     idx: uplink:
     if lib.length uplink.interfaces > 1 then "bond${toString idx}" else lib.head uplink.interfaces
@@ -194,7 +202,7 @@ in
       {
         networks."10-lo" = {
           matchConfig.Name = "lo";
-          address = [ "${config.melinoe.node.address}/32" ];
+          address = [ "${config.melinoe.node.address}/32" ] ++ natPublicAddresses;
           networkConfig.KeepConfiguration = "static";
         };
       }

@@ -138,6 +138,7 @@ let
         "type nat hook prerouting priority dstnat;"
         "ip daddr $hostaddr dnat to meta l4proto . th dport map @portfwd"
         "ip daddr @pubroutefix dnat to meta l4proto . th dport map @portfwd"
+        "iifname $uplink_ifs fib daddr type local dnat to meta l4proto . th dport map @portfwd"
       ]))
       (chain "postrouting" (
         [
