@@ -20,14 +20,6 @@ type LinkConfig struct {
 type Config struct {
 	LocalID int `toml:"localID"`
 
-	// EbpfObject is the melnode eBPF object (melnode.bpf.o). PinDir is where the data plane's
-	// state is pinned (default /sys/fs/bpf/melnode). TimeScale divides the protocol timers (tests).
-	EbpfObject string `toml:"ebpfObject"`
-	PinDir     string `toml:"pinDir"`
-	TimeScale  int    `toml:"timeScale"`
-	// EbpfVariables sets named tunables of the data plane object (its `const volatile` globals).
-	EbpfVariables map[string]uint64 `toml:"ebpfVariables"`
-
 	LocalPort        int    `toml:"localPort"`
 	LocalPrivkeyPath string `toml:"localPrivkeyPath"`
 	LocalPrivkey     string `toml:"localPrivkey"`
@@ -95,12 +87,6 @@ func (c *Config) privateKey() ([32]byte, error) {
 func (c *Config) validate() error {
 	if c.LocalID < 0 || c.LocalID > 255 {
 		return fmt.Errorf("localID must be 0-255, got %d", c.LocalID)
-	}
-	if c.EbpfObject == "" {
-		return fmt.Errorf("ebpfObject is required (path to melnode.bpf.o)")
-	}
-	if c.TimeScale < 0 {
-		return fmt.Errorf("timeScale must be >= 0, got %d", c.TimeScale)
 	}
 	if c.LocalPort <= 0 || c.LocalPort > 65535 {
 		return fmt.Errorf("localPort must be a valid port, got %d", c.LocalPort)

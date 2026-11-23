@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     # Pinned by rev so `nix flake update` never bumps the kernel (and thus
-    # never forces a kernel or bpfx module rebuild). To update: change the rev.
+    # never forces a kernel or melinoe-vpn module rebuild). To update: change the rev.
     nixpkgs-kernel.url = "github:NixOS/nixpkgs/1a08097fc1ed85575db39763b2c4a5d8970a37ba";
 
     disko = {
@@ -23,15 +23,9 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    bpfx-kernel = {
-      url = "git+https://gitlab.ucc.asn.au/melinoe/bpfx-kernel.git";
+    melinoe-vpn-kmod = {
+      url = "git+https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-kmod.git";
       inputs.nixpkgs.follows = "nixpkgs";
-    };
-
-    # Just C sources and a package.nix, built by bpfx-kernel: not a flake.
-    melinoe-vpn-ebpf = {
-      url = "git+https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-ebpf.git";
-      flake = false;
     };
   };
 

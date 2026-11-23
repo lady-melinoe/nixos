@@ -17,7 +17,6 @@ func testKey(b byte) string {
 func validTestConfig() *Config {
 	return &Config{
 		LocalID:              1,
-		EbpfObject:           "melnode.bpf.o",
 		LocalPort:            60198,
 		LocalPrivkey:         testKey(9),
 		MTU:                  defaultMTU,

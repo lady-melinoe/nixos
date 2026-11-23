@@ -1,6 +1,6 @@
 // Package dpproto is the contract between the control plane and a data plane: the operations a
-// data plane offers, and the types they carry. The only data plane now is the eBPF one in
-// package ebpfdp.
+// data plane offers, and the types they carry. The data plane is the melinoe-vpn kernel module,
+// in package kmoddp.
 package dpproto
 
 import (
@@ -35,8 +35,8 @@ func IsCode(err error, code uint16) bool {
 }
 
 // MaxControlPayload is the largest Inject payload a data plane carries to the other end's control
-// plane. The eBPF data plane punts at most 4096 bytes of a packet after its 4-byte routing header,
-// zero-padded to a multiple of 16, so a payload any longer can be sent but never arrives.
+// plane. The data plane punts at most 4092 bytes after the 4-byte routing header, so a payload any
+// longer can be sent but never arrives.
 const MaxControlPayload = 4092
 
 type DeviceSet struct {

@@ -2,7 +2,7 @@ package main
 
 import (
 	"melnode/dpproto"
-	"melnode/ebpfdp"
+	"melnode/kmoddp"
 )
 
 // dialDataplane opens the data plane. Each call is a fresh start: the state a previous helper
@@ -11,13 +11,5 @@ func (n *Node) dialDataplane(onPunt func(dpproto.Punt), onLiveness func(dpproto.
 	if n.dial != nil {
 		return n.dial(onPunt, onLiveness)
 	}
-	cfg := n.dpConfig
-	cfg.OnPunt = onPunt
-	cfg.OnLiveness = onLiveness
-	cfg.Logf = n.log.Verbosef
-	dp, err := ebpfdp.Open(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return dp, nil
+	return kmoddp.Open(kmoddp.Config{OnPunt: onPunt, OnLiveness: onLiveness, Logf: n.log.Verbosef})
 }

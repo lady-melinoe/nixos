@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 
 	"melnode/dpproto"
-	"melnode/ebpfdp"
 )
 
 const defaultMTU = 1416
@@ -18,7 +17,6 @@ type Node struct {
 	log     *Logger
 
 	device   dpproto.DeviceSet
-	dpConfig ebpfdp.Config
 
 	// dial opens a data plane; tests replace it.
 	dial    func(onPunt func(dpproto.Punt), onLiveness func(dpproto.LivenessEvent)) (dpproto.Datapath, error)
@@ -91,12 +89,6 @@ func newNode(cfg *Config, verbose bool) (*Node, error) {
 			Fwmark:     uint32(cfg.Fwmark),
 			MTU:        uint32(cfg.MTU),
 			IfName:     cfg.Interface,
-		},
-		dpConfig: ebpfdp.Config{
-			ObjectPath: cfg.EbpfObject,
-			PinDir:     cfg.PinDir,
-			TimeScale:  uint64(cfg.TimeScale),
-			Variables:  cfg.EbpfVariables,
 		},
 		verbose: verbose,
 	}

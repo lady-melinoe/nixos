@@ -60,7 +60,7 @@ func (d diag) String() string {
 
 const livenessProto = 1
 
-// LinkMonitor mirrors the data plane's liveness session for one link. The eBPF data plane runs
+// LinkMonitor mirrors the data plane's liveness session for one link. The data plane runs
 // the protocol (sending, timers, the state machine); this keeps the last state it reported,
 // passes local decisions to it, and tells the path vector when the link comes up or goes down.
 type LinkMonitor struct {

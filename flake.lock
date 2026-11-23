@@ -1,25 +1,5 @@
 {
   "nodes": {
-    "bpfx-kernel": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1795172510,
-        "narHash": "sha256-Z0Tgic4ydlxDq/CmJ8z/MNQXEk7ugv1ZMIzVdrG5xyE=",
-        "ref": "refs/heads/mommy",
-        "rev": "d0004a51d69e83257bf1672825d7fca736fc859f",
-        "revCount": 22,
-        "type": "git",
-        "url": "https://gitlab.ucc.asn.au/melinoe/bpfx-kernel.git"
-      },
-      "original": {
-        "type": "git",
-        "url": "https://gitlab.ucc.asn.au/melinoe/bpfx-kernel.git"
-      }
-    },
     "crane": {
       "locked": {
         "lastModified": 1793836618,
@@ -114,20 +94,24 @@
         "type": "github"
       }
     },
-    "melinoe-vpn-ebpf": {
-      "flake": false,
+    "melinoe-vpn-kmod": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
       "locked": {
-        "lastModified": 1794468970,
-        "narHash": "sha256-1uV+EBNgw4lXKC1VKrakdEOG7+2/XUZHoi5ppLCRew4=",
+        "lastModified": 1795431601,
+        "narHash": "sha256-LOwOsFYtcC28scSoeZUspBRd2wh74TOaNsQMsD4PeLA=",
         "ref": "refs/heads/mommy",
-        "rev": "33aa707be5ffe7b1992f5bf241ac4bce83440a4b",
-        "revCount": 24,
+        "rev": "e2cf0b1aff9d2e637ebd00a634fb88cba994cb75",
+        "revCount": 5,
         "type": "git",
-        "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-ebpf.git"
+        "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-kmod.git"
       },
       "original": {
         "type": "git",
-        "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-ebpf.git"
+        "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-kmod.git"
       }
     },
     "nixpkgs": {
@@ -186,11 +170,10 @@
     },
     "root": {
       "inputs": {
-        "bpfx-kernel": "bpfx-kernel",
         "disko": "disko",
         "home-manager": "home-manager",
         "lanzaboote": "lanzaboote",
-        "melinoe-vpn-ebpf": "melinoe-vpn-ebpf",
+        "melinoe-vpn-kmod": "melinoe-vpn-kmod",
         "nixpkgs": "nixpkgs",
         "nixpkgs-kernel": "nixpkgs-kernel"
       }

@@ -16,36 +16,18 @@ let
   interface = net.meshInterface;
   controlSocket = "/run/melnode/control.sock";
 
-  # The control plane (userspace), and the data plane: bpfx, a small generic kernel module, and the
-  # melnode eBPF object compiled against the types of the running kernel. Routing and protocol
-  # logic is in the object, so changing it never needs a new module.
+  # The control plane (userspace), and the data plane: the melinoe-vpn kernel module, which the
+  # control plane drives over its generic netlink family.
   package = pkgs.buildGoModule {
     pname = "melnode-cp";
     version = "0.1.0";
     src = ./melnode/src;
-    subPackages = [
-      "cmd/melnode-cp"
-      "cmd/melnode-dpctl"
-    ];
-    vendorHash = "sha256-k1pptyekJMwzq2Jv7v+ZspVfFYCfWPr5OM5HNRjmJaQ=";
+    subPackages = [ "cmd/melnode-cp" ];
+    vendorHash = "sha256-ZHRfud5yvRGBDgD2sW2r1ZkBf50Sb9rOzsr1jgki+QQ=";
     env.CGO_ENABLED = "0";
     meta.mainProgram = "melnode-cp";
   };
-  dataplane = pkgs.callPackage (inputs.melinoe-vpn-ebpf + "/package.nix") {
-    bpfx-kernel = inputs.bpfx-kernel.outPath;
-    inherit (config.boot.kernelPackages) kernel;
-  };
-  loader = pkgs.callPackage (inputs.melinoe-vpn-ebpf + "/tools/mn-up.nix") {
-    bpfx-kernel = inputs.bpfx-kernel.outPath;
-  };
-
-  # What the control plane needs to load and run the data plane (on top of CAP_NET_ADMIN).
-  dataplaneCaps = [
-    "CAP_BPF"
-    "CAP_PERFMON"
-    "CAP_SYS_ADMIN"
-    "CAP_SYS_RESOURCE"
-  ];
+  kmod = config.boot.kernelPackages.callPackage (inputs.melinoe-vpn-kmod + "/nix/kmod.nix") { };
 
   toolPath = [
     pkgs.iproute2
@@ -115,25 +97,21 @@ let
       exec ${helperCmd} hook-${kind} "$@"
     '';
 
-  controlPlaneConfig = (pkgs.formats.toml { }).generate "melnode-cp.toml" (
-    {
-      localID = config.melinoe.node.id;
-      localPort = cfg.port;
-      localPrivkeyPath = cfg.privateKeyFile;
-      inherit (cfg) mtu introspectIntervalMs;
-      inherit interface;
-      fwmark = net.uplinkMark;
-      identityPrefix = "${config.melinoe.node.address}/32";
-      inherit controlSocket;
-      introspectListen = ":${toString cfg.introspectPort}";
-      peerCreateHookBin = "${hook "create"}";
-      peerDestroyHookBin = "${hook "destroy"}";
-      link = links;
-    }
-    // {
-      ebpfObject = "${dataplane}/lib/bpf/melnode.bpf.o";
-    }
-  );
+  controlPlaneConfig = (pkgs.formats.toml { }).generate "melnode-cp.toml" {
+    localID = config.melinoe.node.id;
+    localPort = cfg.port;
+    localPrivkeyPath = cfg.privateKeyFile;
+    inherit (cfg) mtu introspectIntervalMs;
+    inherit interface;
+    fwmark = net.uplinkMark;
+    identityPrefix = "${config.melinoe.node.address}/32";
+    inherit controlSocket;
+    introspectListen = ":${toString cfg.introspectPort}";
+    peerCreateHookBin = "${hook "create"}";
+    peerDestroyHookBin = "${hook "destroy"}";
+    link = links;
+  };
+
 
   service = {
     before = [ "network-online.target" ];
@@ -158,8 +136,6 @@ let
   };
 in
 {
-  imports = [ inputs.bpfx-kernel.nixosModules.bpfx ];
-
   options.melinoe.melnode = {
     enable = mkOption {
       type = types.bool;
@@ -227,7 +203,18 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    boot.bpfx.enable = true;
+    boot.extraModulePackages = [ kmod ];
+    boot.kernelModules = [ "melinoe-vpn" ];
+
+    # Let applications on the far side of mel0 take socket buffers big enough for
+    # 10G-class flows (iperf3 -w 16M, UDP_GRO receivers); 4 MiB overflowed at ~10 Gbit/s.
+    boot.kernel.sysctl = {
+      "net.core.rmem_max" = lib.mkDefault 33554432;
+      "net.core.wmem_max" = lib.mkDefault 33554432;
+      # A single flow over mel0 queues ~2 ms inside the tunnel under load; with the default
+      # 4 MiB cap the sender spends ~a quarter of its time send-buffer limited (8 -> 9.9 Gbit/s).
+      "net.ipv4.tcp_wmem" = lib.mkDefault "4096 16384 33554432";
+    };
 
     assertions = lib.concatLists (
       lib.mapAttrsToList (
@@ -288,10 +275,7 @@ in
           path = toolPath;
           serviceConfig = {
             ExecStart = "${package}/bin/melnode-cp -config ${controlPlaneConfig}";
-            Environment = [ "MELNODE_LOADER=${loader}/bin/mn-up" ];
             RuntimeDirectory = "melnode";
-            AmbientCapabilities = dataplaneCaps;
-            CapabilityBoundingSet = dataplaneCaps;
           };
         }
       ];

@@ -34,15 +34,6 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("melnode-cp.service")
         m.wait_for_unit("melnode-helper.service")
 
-    def dpctl(m, args, prefix=""):
-        """melnode-dpctl against the data plane the running (or last) melnode-cp configured."""
-        show = "systemctl show -p ExecStart --value melnode-cp.service"
-        exe = m.succeed(f"{show} | grep -o '/nix/store/[^ ;]*/bin/melnode-cp' | head -1").strip()
-        conf = m.succeed(f"{show} | grep -o '/nix/store/[^ ;]*melnode-cp.toml' | head -1").strip()
-        obj = m.succeed(f"sed -n 's/^ebpfObject = \"\\(.*\\)\"$/\\1/p' {conf}").strip()
-        loader = m.succeed("systemctl show -p Environment --value melnode-cp.service | tr ' ' '\\n' | sed -n 's/^MELNODE_LOADER=//p'").strip()
-        return m.succeed(f"{prefix}env MELNODE_OBJECT={obj} MELNODE_LOADER={loader} {exe.rsplit('/', 1)[0]}/melnode-dpctl {args}")
-
     def udp_bound(m, port=60198):
         return bool(m.succeed(f"ss -Hulnp 'sport = :{port}'").strip())
 
@@ -59,7 +50,6 @@ pkgs.testers.runNixOSTest {
         m.succeed("systemctl kill -s KILL --kill-whom=main melnode-cp.service")
         m.succeed("systemctl stop melnode-cp.service")
         m.wait_until_fails("ip link show mel0", timeout=10)
-        m.succeed("test ! -e /sys/fs/bpf/melnode/maps/wg_dev")
         assert not udp_bound(m), "the UDP socket outlived the process"
         if peer is not None:
             peer.wait_until_succeeds(f"curl -sf http://127.0.0.1:60198/links | jq -e '.[] | select(.peer_id == {link}) | .state != \"Up\"'", timeout=5)
@@ -73,10 +63,9 @@ pkgs.testers.runNixOSTest {
     for m in nodes:
         services_up(m)
 
-    with subtest("no device owns the UDP sockets"):
+    with subtest("melnode binds its UDP port"):
         for m in nodes:
             wait_udp_bound(m)
-            assert "hub" not in m.succeed("ip -o link show"), m.succeed("ip -o link show")
 
     with subtest("links come up and a reaches c through b"):
         b.wait_until_succeeds("test $(curl -sf http://127.0.0.1:60198/links | jq '[.[] | select(.state == \"Up\")] | length') -eq 2", timeout=90)
@@ -143,24 +132,7 @@ pkgs.testers.runNixOSTest {
         a.succeed("systemctl stop melnode-cp.service")
         assert a.succeed("ip -o link show | grep -c 'mel0' || true").strip() == "0", a.succeed("ip -o link show")
         assert not udp_bound(a), "the UDP socket outlived a clean stop"
-        a.succeed("test ! -e /sys/fs/bpf/melnode/maps/wg_dev")
         a.succeed("systemctl start melnode-cp.service")
         a.wait_until_succeeds("ping -c1 -W1 198.18.0.2", timeout=90)
-
-    with subtest("a network namespace takes its sockets with it"):
-        a.succeed("ip netns add scratch")
-        # ip netns exec gives its command a fresh /sys, so the scratch pins go on a bpffs of their own
-        a.succeed("mkdir -p /run/scratch-bpf && mount -t bpf bpf /run/scratch-bpf")
-        dpctl(a, "-pin /run/scratch-bpf/dp up -id 9 -port 60999 -key /etc/melinoe/wg.privatekey", prefix="ip netns exec scratch ")
-        a.succeed("ip netns exec scratch ip link set mel0 up")
-        a.wait_until_succeeds("ip netns exec scratch ss -Hulnp | grep -q 60999", timeout=20)
-        assert "60999" in a.succeed("ip netns exec scratch ss -Hulnp"), "no socket in the namespace"
-        before = int(a.succeed("dmesg | grep -c -E 'WARNING|BUG:|Oops|refcount|leak' || true").strip())
-        a.succeed("ip netns del scratch")
-        a.sleep(2)
-        after = int(a.succeed("dmesg | grep -c -E 'WARNING|BUG:|Oops|refcount|leak' || true").strip())
-        assert after == before, a.succeed("dmesg | tail -40")
-        a.succeed("umount /run/scratch-bpf")
-        a.wait_until_succeeds("ping -c1 -W1 198.18.0.2", timeout=60)
   '';
 }

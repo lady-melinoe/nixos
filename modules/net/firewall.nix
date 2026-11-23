@@ -156,7 +156,9 @@ let
 
     (table "inet mangle" [
       (persistentObject "set" "melinoe_peer_marks" [ "type mark" ])
-      # Sender node id (the link-layer source address on the mesh device) -> its mark.
+      # Sender node id -> its mark. @ll,8,8 is byte 1 of the mesh device's link header,
+      # melnode's [proto][src][dst][ttl] (melinoe-vpn-kmod kmod/mn.h MN_HDR_*). If that layout
+      # changes, this offset must follow MN_HDR_SRC.
       (persistentObject "map" "melinoe_peer_ids" [ "typeof @ll,8,8 : mark" ])
       (object "map" "outbound_via" (
         [ "type ifname : mark" ]
