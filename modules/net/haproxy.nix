@@ -1,6 +1,7 @@
 {
   config,
   lib,
+  pkgs,
   melinoeLib,
   ...
 }:
@@ -12,6 +13,14 @@ let
   proxyHttps = 1443;
 
   allowedSources = lib.concatStringsSep " " cfg.proxyProtocolSources;
+
+  checkHosts = pkgs.writeText "haproxy-check-hosts.map" (
+    lib.concatStrings (
+      lib.mapAttrsToList (
+        server: backend: "${server} ${backend.address}:${toString cfg.healthCheck.port}\n"
+      ) cfg.backends
+    )
+  );
 
   frontends = [
     {
@@ -87,14 +96,15 @@ let
         "backend ${name}"
         "    balance source"
         "    hash-type consistent"
-        "    option httpchk GET ${cfg.healthCheck.path}"
+        "    option httpchk"
+        "    http-check send meth GET uri ${cfg.healthCheck.path} ver HTTP/1.1 hdr Host %[srv_name,map(${checkHosts})]"
         "    http-check expect rstring '\"status\"[[:space:]]*:[[:space:]]*\"OK\"'"
       ]
       ++ lib.mapAttrsToList (
         server: backend:
         "    server ${server} ${backend.address}:${toString port} send-proxy"
         + " check port ${toString cfg.healthCheck.port}"
-        + " check-ssl check-sni ${backend.checkHost} verify required ca-file ${config.security.pki.caBundle}"
+        + " check-ssl verify none"
       ) cfg.backends
       ++ [ "    source ${config.melinoe.node.address}" ]
     );
@@ -112,13 +122,6 @@ in
             address = mkOption {
               type = types.str;
               description = "Address of the web node.";
-            };
-            checkHost = mkOption {
-              type = types.str;
-              description = ''
-                Hostname used as SNI (and verified against the certificate)
-                when health checking this node's API.
-              '';
             };
           };
         }
