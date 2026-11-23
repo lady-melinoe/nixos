@@ -11,7 +11,12 @@ let
     let
       c = host.config;
       uplinks = c.melinoe.uplinks;
-      buildMachines = lib.filter (m: m.sshKey != null) c.nix.buildMachines;
+      buildMachines =
+        lib.filter (m: m.sshKey != null) c.nix.buildMachines
+        ++ map (name: {
+          inherit (c.melinoe.build) sshKey;
+          inherit (c.melinoe.cluster.nodes.${name}.buildServer) sshUser;
+        }) c.melinoe.build.substituteFrom;
     in
     {
       hostname = c.networking.hostName;

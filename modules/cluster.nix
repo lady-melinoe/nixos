@@ -9,7 +9,7 @@ let
   cfg = config.melinoe.cluster;
 
   nodeModule =
-    { name, ... }:
+    { name, config, ... }:
     {
       options = {
         id = mkOption {
@@ -24,6 +24,12 @@ let
           type = types.nullOr types.str;
           default = null;
           description = "IP literal other nodes dial. Null for nodes that only dial out.";
+        };
+        sshStore.enable = mkOption {
+          type = types.bool;
+          default = config.buildServer.enable;
+          defaultText = lib.literalExpression "buildServer.enable";
+          description = "Serve this node's store over ssh-ng to nodes that list it in melinoe.build.substituteFrom. Logs in as buildServer.sshUser at buildServer.hostName, but without trusted-user rights unless buildServer.enable is set.";
         };
         buildServer = mkOption {
           default = { };
