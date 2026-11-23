@@ -41,7 +41,7 @@ let
     };
 
   substituter =
-    name:
+    name: priority:
     let
       server = nodes.${name}.buildServer;
       query = lib.concatStringsSep "&" (
@@ -49,6 +49,7 @@ let
           ssh-key = cfg.sshKey;
           base64-ssh-public-host-key = publicHostKey server;
           trusted = "1";
+          priority = toString priority;
         }
       );
     in
@@ -56,6 +57,8 @@ let
 
   buildServers = lib.attrNames (lib.filterAttrs (_: n: n.buildServer.enable) nodes);
   sshUser = nodes.${self}.buildServer.sshUser;
+  isBuildServer = nodes.${self}.buildServer.enable;
+  substituteFrom = lib.attrNames cfg.substituteFrom;
 in
 {
   options.melinoe.build = {
@@ -70,15 +73,20 @@ in
       description = "Key used to log in to the remote builders.";
     };
     substituteFrom = mkOption {
-      type = types.listOf (types.enum (lib.attrNames nodes));
-      default = lib.optionals nodes.${self}.buildServer.enable (lib.remove self buildServers);
-      defaultText = lib.literalMD "the other build servers, if this node is one; otherwise `[ ]`";
-      description = "Nodes (with sshStore.enable) whose stores are used as trusted (unsigned) ssh-ng substituters.";
+      type = types.attrsOf types.int;
+      default = { };
+      description = "Nodes (with sshStore.enable) whose stores are used as trusted (unsigned) ssh-ng substituters, mapped to their priority (lower wins; cache.nixos.org is 40). Every other build server is included by default: at 30 on build servers, 50 elsewhere.";
     };
   };
 
   config = lib.mkMerge [
-    (lib.mkIf (nodes.${self}.sshStore.enable || nodes.${self}.buildServer.enable) {
+    {
+      melinoe.build.substituteFrom = lib.genAttrs (lib.remove self buildServers) (
+        _: lib.mkDefault (if isBuildServer then 30 else 50)
+      );
+    }
+
+    (lib.mkIf (nodes.${self}.sshStore.enable || isBuildServer) {
       users.users.${sshUser} = {
         isSystemUser = true;
         group = sshUser;
@@ -87,7 +95,7 @@ in
       users.groups.${sshUser} = { };
     })
 
-    (lib.mkIf (nodes.${self}.buildServer.enable) {
+    (lib.mkIf isBuildServer {
       nix.settings.trusted-users = [ sshUser ];
     })
 
@@ -102,16 +110,16 @@ in
       nix.buildMachines = map builder cfg.remote;
     })
 
-    (lib.mkIf (cfg.substituteFrom != [ ]) {
+    (lib.mkIf (cfg.substituteFrom != { }) {
       assertions = map (name: {
-        assertion = nodes.${name}.sshStore.enable && name != self;
+        assertion = nodes ? ${name} && nodes.${name}.sshStore.enable && name != self;
         message = "melinoe.build.substituteFrom: ${name} is this node or does not serve its store (set sshStore.enable in nodes/${name}/public.nix).";
-      }) cfg.substituteFrom;
+      }) substituteFrom;
 
-      nix.settings.substituters = map substituter cfg.substituteFrom;
+      nix.settings.substituters = lib.mapAttrsToList substituter cfg.substituteFrom;
 
       programs.ssh.extraConfig = ''
-        Host ${lib.concatMapStringsSep " " (name: nodes.${name}.buildServer.hostName) cfg.substituteFrom}
+        Host ${lib.concatMapStringsSep " " (name: nodes.${name}.buildServer.hostName) substituteFrom}
           ConnectTimeout 5
       '';
     })

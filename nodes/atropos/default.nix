@@ -13,7 +13,7 @@
       "benzaiten"
       "satet"
     ];
-    build.substituteFrom = [ "lachesis" ];
+    build.substituteFrom.lachesis = 30;
 
     disk.device = "/dev/disk/by-id/scsi-360dc7821ee1648ddb1ce69083424f7af";
 

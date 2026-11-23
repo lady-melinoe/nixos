@@ -13,7 +13,7 @@
       "benzaiten"
       "satet"
     ];
-    build.substituteFrom = [ "atropos" ];
+    build.substituteFrom.atropos = 30;
 
     disk.device = "/dev/disk/by-id/scsi-360536a83aec843a3a7a0f98fa1a70cce";
 

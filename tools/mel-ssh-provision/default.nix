@@ -16,7 +16,7 @@ let
         ++ map (name: {
           inherit (c.melinoe.build) sshKey;
           inherit (c.melinoe.cluster.nodes.${name}.buildServer) sshUser;
-        }) c.melinoe.build.substituteFrom;
+        }) (lib.attrNames c.melinoe.build.substituteFrom);
     in
     {
       hostname = c.networking.hostName;
