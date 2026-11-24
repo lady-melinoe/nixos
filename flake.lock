@@ -101,11 +101,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1795431601,
-        "narHash": "sha256-LOwOsFYtcC28scSoeZUspBRd2wh74TOaNsQMsD4PeLA=",
+        "lastModified": 1795512797,
+        "narHash": "sha256-Er6BCFTfDf9AjoTXUVIrvnfSejldEGb4voOUNGZdRbE=",
         "ref": "refs/heads/mommy",
-        "rev": "e2cf0b1aff9d2e637ebd00a634fb88cba994cb75",
-        "revCount": 5,
+        "rev": "1a3c0a8677de6cb4d998494813df995a9610f6c5",
+        "revCount": 6,
         "type": "git",
         "url": "https://gitlab.ucc.asn.au/melinoe/melinoe-vpn-kmod.git"
       },
