@@ -1,3 +1,4 @@
+{ pkgs, ... }:
 {
   boot.initrd.availableKernelModules = [
     "ehci_pci"
@@ -7,4 +8,9 @@
   ];
   boot.kernelModules = [ "kvm-intel" ];
   hardware.cpu.intel.updateMicrocode = true;
+
+  environment.systemPackages = with pkgs; [
+    ipmitool
+    ipmiutil
+  ];
 }

@@ -1,3 +1,4 @@
+{ lib, pkgs, ... }:
 {
   boot.initrd.availableKernelModules = [
     "ahci"
@@ -11,4 +12,12 @@
   ];
   boot.kernelModules = [ "kvm-amd" ];
   hardware.cpu.amd.updateMicrocode = true;
+
+  nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "ipmicfg" ];
+
+  environment.systemPackages = with pkgs; [
+    ipmicfg
+    ipmitool
+    ipmiutil
+  ];
 }
