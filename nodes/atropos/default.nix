@@ -11,7 +11,7 @@
       "nephthys"
       "ceridwen"
       "benzaiten"
-      "satet"
+      # "satet"
     ];
     build.substituteFrom.lachesis = 30;
 
@@ -32,7 +32,7 @@
       arke = 2;
       lachesis = 0;
       morrigan = 4;
-      satet = 2;
+      # satet = 2;
       nephthys = 2;
     };
   };

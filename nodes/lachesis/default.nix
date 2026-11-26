@@ -11,7 +11,7 @@
       "nephthys"
       "ceridwen"
       "benzaiten"
-      "satet"
+      # "satet"
     ];
     build.substituteFrom.atropos = 30;
 
@@ -31,7 +31,7 @@
       benzaiten = 2;
       arke = 2;
       atropos = 0;
-      satet = 2;
+      # satet = 2;
       nephthys = 2;
     };
   };

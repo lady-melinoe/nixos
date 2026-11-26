@@ -10,7 +10,7 @@
       "nephthys"
       "ceridwen"
       "benzaiten"
-      "satet"
+      # "satet"
     ];
 
     disk.device = "/dev/vda";
@@ -30,7 +30,7 @@
       lachesis = 2;
       atropos = 2;
       morrigan = 4;
-      satet = 1;
+      # satet = 1;
       nephthys = 1;
     };
   };
