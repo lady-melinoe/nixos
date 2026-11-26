@@ -9,7 +9,9 @@
       min-free = 2147483648;
       max-free = 5368709120;
       require-sigs = true;
+      use-xdg-base-directories = true;
     };
+    channel.enable = false;
     # nix.gc only supports age-based cutoffs, which nukes everything if a
     # machine sits untouched for a while. Keep the last 5 system generations
     # regardless of age instead, then collect whatever's left unreferenced.

@@ -50,6 +50,7 @@ in
     package = pkgs.adwaita-icon-theme;
     size = 24;
     hyprcursor.enable = true;
+    dotIcons.enable = false;
   };
 
   xdg.configFile =
