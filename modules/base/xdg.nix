@@ -16,6 +16,8 @@
 
     CLAUDE_CONFIG_DIR = "$HOME/.config/claude";
     CODEX_HOME = "$HOME/.local/share/codex";
+    GOPATH = "$HOME/.local/share/go";
+    GOMODCACHE = "$HOME/.cache/go/mod";
     PERF_BUILDID_DIR = "$HOME/.cache/perf";
     PULSE_COOKIE = "$HOME/.config/pulse/cookie";
     WGETRC = "/etc/wgetrc";
