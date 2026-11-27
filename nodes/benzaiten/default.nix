@@ -32,7 +32,7 @@
       arke = 0;
       lachesis = 2;
       atropos = 2;
-      # satet = 0;
+      satet = 0;
       nephthys = 0;
     };
   };

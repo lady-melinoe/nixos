@@ -11,7 +11,7 @@
       "nephthys"
       "ceridwen"
       "benzaiten"
-      # "satet"
+      "satet"
     ];
 
     disk.device = "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi0";
@@ -31,7 +31,7 @@
       lachesis = 2;
       atropos = 2;
       morrigan = 4;
-      # satet = 0;
+      satet = 0;
       nephthys = 0;
     };
   };

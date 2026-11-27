@@ -47,7 +47,7 @@
     haproxy.enable = false;
     build.remote = [
       "nephthys"
-      # "satet"
+      "satet"
       "ceridwen"
       "benzaiten"
     ];

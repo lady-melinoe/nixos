@@ -33,7 +33,7 @@
       lachesis = 2;
       atropos = 2;
       morrigan = 4;
-      # satet = 0;
+      satet = 0;
       nephthys = 0;
     };
   };
