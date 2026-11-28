@@ -7,5 +7,6 @@
       "spotify"
       "steam"
       "steam-unwrapped"
+      "xone-dongle-firmware"
     ];
 }
