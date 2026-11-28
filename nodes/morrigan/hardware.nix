@@ -34,6 +34,7 @@
   };
   environment.systemPackages = [ pkgs.sbctl ];
   hardware.steam-hardware.enable = true;
+  hardware.xone.enable = true;
   services.tlp = {
     enable = true;
     settings = {
